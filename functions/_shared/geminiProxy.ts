@@ -222,7 +222,7 @@ async function runGeminiRequest(request: AIProxyRequest, env: ProxyEnv, deps: Pr
 async function smokeResponse(request: AIProxyRequest, env: ProxyEnv, deps: ProxyDeps) {
   if (request.operation === "smoke_ping") {
     if (!env.GEMINI_API_KEY) {
-      return failure(request.operation, "GEMINI_API_KEY is not configured on the server.", { type: "server", statusCode: 500 });
+      return failure(request.operation, "GEMINI_API_KEY missing at runtime. Check Cloudflare Worker runtime secrets, not build variables.", { type: "server", statusCode: 500 });
     }
     return success(request.operation, request.model, JSON.stringify({ provider: "gemini", keyConfigured: true }));
   }
@@ -279,7 +279,7 @@ export async function handleAiProxyRequest(request: Request, env: ProxyEnv, deps
 
   if (!env.GEMINI_API_KEY && !["smoke_ping", "smoke_diagnostics"].includes(parsedRequest.data.operation)) {
     return json(
-      failure(parsedRequest.data.operation, "GEMINI_API_KEY is not configured on the server.", {
+      failure(parsedRequest.data.operation, "GEMINI_API_KEY missing at runtime. Check Cloudflare Worker runtime secrets, not build variables.", {
         type: "server",
         statusCode: 500,
       }),
