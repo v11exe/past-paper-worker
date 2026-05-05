@@ -23,7 +23,7 @@ import {
   type PagePromptContext,
   type QuestionBoundaryPromptContext,
 } from "../ai/prompts";
-import { DEFAULT_PUTER_MODEL, FALLBACK_PUTER_MODELS, PuterAIError, puterStructuredJson } from "../ai/puterAI";
+import { DEFAULT_AI_MODEL, FALLBACK_AI_MODELS, AIProviderError, aiStructuredJson } from "../ai/provider";
 import type {
   AppData,
   PaperPageScreenshot,
@@ -37,7 +37,7 @@ import type {
   PastPaperRemark,
   ProcessingDiagnostics,
   ProcessingStage,
-  PuterRequestDiagnostic,
+  AIRequestDiagnostic,
 } from "../types";
 import { createId } from "./id";
 import type { z } from "zod";
@@ -266,7 +266,7 @@ function buildInitialDiagnostics(paper: PastPaper): ProcessingDiagnostics {
       })),
     ),
     promptStats: [],
-    puterRequests: [],
+    aiRequests: [],
     schemaErrors: [],
     integrityFailures: [],
     smokeTests: [],
@@ -319,10 +319,10 @@ function makeProgressReporter(onProgress: (update: ProcessingProgressUpdate) => 
     log(diagnostics.currentStage, "info", `${label} prompt prepared`, { promptChars: prompt.length, pageNumbers, imageCount, model });
   }
 
-  function addPuterRequest(request: PuterRequestDiagnostic) {
-    const existingIndex = diagnostics.puterRequests.findIndex((item) => item.id === request.id);
-    if (existingIndex >= 0) diagnostics.puterRequests[existingIndex] = request;
-    else diagnostics.puterRequests.push(request);
+  function addAIRequest(request: AIRequestDiagnostic) {
+    const existingIndex = diagnostics.aiRequests.findIndex((item) => item.id === request.id);
+    if (existingIndex >= 0) diagnostics.aiRequests[existingIndex] = request;
+    else diagnostics.aiRequests.push(request);
     emit(diagnostics.currentStage);
   }
 
@@ -331,7 +331,7 @@ function makeProgressReporter(onProgress: (update: ProcessingProgressUpdate) => 
     log(diagnostics.currentStage, "error", `${error.label} schema validation failed`, { paths: error.paths, issues: error.issues });
   }
 
-  return { emit, log, enterStage, completeStage, addPrompt, addPuterRequest, addSchemaError };
+  return { emit, log, enterStage, completeStage, addPrompt, addAIRequest, addSchemaError };
 }
 
 export function pageContextsForAsset(asset: PastPaperAsset | undefined): PagePromptContext[] {
@@ -780,8 +780,8 @@ export function buildDeterministicProcessedPaperOutput(paper: PastPaper, paperPa
 function imageOnlyFailureMessage(stage: ProcessingStage) {
   return [
     `Image input failed while ${stage}.`,
-    "Likely cause: scanned/image-only paper and the selected Puter image call shape is unsupported or failed.",
-    "Recovery: run the Puter smoke test, retry with a fallback model, or export diagnostics. The app will not invent questions from blank text.",
+    "Likely cause: scanned/image-only paper and the selected Gemini vision call failed or the page images were not usable.",
+    "Recovery: run the Gemini smoke test, retry with a fallback model, or export diagnostics. The app will not invent questions from blank text.",
   ].join("\n");
 }
 
@@ -840,12 +840,12 @@ function chunkBoundaries(boundaries: QuestionBoundaryOutput["questions"], pages:
 }
 
 function processingFailureMessage(stage: ProcessingStage, error: unknown) {
-  if (error instanceof PuterAIError && error.diagnostic?.mediaCount && error.diagnostic.mediaCount > 0) {
+  if (error instanceof AIProviderError && error.diagnostic?.mediaCount && error.diagnostic.mediaCount > 0) {
     return imageOnlyFailureMessage(stage);
   }
-  if (error instanceof PuterAIError && error.timedOut) {
+  if (error instanceof AIProviderError && error.timedOut) {
     return [
-      `Puter timed out while ${stage}.`,
+      `Gemini timed out while ${stage}.`,
       "Likely cause: large prompt, missing page images, unsupported image call shape, or a slow model.",
       "Suggested recovery: retry with chunked processing or switch to the fallback model. A diagnostic export is available from the processing panel.",
     ].join("\n");
@@ -853,25 +853,47 @@ function processingFailureMessage(stage: ProcessingStage, error: unknown) {
   return error instanceof Error ? error.message : "Processing failed";
 }
 
-async function puterStructuredJsonWithTextFallback<S extends z.ZodTypeAny>(input: {
+async function structuredJsonWithTextFallback<S extends z.ZodTypeAny>(input: {
   prompt: string;
   schema: S;
   hasReadableText: boolean;
   label: string;
   stage: ProcessingStage;
   reporter: ReturnType<typeof makeProgressReporter>;
-  options: Parameters<typeof puterStructuredJson<S>>[2];
+  options: Parameters<typeof aiStructuredJson<S>>[2];
 }) {
   try {
-    return await puterStructuredJson(input.prompt, input.schema, input.options);
+    return await aiStructuredJson(input.prompt, input.schema, input.options);
   } catch (error) {
     const mediaCount = input.options?.media?.length ?? 0;
-    if (!(error instanceof PuterAIError) || mediaCount === 0 || !input.hasReadableText) throw error;
+    if (!(error instanceof AIProviderError) && mediaCount > 0 && !input.hasReadableText) {
+      throw new AIProviderError(error instanceof Error ? error.message : String(error), {
+        diagnostic: {
+          id: createId("ai-request"),
+          label: input.label,
+          operation: input.options.operation,
+          model: input.options.model ?? DEFAULT_AI_MODEL,
+          fallbackFromModel: null,
+          promptChars: input.prompt.length,
+          mediaCount,
+          mediaBytes: input.options.media?.reduce((sum, item) => sum + item.length, 0) ?? 0,
+          startedAt: nowIso(),
+          endedAt: nowIso(),
+          elapsedMs: 0,
+          retryCount: 0,
+          status: "error",
+          rawResponsePreview: null,
+          rawError: error instanceof Error ? error.message : String(error),
+        },
+        rawError: error,
+      });
+    }
+    if (!(error instanceof AIProviderError) || mediaCount === 0 || !input.hasReadableText) throw error;
     input.reporter.log(input.stage, "warn", `${input.label} image call failed; retrying with text-only source content`, {
       imageCount: mediaCount,
       reason: error.message,
     });
-    return puterStructuredJson(input.prompt, input.schema, {
+    return aiStructuredJson(input.prompt, input.schema, {
       ...input.options,
       media: [],
       requestLabel: `${input.label} text-only retry`,
@@ -1803,11 +1825,11 @@ function applyDeterministicMarkSchemeToQuestion<T extends Pick<ProcessedPaperOut
   return question;
 }
 
-export async function processPaperWithPuter(paper: PastPaper, onProgress: (update: ProcessingProgressUpdate) => void, options: ProcessPaperOptions = {}) {
+export async function processPaperWithAI(paper: PastPaper, onProgress: (update: ProcessingProgressUpdate) => void, options: ProcessPaperOptions = {}) {
   const paperAsset = paper.assets.find((asset) => asset.kind === "paper");
   const markSchemeAsset = paper.assets.find((asset) => asset.kind === "mark_scheme");
-  const model = options.model ?? DEFAULT_PUTER_MODEL;
-  const fallbackModels = options.fallbackModels ?? [...FALLBACK_PUTER_MODELS];
+  const model = options.model ?? DEFAULT_AI_MODEL;
+  const fallbackModels = options.fallbackModels ?? [...FALLBACK_AI_MODELS];
   const diagnostics = buildInitialDiagnostics(paper);
   const reporter = makeProgressReporter(onProgress, diagnostics);
   const topicPath = [paper.topic, paper.subtopic].filter((value): value is string => Boolean(value));
@@ -1868,7 +1890,7 @@ export async function processPaperWithPuter(paper: PastPaper, onProgress: (updat
         pages: paperPages,
       });
       reporter.addPrompt("Page inventory", inventoryPrompt, model, paperPages.map((page) => page.pageNumber), inventoryMedia.length);
-      const inventory = await puterStructuredJsonWithTextFallback({
+      const inventory = await structuredJsonWithTextFallback({
         prompt: inventoryPrompt,
         schema: pageInventoryOutputSchema,
         hasReadableText: hasMeaningfulText(paperPages),
@@ -1876,12 +1898,13 @@ export async function processPaperWithPuter(paper: PastPaper, onProgress: (updat
         stage: "building page inventory",
         reporter,
         options: {
+          operation: "page_inventory",
           model,
           fallbackModels,
           media: inventoryMedia,
           timeoutMs: 60_000,
           debugLabel: "Page inventory",
-          onRequestDiagnostic: reporter.addPuterRequest,
+          onRequestDiagnostic: reporter.addAIRequest,
           onSchemaError: reporter.addSchemaError,
         },
       });
@@ -1899,7 +1922,7 @@ export async function processPaperWithPuter(paper: PastPaper, onProgress: (updat
         pages: paperPages,
       });
       reporter.addPrompt("Question boundaries", boundaryPrompt, model, paperPages.map((page) => page.pageNumber), inventoryMedia.length);
-      const boundaries = await puterStructuredJsonWithTextFallback({
+      const boundaries = await structuredJsonWithTextFallback({
         prompt: boundaryPrompt,
         schema: questionBoundaryOutputSchema,
         hasReadableText: hasMeaningfulText(paperPages),
@@ -1907,13 +1930,14 @@ export async function processPaperWithPuter(paper: PastPaper, onProgress: (updat
         stage: "identifying questions",
         reporter,
         options: {
+          operation: "question_boundaries",
           model,
           fallbackModels,
           media: inventoryMedia,
           timeoutMs: 60_000,
           normalizer: normalizeProcessedPaperOutput,
           debugLabel: "Question boundaries",
-          onRequestDiagnostic: reporter.addPuterRequest,
+          onRequestDiagnostic: reporter.addAIRequest,
           onSchemaError: reporter.addSchemaError,
         },
       });
@@ -1946,21 +1970,22 @@ export async function processPaperWithPuter(paper: PastPaper, onProgress: (updat
         });
         const label = `Question details chunk ${index + 1}/${chunks.length}`;
         reporter.addPrompt(label, chunkPrompt, model, chunk.pageNumbers, chunkMedia.length);
-        const extracted = await puterStructuredJsonWithTextFallback({
+        const extracted = await structuredJsonWithTextFallback({
           prompt: chunkPrompt,
           schema: questionExtractionOutputSchema,
           hasReadableText: hasMeaningfulText(chunkPages),
           label,
           stage: "extracting question details",
           reporter,
-          options: {
+        options: {
+            operation: "question_extraction",
             model,
             fallbackModels,
             media: chunkMedia,
             timeoutMs: 65_000,
             normalizer: normalizeProcessedPaperOutput,
             debugLabel: label,
-            onRequestDiagnostic: reporter.addPuterRequest,
+            onRequestDiagnostic: reporter.addAIRequest,
             onSchemaError: reporter.addSchemaError,
           },
         });
@@ -2022,7 +2047,7 @@ export async function processPaperWithPuter(paper: PastPaper, onProgress: (updat
           const shouldUseAiAlignment = alignmentPrompt.length <= MAX_AI_MARK_SCHEME_ALIGNMENT_PROMPT_CHARS || !readableMarkScheme;
           if (shouldUseAiAlignment) {
             try {
-              const alignment = await puterStructuredJsonWithTextFallback({
+              const alignment = await structuredJsonWithTextFallback({
                 prompt: alignmentPrompt,
                 schema: markSchemeAlignmentOutputSchema,
                 hasReadableText: readableMarkScheme,
@@ -2030,13 +2055,14 @@ export async function processPaperWithPuter(paper: PastPaper, onProgress: (updat
                 stage: "aligning mark scheme",
                 reporter,
                 options: {
+                  operation: "mark_scheme_alignment",
                   model,
                   fallbackModels: alignmentPrompt.length > 24_000 ? [] : fallbackModels,
                   media: markSchemeMedia,
                   timeoutMs: 35_000,
                   debugLabel: "Mark scheme alignment",
                   normalizer: normalizeMarkSchemeAlignmentOutput,
-                  onRequestDiagnostic: reporter.addPuterRequest,
+                  onRequestDiagnostic: reporter.addAIRequest,
                   onSchemaError: reporter.addSchemaError,
                 },
               });
@@ -2087,7 +2113,7 @@ export async function processPaperWithPuter(paper: PastPaper, onProgress: (updat
     return mapProcessedOutput(paper, finalResult.data, cloneDiagnostics(diagnostics));
   } catch (error) {
     const message = processingFailureMessage(diagnostics.currentStage, error);
-    reporter.log(diagnostics.currentStage, "error", message, { rawError: error instanceof PuterAIError ? error.rawError : error instanceof Error ? error.stack : error });
+    reporter.log(diagnostics.currentStage, "error", message, { rawError: error instanceof AIProviderError ? error.rawError : error instanceof Error ? error.stack : error });
     throw new Error(message);
   }
 }
@@ -2273,7 +2299,7 @@ function markOutputSignalsInsufficient(output: PaperMarkOutput) {
 }
 
 function retryMarkingModel(currentModel: string, fallbackModels: string[]) {
-  const ordered = ["gpt-5.4-mini", DEFAULT_PUTER_MODEL, ...fallbackModels].filter((model, index, list) => model !== currentModel && list.indexOf(model) === index);
+  const ordered = ["gemini-2.5-flash", DEFAULT_AI_MODEL, ...fallbackModels].filter((model, index, list) => model !== currentModel && list.indexOf(model) === index);
   return ordered[0] ?? null;
 }
 
@@ -2375,7 +2401,7 @@ export function createMarkingErrorMark(
   };
 }
 
-export async function markAnswerWithPuter(
+export async function markAnswerWithAI(
   paper: PastPaper,
   question: PastPaperQuestion,
   answer: PastPaperAnswer,
@@ -2410,8 +2436,8 @@ export async function markAnswerWithPuter(
   if (exactAnswerOutput) {
     return mapMarkOutput(answer.id, question.id, maxMarks, exactAnswerOutput, source, version);
   }
-  const primaryModel = options.model ?? DEFAULT_PUTER_MODEL;
-  const fallbackModels = options.fallbackModels ?? [...FALLBACK_PUTER_MODELS];
+  const primaryModel = options.model ?? DEFAULT_AI_MODEL;
+  const fallbackModels = options.fallbackModels ?? [...FALLBACK_AI_MODELS];
 
   const prompt = buildPaperMarkingPrompt({
     subject: paper.subject,
@@ -2427,7 +2453,8 @@ export async function markAnswerWithPuter(
           ? `${displayNumberMarkScheme.ref}\n${markSchemeText}`
           : markSchemeText,
   });
-  let output = await puterStructuredJson(prompt, paperMarkOutputSchema, {
+  let output = await aiStructuredJson(prompt, paperMarkOutputSchema, {
+    operation: "paper_mark",
     model: primaryModel,
     fallbackModels,
     normalizer: normalizePaperMarkOutput,
@@ -2436,10 +2463,11 @@ export async function markAnswerWithPuter(
   if (output.awardedMarks === 0 && markOutputSignalsInsufficient(output) && hasMarkSchemeSubstance(markSchemeText, displayNumber || question.questionNumber)) {
     const retryModel = retryMarkingModel(primaryModel, fallbackModels);
     if (retryModel) {
-      output = await puterStructuredJson(
+      output = await aiStructuredJson(
         `${prompt}\n\nThe supplied mark scheme section above is the exact relevant section for this question and is sufficient to award marks. Re-evaluate carefully, including do-not-accept and ignore guidance.`,
         paperMarkOutputSchema,
         {
+          operation: "paper_mark",
           model: retryModel,
           fallbackModels: fallbackModels.filter((model) => model !== retryModel),
           normalizer: normalizePaperMarkOutput,

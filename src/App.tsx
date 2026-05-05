@@ -21,13 +21,12 @@ import {
   Save,
   ScanLine,
   SkipForward,
-  Sparkles,
   Trash2,
   UploadCloud,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { DEFAULT_PUTER_MODEL, FALLBACK_PUTER_MODELS, PUTER_MODEL_CHOICES, ensurePuterReadyForUserAction, puterChat, runPuterSmokeTest } from "./ai/puterAI";
+import { DEFAULT_AI_MODEL, FALLBACK_AI_MODELS, AI_MODEL_CHOICES, ensureAIReadyForUserAction, aiChat, runAISmokeTest } from "./ai/provider";
 import { AppLogo } from "./components/AppLogo";
 import { supportedSubjects } from "./subjects";
 import { extractFileAssetContent } from "./lib/fileText";
@@ -45,9 +44,9 @@ import {
   isAnswerAttempted,
   isMarkingErrorMark,
   displayQuestionNumberForPaper,
-  markAnswerWithPuter,
+  markAnswerWithAI,
   nowIso,
-  processPaperWithPuter,
+  processPaperWithAI,
   questionSupportIssue,
   processingStages,
   startAttempt,
@@ -69,7 +68,7 @@ import type {
   PaperPageScreenshot,
   ProcessingStage,
   ProcessingDiagnostics,
-  PuterSmokeTestResult,
+  AISmokeTestResult,
 } from "./types";
 
 const emptyDraft: PaperDraftInput = {
@@ -245,8 +244,8 @@ function textLengthForAsset(asset: PastPaperAsset) {
   return asset.pageTexts?.reduce((sum, page) => sum + page.charCount, 0) ?? asset.textContent?.length ?? 0;
 }
 
-function latestPuterRequest(diagnostics?: ProcessingDiagnostics | null) {
-  return diagnostics?.puterRequests.at(-1) ?? null;
+function latestAIRequest(diagnostics?: ProcessingDiagnostics | null) {
+  return diagnostics?.aiRequests.at(-1) ?? null;
 }
 
 function diagnosticBundle(paper: PastPaper, attempts: PastPaperAttempt[] = []) {
@@ -419,7 +418,7 @@ function processingStatusMessages(paper: PastPaper, job: PastPaperProcessingJob 
   const pageCount = Math.max(1, diagnostics?.paperPageCount ?? paper.assets.find((asset) => asset.kind === "paper")?.pageCount ?? 1);
   const currentPage = Math.max(1, Math.min(pageCount, Math.ceil((visualPercent / 100) * pageCount)));
   const latestPrompt = diagnostics?.promptStats.at(-1);
-  const latestRequest = latestPuterRequest(diagnostics);
+  const latestRequest = latestAIRequest(diagnostics);
   const questionCount = paper.questions.length || latestPrompt?.pageNumbers?.length || pageCount;
   const currentQuestion = Math.max(1, Math.min(questionCount, Math.ceil((visualPercent / 100) * questionCount)));
 
@@ -446,7 +445,7 @@ function ProcessingPanel({ paper, job, variant = "full" }: { paper: PastPaper; j
   const activeIndex = processingStages.findIndex((stage) => job?.currentStage === stage);
   const percent = job?.progressPercent ?? (paper.processingStatus === "ready" ? 100 : 0);
   const diagnostics = job?.diagnostics ?? paper.processingDiagnostics ?? null;
-  const latestRequest = latestPuterRequest(diagnostics);
+  const latestRequest = latestAIRequest(diagnostics);
   const errorMessage = job?.errorMessage ?? paper.processingError ?? null;
   const paperTextChars = paper.assets.find((asset) => asset.kind === "paper") ? textLengthForAsset(paper.assets.find((asset) => asset.kind === "paper")!) : 0;
   const [visualPercent, setVisualPercent] = useState(percent);
@@ -525,7 +524,7 @@ function ProcessingPanel({ paper, job, variant = "full" }: { paper: PastPaper; j
             <span>Text {paperTextChars.toLocaleString()} chars</span>
             <span>Screenshots {diagnostics.screenshotStats.filter((item) => item.assetKind === "paper").length}</span>
             <span>Prompt {diagnostics.promptStats.at(-1)?.charCount.toLocaleString() ?? 0} chars</span>
-            <span>Model {latestRequest?.model ?? DEFAULT_PUTER_MODEL}</span>
+            <span>Model {latestRequest?.model ?? DEFAULT_AI_MODEL}</span>
             <span>Last {diagnostics.lastSuccessfulStage ?? "none"}</span>
           </div>
         ) : null}
@@ -539,7 +538,7 @@ function ProcessingPanel({ paper, job, variant = "full" }: { paper: PastPaper; j
                 Screenshots:{" "}
                 {diagnostics.screenshotStats.map((shot) => `${shot.assetKind} p${shot.pageNumber} ${shot.width}x${shot.height} ${shot.byteSize}b`).join(" / ") || "none"}
               </span>
-              <span>Requests: {diagnostics.puterRequests.map((request) => `${request.label} ${request.status} ${request.startedAt} ${request.endedAt ?? ""}`).join(" / ") || "none"}</span>
+              <span>Requests: {diagnostics.aiRequests.map((request) => `${request.label} ${request.status} ${request.startedAt} ${request.endedAt ?? ""}`).join(" / ") || "none"}</span>
               <span>Schema paths: {diagnostics.schemaErrors.flatMap((item) => item.paths).join(", ") || "none"}</span>
               <span>Integrity: {diagnostics.integrityFailures?.join(" / ") || "none"}</span>
             </div>
@@ -951,8 +950,8 @@ export function App() {
   const [editingMetadata, setEditingMetadata] = useState(false);
   const [metadataDraft, setMetadataDraft] = useState<PaperDraftInput>(emptyDraft);
   const [suggestions, setSuggestions] = useState<string | null>(null);
-  const [puterModel, setPuterModel] = useState(DEFAULT_PUTER_MODEL);
-  const [smokeTest, setSmokeTest] = useState<PuterSmokeTestResult | null>(null);
+  const [aiModel, setAIModel] = useState(DEFAULT_AI_MODEL);
+  const [smokeTest, setSmokeTest] = useState<AISmokeTestResult | null>(null);
   const [smokeBusy, setSmokeBusy] = useState(false);
   const [isFocusMode, setIsFocusMode] = useState(false);
   const [fullscreenSupported, setFullscreenSupported] = useState(false);
@@ -1059,9 +1058,9 @@ export function App() {
 
   async function runProcessing(paper: PastPaper) {
     try {
-      await ensurePuterReadyForUserAction();
+      await ensureAIReadyForUserAction();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Puter sign-in failed");
+      setError(reason instanceof Error ? reason.message : "Gemini AI is unavailable");
       return;
     }
     const job = buildProcessingJob(paper.id);
@@ -1076,14 +1075,14 @@ export function App() {
     }));
 
     try {
-      const processed = await processPaperWithPuter(
+      const processed = await processPaperWithAI(
         paper,
         (update) => {
           if (cancelledProcessingJobs.current.has(job.id)) return;
           latestDiagnostics = update.diagnostics;
           updateJob(paper.id, job.id, { currentStage: update.stage, progressPercent: update.percent, status: "running", diagnostics: update.diagnostics });
         },
-        { model: puterModel, fallbackModels: FALLBACK_PUTER_MODELS.filter((model) => model !== puterModel) },
+        { model: aiModel, fallbackModels: FALLBACK_AI_MODELS.filter((model) => model !== aiModel) },
       );
       if (cancelledProcessingJobs.current.has(job.id)) return;
       patchPaper(paper.id, (current) => ({
@@ -1402,9 +1401,9 @@ export function App() {
     setBusy(true);
     setError(null);
     try {
-      await ensurePuterReadyForUserAction();
+      await ensureAIReadyForUserAction();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Puter sign-in failed");
+      setError(reason instanceof Error ? reason.message : "Gemini AI is unavailable");
       setBusy(false);
       return;
     }
@@ -1428,7 +1427,7 @@ export function App() {
         updateJob(selectedPaper.id, job.id, { progressPercent: 8 + Math.round((index / Math.max(answeredQuestions.length, 1)) * 82), currentStage: "marking answers" });
         try {
           const version = selectedAttempt.marks.filter((mark) => mark.questionId === question.id).length + 1;
-          marks.push(await markAnswerWithPuter(selectedPaper, question, answer, version, "ai", { model: puterModel, fallbackModels: FALLBACK_PUTER_MODELS.filter((model) => model !== puterModel) }));
+          marks.push(await markAnswerWithAI(selectedPaper, question, answer, version, "ai", { model: aiModel, fallbackModels: FALLBACK_AI_MODELS.filter((model) => model !== aiModel) }));
         } catch (reason) {
           const message = reason instanceof Error ? reason.message : String(reason);
           failures.push(`Question ${question.questionNumber}: ${message}`);
@@ -1459,7 +1458,7 @@ export function App() {
       const errorCount = marks.filter((mark) => isMarkingErrorMark(mark)).length;
       const scoredCount = marks.length - errorCount;
       setStatus(
-        `Attempt marked with Puter AI. ${scoredCount} answered question${scoredCount === 1 ? "" : "s"} scored${errorCount ? `, ${errorCount} flagged as mark-scheme errors` : ""}.`,
+        `Attempt marked with Gemini AI. ${scoredCount} answered question${scoredCount === 1 ? "" : "s"} scored${errorCount ? `, ${errorCount} flagged as mark-scheme errors` : ""}.`,
       );
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : "Marking failed";
@@ -1477,9 +1476,9 @@ export function App() {
     setBusy(true);
     setError(null);
     try {
-      await ensurePuterReadyForUserAction();
+      await ensureAIReadyForUserAction();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Puter sign-in failed");
+      setError(reason instanceof Error ? reason.message : "Gemini AI is unavailable");
       setBusy(false);
       return;
     }
@@ -1488,7 +1487,7 @@ export function App() {
 
     try {
       const version = selectedAttempt.marks.filter((mark) => mark.questionId === question.id).length + 1;
-      const proposed = await markAnswerWithPuter(selectedPaper, question, answer, version, "remark", { model: puterModel, fallbackModels: FALLBACK_PUTER_MODELS.filter((model) => model !== puterModel) });
+      const proposed = await markAnswerWithAI(selectedPaper, question, answer, version, "remark", { model: aiModel, fallbackModels: FALLBACK_AI_MODELS.filter((model) => model !== aiModel) });
       patchAttempt(selectedAttempt.id, (attempt) => ({
         ...attempt,
         marks: [...attempt.marks, proposed],
@@ -1528,10 +1527,11 @@ export function App() {
     setBusy(true);
     setError(null);
     try {
-      await ensurePuterReadyForUserAction();
-      const text = await puterChat("Give 3 helpful suggestions for a student using an AI past paper worker. Keep it concise.", {
-        model: puterModel,
-        fallbackModels: FALLBACK_PUTER_MODELS.filter((model) => model !== puterModel),
+      await ensureAIReadyForUserAction();
+      const text = await aiChat("Give 3 helpful suggestions for a student using an AI past paper worker. Keep it concise.", {
+        operation: "suggestions",
+        model: aiModel,
+        fallbackModels: FALLBACK_AI_MODELS.filter((model) => model !== aiModel),
         timeoutMs: 45_000,
         requestLabel: "AI suggestions",
       });
@@ -1548,8 +1548,8 @@ export function App() {
     setSmokeBusy(true);
     setError(null);
     try {
-      await ensurePuterReadyForUserAction();
-      const result = await runPuterSmokeTest(puterModel);
+      await ensureAIReadyForUserAction();
+      const result = await runAISmokeTest(aiModel);
       setSmokeTest(result);
       if (selectedPaper) {
         patchPaper(selectedPaper.id, (paper) => {
@@ -1565,9 +1565,9 @@ export function App() {
           };
         });
       }
-      setStatus("Puter smoke test complete.");
+      setStatus("Gemini smoke test complete.");
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Puter smoke test failed");
+      setError(reason instanceof Error ? reason.message : "Gemini smoke test failed");
     } finally {
       setSmokeBusy(false);
     }
@@ -1673,9 +1673,6 @@ export function App() {
               <h1>{appMode === "empty" ? "Build a grounded paper from the real upload." : "Past papers, processed with source checks."}</h1>
             </div>
             <div className="button-row">
-              <a className="secondary-button" href={`${import.meta.env.BASE_URL}puter-test.html`} target="_blank" rel="noreferrer">
-                <Sparkles size={16} /> Puter test
-              </a>
               <button className="secondary-button" onClick={() => void runSmokeTest()} disabled={smokeBusy}>
                 <FlaskConical size={16} /> Smoke test
               </button>
@@ -1708,7 +1705,7 @@ export function App() {
         ) : null}
 
         {suggestions && (appMode === "catalogue" || appMode === "ready" || appMode === "empty") ? (
-          <SectionFrame title="AI Suggestions" subtitle="Generated through Puter.js from the frontend.">
+          <SectionFrame title="AI Suggestions" subtitle="Generated through the Gemini proxy.">
             <p className="reading-copy">{suggestions}</p>
           </SectionFrame>
         ) : null}
@@ -2287,16 +2284,16 @@ export function App() {
           <span className="eyebrow">System</span>
           <div className="metric-row">
             <span>AI provider</span>
-            <strong>Puter.js</strong>
+            <strong>Gemini</strong>
           </div>
           <div className="metric-row">
             <span>Model</span>
-            <strong>{puterModel}</strong>
+            <strong>{aiModel}</strong>
           </div>
           <label className="field compact-field">
             <span>Model switch</span>
-            <select value={puterModel} onChange={(event) => setPuterModel(event.target.value)}>
-              {PUTER_MODEL_CHOICES.map((model) => (
+            <select value={aiModel} onChange={(event) => setAIModel(event.target.value)}>
+              {AI_MODEL_CHOICES.map((model) => (
                 <option key={model} value={model}>
                   {model}
                 </option>
@@ -2305,25 +2302,32 @@ export function App() {
           </label>
           <div className="metric-row">
             <span>API key</span>
-            <strong>None</strong>
+            <strong>Server-side only</strong>
           </div>
-          <p className="muted-copy">OpenAI server calls and environment variables are not used in this standalone product. Fallbacks run through Puter.js if the selected model errors or times out.</p>
+          <p className="muted-copy">The browser calls a secure Gemini proxy endpoint. The Gemini API key stays server-side, and fallback models are only used when the selected model fails or times out.</p>
           {smokeTest ? (
             <div className="smoke-summary">
               <span className="eyebrow">Last smoke test</span>
               <div className="metric-row">
-                <span>Model listed</span>
-                <strong>{smokeTest.modelCheck.supported === null ? "unknown" : smokeTest.modelCheck.supported ? "yes" : "no"}</strong>
+                <span>Proxy</span>
+                <strong>{smokeTest.proxyCheck.success ? "ok" : "failed"}</strong>
               </div>
               <div className="metric-row">
                 <span>Text call</span>
                 <strong>{smokeTest.textCall.success ? "ok" : "failed"}</strong>
               </div>
               <div className="metric-row">
-                <span>Image call</span>
-                <strong>{smokeTest.imageCall.success ? "ok" : "failed"}</strong>
+                <span>Extraction</span>
+                <strong>{smokeTest.extractionCall.success ? "ok" : "failed"}</strong>
               </div>
-              <p className="muted-copy">{smokeTest.imageCall.callShape}</p>
+              <div className="metric-row">
+                <span>Marking</span>
+                <strong>{smokeTest.markingCall.success ? "ok" : "failed"}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Diagnostics redaction</span>
+                <strong>{smokeTest.diagnosticsRedactionCheck.redacted === null ? "unknown" : smokeTest.diagnosticsRedactionCheck.redacted ? "ok" : "failed"}</strong>
+              </div>
             </div>
           ) : null}
         </div>

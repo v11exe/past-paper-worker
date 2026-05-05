@@ -129,9 +129,10 @@ export type ProcessingStageTiming = {
   elapsedMs: number | null;
 };
 
-export type PuterRequestDiagnostic = {
+export type AIRequestDiagnostic = {
   id: string;
   label: string;
+  operation: string;
   model: string;
   fallbackFromModel?: string | null;
   promptChars: number;
@@ -140,6 +141,7 @@ export type PuterRequestDiagnostic = {
   startedAt: string;
   endedAt: string | null;
   elapsedMs: number | null;
+  retryCount: number;
   status: "running" | "success" | "error" | "timeout";
   rawResponsePreview?: string | null;
   rawError?: unknown;
@@ -166,20 +168,22 @@ export type ProcessingDiagnostics = {
     mimeType: string;
   }>;
   promptStats: Array<{ label: string; charCount: number; pageNumbers?: number[]; imageCount?: number; model: string }>;
-  puterRequests: PuterRequestDiagnostic[];
+  aiRequests: AIRequestDiagnostic[];
   schemaErrors: Array<{ label: string; paths: string[]; issues: string[]; rawPreview: string; extractedJsonPreview: string }>;
   integrityFailures?: string[];
-  smokeTests: PuterSmokeTestResult[];
+  smokeTests: AISmokeTestResult[];
 };
 
-export type PuterSmokeTestResult = {
+export type AISmokeTestResult = {
   id: string;
+  provider: "gemini";
   model: string;
   startedAt: string;
   endedAt: string;
   elapsedMs: number;
-  modelCheck: {
-    supported: boolean | null;
+  proxyCheck: {
+    success: boolean;
+    elapsedMs?: number;
     rawResponsePreview?: string | null;
     rawError?: unknown;
   };
@@ -189,10 +193,22 @@ export type PuterSmokeTestResult = {
     rawResponsePreview?: string | null;
     rawError?: unknown;
   };
-  imageCall: {
+  extractionCall: {
     success: boolean;
     elapsedMs?: number;
-    callShape: "puter.ai.chat(prompt, [mediaDataUrl], options)";
+    rawResponsePreview?: string | null;
+    rawError?: unknown;
+  };
+  markingCall: {
+    success: boolean;
+    elapsedMs?: number;
+    rawResponsePreview?: string | null;
+    rawError?: unknown;
+  };
+  diagnosticsRedactionCheck: {
+    success: boolean;
+    elapsedMs?: number;
+    redacted: boolean | null;
     rawResponsePreview?: string | null;
     rawError?: unknown;
   };

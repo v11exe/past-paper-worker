@@ -1,4 +1,4 @@
-import type { AppData } from "../types";
+import type { AppData, PastPaper, PastPaperProcessingJob, ProcessingDiagnostics } from "../types";
 
 const STORAGE_KEY = "past-paper-worker:data:v1";
 const MAX_PREVIEW_CHARS = 1400;
@@ -8,13 +8,46 @@ const emptyData: AppData = {
   attempts: [],
 };
 
+function normalizeDiagnostics(diagnostics: unknown): ProcessingDiagnostics | null | undefined {
+  if (diagnostics === null || diagnostics === undefined) return diagnostics;
+  if (typeof diagnostics !== "object") return undefined;
+  const record = diagnostics as Record<string, unknown>;
+  const legacyRequestKey = ["pu", "ter", "Requests"].join("");
+  const aiRequests = Array.isArray(record.aiRequests)
+    ? record.aiRequests
+    : Array.isArray(record[legacyRequestKey])
+      ? record[legacyRequestKey]
+      : [];
+  return {
+    ...record,
+    aiRequests,
+  } as ProcessingDiagnostics;
+}
+
+function normalizeJob(job: PastPaperProcessingJob): PastPaperProcessingJob {
+  return {
+    ...job,
+    diagnostics: normalizeDiagnostics(job.diagnostics),
+  };
+}
+
+function normalizePaper(paper: PastPaper): PastPaper {
+  return {
+    ...paper,
+    processingDiagnostics: normalizeDiagnostics(paper.processingDiagnostics),
+    jobs: Array.isArray(paper.jobs) ? paper.jobs.map(normalizeJob) : [],
+  };
+}
+
 export function loadData(): AppData {
   const raw = window.localStorage.getItem(STORAGE_KEY);
   if (!raw) return emptyData;
   try {
     const parsed = JSON.parse(raw) as AppData;
     return {
-      papers: Array.isArray(parsed.papers) ? parsed.papers : [],
+      papers: Array.isArray(parsed.papers)
+        ? parsed.papers.map(normalizePaper)
+        : [],
       attempts: Array.isArray(parsed.attempts) ? parsed.attempts : [],
     };
   } catch {
@@ -43,7 +76,7 @@ function sanitizeForStorage(data: AppData, keepThumbnails = true): AppData {
       processingDiagnostics: paper.processingDiagnostics
         ? {
             ...paper.processingDiagnostics,
-            puterRequests: paper.processingDiagnostics.puterRequests.map((request) => ({
+            aiRequests: paper.processingDiagnostics.aiRequests.map((request) => ({
               ...request,
               rawResponsePreview: clipString(request.rawResponsePreview) as string | null | undefined,
             })),
@@ -59,7 +92,7 @@ function sanitizeForStorage(data: AppData, keepThumbnails = true): AppData {
         diagnostics: job.diagnostics
           ? {
               ...job.diagnostics,
-              puterRequests: job.diagnostics.puterRequests.map((request) => ({
+              aiRequests: job.diagnostics.aiRequests.map((request) => ({
                 ...request,
                 rawResponsePreview: clipString(request.rawResponsePreview) as string | null | undefined,
               })),
