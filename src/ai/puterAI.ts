@@ -1,22 +1,34 @@
+import bundledPuter from "@heyputer/puter.js";
 import { z } from "zod";
 import { createId } from "../lib/id";
 import type { PuterRequestDiagnostic, PuterSmokeTestResult } from "../types";
 
 type PuterChatResponse = string | { text?: unknown; message?: { content?: unknown; images?: unknown[] } };
 type PuterModelEntry = { id?: unknown; aliases?: unknown };
+type PuterAuthApi = {
+  isSignedIn?: () => boolean;
+  signIn?: (options?: { attempt_temp_user_creation?: boolean }) => Promise<unknown>;
+};
+type PuterUiApi = {
+  authenticateWithPuter?: () => Promise<void>;
+};
 type PuterApi = {
   ai?: {
     chat?: (prompt: string | unknown[], ...args: unknown[]) => Promise<PuterChatResponse>;
     listModels?: (provider?: string | null) => Promise<PuterModelEntry[]>;
   };
+  auth?: PuterAuthApi;
+  ui?: PuterUiApi;
+  authToken?: unknown;
 };
 
 declare global {
   interface Window {
-    puter?: PuterApi;
     __PUTER_TEST_MOCK__?: PuterApi;
   }
 }
+
+const bundledPuterApi = bundledPuter as unknown as PuterApi;
 
 export const DEFAULT_PUTER_MODEL = "gpt-5.4-nano";
 export const FALLBACK_PUTER_MODELS = ["gpt-5.4-mini", "gpt-5-nano"] as const;
@@ -65,7 +77,7 @@ class PuterTimeoutError extends Error {
 }
 
 function getPuter() {
-  return window.__PUTER_TEST_MOCK__ ?? window.puter;
+  return window.__PUTER_TEST_MOCK__ ?? ((window.puter as unknown as PuterApi | undefined) ?? bundledPuterApi);
 }
 
 async function waitForPuter(timeoutMs = 12_000) {
@@ -75,7 +87,70 @@ async function waitForPuter(timeoutMs = 12_000) {
     if (puter?.ai?.chat) return puter;
     await new Promise((resolve) => window.setTimeout(resolve, 120));
   }
-  throw new Error("Puter.js did not load. Check your network connection and the CDN script.");
+  throw new Error("Puter AI failed to initialize. Refresh the page and check your connection.");
+}
+
+function puterErrorCode(error: unknown) {
+  if (!error || typeof error !== "object") return null;
+  const maybeCode = (error as { code?: unknown; error?: unknown }).code ?? (error as { code?: unknown; error?: unknown }).error;
+  return typeof maybeCode === "string" ? maybeCode : null;
+}
+
+function puterErrorMessage(error: unknown) {
+  if (error instanceof Error) return error.message;
+  if (!error || typeof error !== "object") return String(error);
+  const maybeMessage = (error as { message?: unknown; msg?: unknown; error?: unknown }).message ?? (error as { message?: unknown; msg?: unknown; error?: unknown }).msg;
+  if (typeof maybeMessage === "string" && maybeMessage.trim()) return maybeMessage;
+  const maybeError = (error as { error?: unknown }).error;
+  return typeof maybeError === "string" && maybeError.trim() ? maybeError : safeStringify(error);
+}
+
+function isSignedIn(puter: PuterApi) {
+  try {
+    if (typeof puter.auth?.isSignedIn === "function") return Boolean(puter.auth.isSignedIn());
+  } catch {
+    // Fall through to token check.
+  }
+  return Boolean(puter.authToken);
+}
+
+function authFailureMessage(error: unknown) {
+  const code = puterErrorCode(error);
+  const message = puterErrorMessage(error);
+  if (code === "auth_window_closed" || /closed by the user/i.test(message)) {
+    return "Puter sign-in was closed before it finished. Reopen the AI action and complete the sign-in step.";
+  }
+  if (/popup|window\.open|null/i.test(message)) {
+    return "Puter sign-in could not open. Allow popups for this site and try again.";
+  }
+  return `Puter sign-in failed: ${message}`;
+}
+
+async function promptForPuterSignIn(puter: PuterApi) {
+  if (isSignedIn(puter)) return;
+  try {
+    if (puter.ui?.authenticateWithPuter) {
+      await puter.ui.authenticateWithPuter();
+    } else if (puter.auth?.signIn) {
+      await puter.auth.signIn();
+    } else {
+      throw new Error("No Puter sign-in method was available.");
+    }
+  } catch (error) {
+    if (isSignedIn(puter)) return;
+    throw new Error(authFailureMessage(error));
+  }
+  if (!isSignedIn(puter)) {
+    throw new Error("Puter sign-in did not complete. Try again and finish the sign-in prompt.");
+  }
+}
+
+export async function ensurePuterReadyForUserAction() {
+  const puter = await waitForPuter();
+  if (!isSignedIn(puter)) {
+    await promptForPuterSignIn(puter);
+  }
+  return puter;
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number) {

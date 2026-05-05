@@ -4,6 +4,9 @@ test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     window.localStorage.clear();
     window.__PUTER_TEST_MOCK__ = {
+      auth: {
+        isSignedIn: () => true,
+      },
       ai: {
         chat: async (prompt) => {
           if (prompt.includes("Give 3 helpful suggestions")) {
@@ -111,6 +114,8 @@ test("upload, process, take, and AI mark a paper", async ({ page }) => {
   await page.getByRole("button", { name: /Show questions/ }).click();
   await expect(page.getByText("Q1")).toBeVisible();
   await expect(page.getByText("1.1")).toBeVisible();
+  await page.getByRole("button", { name: "AI suggestions" }).click();
+  await expect(page.getByText("Process the paper first.")).toBeVisible();
   await page.getByRole("button", { name: "Smoke test" }).click();
   await expect(page.getByText("Last smoke test")).toBeVisible();
   await page.waitForTimeout(500);

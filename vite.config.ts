@@ -1,9 +1,17 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
-import { cloudflare } from "@cloudflare/vite-plugin";
+export default defineConfig(async () => {
+  const plugins = [react()];
+  const nodeMajor = Number(process.versions.node.split(".")[0] ?? 0);
 
-export default defineConfig({
-  base: "./",
-  plugins: [react(), cloudflare()],
+  if (nodeMajor >= 22) {
+    const { cloudflare } = await import("@cloudflare/vite-plugin");
+    plugins.push(cloudflare());
+  }
+
+  return {
+    base: "./",
+    plugins,
+  };
 });

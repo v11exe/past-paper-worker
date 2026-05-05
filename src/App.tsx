@@ -27,7 +27,7 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { DEFAULT_PUTER_MODEL, FALLBACK_PUTER_MODELS, PUTER_MODEL_CHOICES, puterChat, runPuterSmokeTest } from "./ai/puterAI";
+import { DEFAULT_PUTER_MODEL, FALLBACK_PUTER_MODELS, PUTER_MODEL_CHOICES, ensurePuterReadyForUserAction, puterChat, runPuterSmokeTest } from "./ai/puterAI";
 import { AppLogo } from "./components/AppLogo";
 import { supportedSubjects } from "./subjects";
 import { extractFileAssetContent } from "./lib/fileText";
@@ -1058,6 +1058,12 @@ export function App() {
   }
 
   async function runProcessing(paper: PastPaper) {
+    try {
+      await ensurePuterReadyForUserAction();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Puter sign-in failed");
+      return;
+    }
     const job = buildProcessingJob(paper.id);
     let latestDiagnostics: ProcessingDiagnostics | null = null;
     cancelledProcessingJobs.current.delete(job.id);
@@ -1395,6 +1401,13 @@ export function App() {
     }
     setBusy(true);
     setError(null);
+    try {
+      await ensurePuterReadyForUserAction();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Puter sign-in failed");
+      setBusy(false);
+      return;
+    }
     const job: PastPaperProcessingJob = {
       ...buildProcessingJob(selectedPaper.id),
       attemptId: selectedAttempt.id,
@@ -1463,6 +1476,13 @@ export function App() {
     if (!question) return;
     setBusy(true);
     setError(null);
+    try {
+      await ensurePuterReadyForUserAction();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Puter sign-in failed");
+      setBusy(false);
+      return;
+    }
     const remark = createRemark(selectedAttempt.id, answer, null);
     patchAttempt(selectedAttempt.id, (attempt) => ({ ...attempt, remarks: [...attempt.remarks, { ...remark, status: "running" }] }));
 
@@ -1508,6 +1528,7 @@ export function App() {
     setBusy(true);
     setError(null);
     try {
+      await ensurePuterReadyForUserAction();
       const text = await puterChat("Give 3 helpful suggestions for a student using an AI past paper worker. Keep it concise.", {
         model: puterModel,
         fallbackModels: FALLBACK_PUTER_MODELS.filter((model) => model !== puterModel),
@@ -1527,6 +1548,7 @@ export function App() {
     setSmokeBusy(true);
     setError(null);
     try {
+      await ensurePuterReadyForUserAction();
       const result = await runPuterSmokeTest(puterModel);
       setSmokeTest(result);
       if (selectedPaper) {
