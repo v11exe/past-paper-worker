@@ -8,20 +8,22 @@
     "local": "node scripts/dev-local.mjs",
     "dev:stop": "node scripts/dev-stop.mjs",
     "build": "tsc -b && vite build",
+    "typecheck": "tsc -b --pretty false",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "test": "vitest run",
+    "smoke:gemini": "vitest run functions/_shared/geminiSmoke.test.ts",
     "e2e": "playwright test -c playwright.config.cjs",
     "deploy": "npm run build && wrangler deploy",
     "preview": "npm run build && wrangler dev"
   },
   "dependencies": {
-    "@heyputer/puter.js": "^2.3.2",
     "framer-motion": "^12.23.24",
     "lucide-react": "^0.475.0",
     "pdfjs-dist": "4.8.69",
     "react": "18.3.1",
     "react-dom": "18.3.1",
-    "zod": "^3.25.76"
+    "zod": "^3.25.76",
+    "zod-to-json-schema": "^3.24.6"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "^1.35.0",
