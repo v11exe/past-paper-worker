@@ -136,13 +136,13 @@ function questionSourcePageNumbers(question: PastPaperQuestion) {
 }
 
 function relevantQuestionMediaRefs(question: PastPaperQuestion) {
-  const promptMentionsFigure = /\b(figure|diagram|graph|map|source|image|photo|photograph|flowchart)\b/i.test(question.promptText);
+  const promptMentionsFigure = /\b(figure|diagram|graph|map|source|image|photo|photograph|flowchart|table)\b/i.test(question.promptText);
   return question.diagramMediaRefs.filter((ref) => {
     const label = ref.label?.trim() ?? "";
     if (!label || label === "Media reference") return false;
     const kind = String(ref.kind ?? "").toLowerCase();
-    const refMentionsFigure = /\b(figure|diagram|graph|map|source|image|photo|photograph|flowchart)\b/i.test(`${label} ${ref.description ?? ""} ${kind}`);
-    return promptMentionsFigure && refMentionsFigure && kind !== "table";
+    const refMentionsFigure = /\b(figure|diagram|graph|map|source|image|photo|photograph|flowchart|table)\b/i.test(`${label} ${ref.description ?? ""} ${kind}`);
+    return promptMentionsFigure && refMentionsFigure;
   });
 }
 

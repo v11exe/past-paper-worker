@@ -1138,6 +1138,62 @@ describe("processPaperWithAI", () => {
     expect(labels.some((label) => /2\.81|9\(c\)|1\.8|3\.11/.test(label))).toBe(false);
   });
 
+  it("keeps AQA chemistry 2021 cover text out of extracted questions and preserves figure refs", async () => {
+    const pageTexts = await loadPdfPageTexts(testPaperPath("June 2021 QP (3).pdf"));
+    const paper = buildPdfPaper("chem 2021", "Chemistry", pageTexts);
+
+    const output = buildDeterministicProcessedPaperOutput(paper, pageTexts);
+    const labels = output?.questions.map((question) => question.questionNumber) ?? [];
+    const q11 = output?.questions.find((question) => question.questionNumber === "1.1");
+    const q14 = output?.questions.find((question) => question.questionNumber === "1.4");
+    const q21 = output?.questions.find((question) => question.questionNumber === "2.1");
+    const q101 = output?.questions.find((question) => question.questionNumber === "10.1");
+    const q106 = output?.questions.find((question) => question.questionNumber === "10.6");
+
+    expect(output).not.toBeNull();
+    expect(labels).not.toContain("0.1");
+    expect(labels).not.toContain("0.2");
+    expect(labels).not.toContain("0.3");
+    expect(labels).not.toContain("0.4");
+    expect(labels).not.toContain("0.5");
+    expect(labels).not.toContain("0.7");
+    expect(labels).not.toContain("1.95");
+    expect(labels).toContain("10.1");
+    expect(labels).toContain("10.7");
+    expect(q11?.promptText).toMatch(/^This question is about fuels and energy\./);
+    expect(q11?.promptText).toContain("Figure 1 shows the percentage of electricity generated in the UK between 2007 and 2017");
+    expect(q11?.promptText).not.toMatch(/Use the Physics Equations Sheet/i);
+    expect(q11?.promptText).not.toMatch(/For Examiner|Time allowed|Materials|Candidate number|There are no questions printed on this page/i);
+    expect(q11?.mediaRefs.map((ref) => ref.label)).toContain("Figure 1");
+    expect(q14?.promptText).toMatch(/^Solar energy may not be able to replace the generation of electricity from fossil fuels completely\./);
+    expect(q14?.promptText).not.toMatch(/For Examiner|Time allowed|Candidate number|This question is about alkanes/i);
+    expect(q21?.mediaRefs.map((ref) => ref.label)).toEqual(expect.arrayContaining(["Table 1", "Figure 2"]));
+    expect(q21?.promptText).toMatch(/^This question is about alkanes\./);
+    expect(q101?.promptText).toMatch(/^This question is about alkenes and alcohols\./);
+    expect(q106?.promptText).toContain("1.95 kJ");
+  });
+
+  it("keeps AQA physics 2023 numbering stable and retains values like 9.8 N/kg inside the prompt text", async () => {
+    const pageTexts = await loadPdfPageTexts(testPaperPath("June 2023 QP (2).pdf"));
+    const paper = buildPdfPaper("physics 2023", "Physics", pageTexts);
+
+    const output = buildDeterministicProcessedPaperOutput(paper, pageTexts);
+    const labels = output?.questions.map((question) => question.questionNumber) ?? [];
+    const q11 = output?.questions.find((question) => question.questionNumber === "1.1");
+    const q21 = output?.questions.find((question) => question.questionNumber === "2.1");
+    const q41 = output?.questions.find((question) => question.questionNumber === "4.1");
+
+    expect(output).not.toBeNull();
+    expect(labels).toContain("4.1");
+    expect(labels).not.toContain("9.8");
+    expect(labels.every((label) => /^\d+\.\d+$/.test(label))).toBe(true);
+    expect(q11?.promptText).not.toMatch(/Use the Physics Equations Sheet/i);
+    expect(q21?.promptText).toMatch(/^Figure 2 shows the equipment a student used to determine the specific heat capacity of iron\./);
+    expect(q21?.mediaRefs.map((ref) => ref.label)).toContain("Figure 2");
+    expect(q41?.promptText).toContain("9.8 N/kg");
+    expect(q41?.promptText).not.toMatch(/\b9\.8\b.*question/i);
+  });
+
   it("extracts exact OCR mark-scheme sections with the right guidance for supported questions", async () => {
     const pageTexts = await loadPdfPageTexts(testPaperPath("June 2022 QP - Paper 1 OCR Computer Science GCSE (1).pdf"));
     const markSchemePageTexts = await loadPdfPageTexts(testPaperPath("June 2022 MS - Paper 1 OCR Computer Science GCSE (1).pdf"));
