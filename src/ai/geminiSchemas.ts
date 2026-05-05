@@ -19,6 +19,27 @@ function stripUnsupportedJsonSchemaBits(value: unknown): unknown {
   );
 }
 
+const unsupportedGeminiSchemaKeywords = ["$ref", "$defs", "definitions", "anyOf", "oneOf", "allOf", "nullable", "const"] as const;
+
+export function assertGeminiSchemaCompatible(schema: unknown, path = "(root)") {
+  if (Array.isArray(schema)) {
+    schema.forEach((entry, index) => assertGeminiSchemaCompatible(entry, `${path}[${index}]`));
+    return;
+  }
+  if (!schema || typeof schema !== "object") return;
+
+  const record = schema as Record<string, unknown>;
+  for (const keyword of unsupportedGeminiSchemaKeywords) {
+    if (Object.prototype.hasOwnProperty.call(record, keyword)) {
+      throw new Error(`Gemini response schema contains unsupported keyword ${keyword} at ${path}`);
+    }
+  }
+
+  for (const [key, value] of Object.entries(record)) {
+    assertGeminiSchemaCompatible(value, path === "(root)" ? key : `${path}.${key}`);
+  }
+}
+
 function buildGeminiJsonSchema(schemaName: string, schema: Parameters<typeof zodToJsonSchema>[0]) {
   return stripUnsupportedJsonSchemaBits(
     zodToJsonSchema(schema, {

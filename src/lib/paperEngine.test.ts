@@ -797,6 +797,23 @@ describe("markAnswerWithAI", () => {
     expect(wrongCount.awardedMarks).toBe(0);
     expect(wrongCount.rationale).toContain("Expected 16");
   });
+
+  it("rejects malformed Gemini marking JSON with a clear parser error", async () => {
+    window.__AI_TEST_MOCK__ = {
+      ai: {
+        chat: async () => "not valid json",
+      },
+    };
+
+    await expect(
+      markAnswerWithAI(
+        basePaper,
+        { ...question, maxMarks: 1, markSchemeData: { rows: [{ markPoint: "B0", marks: 1 }], evidence: "B0 correct answer only" } },
+        { ...answer, questionId: "q1d", responseText: "B0" } as PastPaperAnswer,
+        1,
+      ),
+    ).rejects.toThrow("AI returned invalid JSON");
+  });
 });
 
 describe("displayQuestionNumberForPaper", () => {

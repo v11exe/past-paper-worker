@@ -89,4 +89,92 @@ describe("handleAiProxyRequest", () => {
     expect(json.text).toContain("[REDACTED");
     expect(hasUnredactedGoogleApiKey(json.text)).toBe(false);
   });
+
+  it("does not send a generated response schema for marking requests", async () => {
+    let parsedBody: Record<string, unknown> | null = null;
+    const response = await handleAiProxyRequest(
+      request({
+        operation: "paper_mark",
+        model: "gemini-2.5-flash-lite",
+        prompt: "Return a marking decision in JSON.",
+      }),
+      { GEMINI_API_KEY: "test-key" },
+      {
+        fetchImpl: async (_input, init) => {
+          parsedBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+          return new Response(
+            JSON.stringify({
+              candidates: [{ finishReason: "STOP", content: { parts: [{ text: JSON.stringify({ awardedMarks: 1, maxMarks: 1, rationale: "Correct.", missingPoints: [], markSchemeEvidence: "B0", markSchemeReference: {}, confidence: 95 }) }] } }],
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        },
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(parsedBody).not.toBeNull();
+    const generationConfig = ((parsedBody ?? {}) as Record<string, unknown>).generationConfig as Record<string, unknown>;
+    expect(generationConfig.responseMimeType).toBe("application/json");
+    expect(generationConfig).not.toHaveProperty("responseJsonSchema");
+    expect(JSON.stringify(parsedBody)).not.toContain("$ref");
+    expect(JSON.stringify(parsedBody)).not.toContain("$defs");
+    expect(JSON.stringify(parsedBody)).not.toContain("definitions");
+  });
+
+  it("does not send a generated response schema for remark smoke-marking requests", async () => {
+    let parsedBody: Record<string, unknown> | null = null;
+    const response = await handleAiProxyRequest(
+      request({
+        operation: "smoke_marking",
+        model: "gemini-2.5-flash-lite",
+        prompt: "Return a marking decision in JSON.",
+      }),
+      { GEMINI_API_KEY: "test-key" },
+      {
+        fetchImpl: async (_input, init) => {
+          parsedBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+          return new Response(
+            JSON.stringify({
+              candidates: [{ finishReason: "STOP", content: { parts: [{ text: JSON.stringify({ awardedMarks: 1, maxMarks: 1, rationale: "Correct.", missingPoints: [], markSchemeEvidence: "B0", markSchemeReference: {}, confidence: 95 }) }] } }],
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        },
+      },
+    );
+
+    expect(response.status).toBe(200);
+    const generationConfig = ((parsedBody ?? {}) as Record<string, unknown>).generationConfig as Record<string, unknown>;
+    expect(generationConfig.responseMimeType).toBe("application/json");
+    expect(generationConfig).not.toHaveProperty("responseJsonSchema");
+    expect(JSON.stringify(parsedBody)).not.toContain("$ref");
+    expect(JSON.stringify(parsedBody)).not.toContain("$defs");
+  });
+
+  it("maps Gemini schema-reference rejections to an internal schema error message", async () => {
+    const response = await handleAiProxyRequest(
+      request({
+        operation: "paper_mark",
+        model: "gemini-2.5-flash-lite",
+        prompt: "Return a marking decision in JSON.",
+      }),
+      { GEMINI_API_KEY: "test-key" },
+      {
+        fetchImpl: async () =>
+          new Response(JSON.stringify({ error: { message: "reference to undefined schema at top-level" } }), {
+            status: 400,
+            headers: { "content-type": "application/json" },
+          }),
+      },
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      error: {
+        message: "Internal Gemini schema error. The marking request used an unsupported response schema.",
+      },
+    });
+  });
 });

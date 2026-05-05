@@ -1,4 +1,3 @@
-import { geminiResponseJsonSchemas } from "../../src/ai/geminiSchemas";
 import {
   aiProxyRequestSchema,
   type AIProxyError,
@@ -71,10 +70,6 @@ function badRequest(operation: AIProxyOperation, message: string, rawPreview?: s
   );
 }
 
-function isStructuredOperation(operation: AIProxyOperation) {
-  return Object.prototype.hasOwnProperty.call(geminiResponseJsonSchemas, operation);
-}
-
 function buildGeminiBody(request: AIProxyRequest) {
   const parts = [
     ...(request.media ?? []).map((item) => ({
@@ -85,14 +80,13 @@ function buildGeminiBody(request: AIProxyRequest) {
     })),
     { text: request.prompt },
   ];
-  const responseJsonSchema = geminiResponseJsonSchemas[request.operation];
+  const expectsJson = ["page_inventory", "question_boundaries", "question_extraction", "mark_scheme_alignment", "paper_mark", "smoke_extraction", "smoke_marking"].includes(request.operation);
   return {
     contents: [{ role: "user", parts }],
     generationConfig: {
-      temperature: request.temperature ?? 0.2,
+      temperature: request.temperature ?? 0,
       ...(request.maxTokens ? { maxOutputTokens: request.maxTokens } : {}),
-      responseMimeType: isStructuredOperation(request.operation) ? "application/json" : "text/plain",
-      ...(responseJsonSchema ? { responseJsonSchema } : {}),
+      responseMimeType: expectsJson ? "application/json" : "text/plain",
     },
   };
 }
@@ -118,6 +112,15 @@ function extractGeminiText(responseJson: Record<string, unknown>) {
 }
 
 function geminiErrorFromStatus(status: number, message: string, rawPreview: string | null) {
+  if (/reference to undefined schema/i.test(message)) {
+    return {
+      type: "provider",
+      message: "Internal Gemini schema error. The marking request used an unsupported response schema.",
+      retryable: false,
+      statusCode: status,
+      rawPreview: rawPreview ?? undefined,
+    } satisfies Partial<AIProxyError>;
+  }
   if (status === 429) {
     return {
       type: "quota",
@@ -172,7 +175,8 @@ async function runGeminiRequest(request: AIProxyRequest, env: ProxyEnv, deps: Pr
       } catch {
         // Leave providerMessage as-is.
       }
-      return failure(request.operation, providerMessage, geminiErrorFromStatus(response.status, providerMessage, rawPreview));
+      const mappedError = geminiErrorFromStatus(response.status, providerMessage, rawPreview);
+      return failure(request.operation, mappedError.message ?? providerMessage, mappedError);
     }
 
     let responseJson: Record<string, unknown>;
