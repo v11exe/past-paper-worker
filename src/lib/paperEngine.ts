@@ -429,6 +429,93 @@ function cleanExamPageTextForParsing(text: string) {
     .trim();
 }
 
+const FRONT_MATTER_SIGNAL_PATTERN =
+  /\b(?:for examiner'?s use|question mark|total|centre number|candidate number|surname|forename|candidate signature|time allowed|materials|instructions|information|advice|answer all questions|use black ink|do not write outside the box|foundation tier|higher tier|turn over|blank page)\b/i;
+const FRONT_MATTER_STRIP_PATTERN =
+  /(?:for examiner'?s use|question mark|total|centre number|candidate number|surname|forename(?:\(s\))?|candidate signature|time allowed|materials|instructions|information|advice|answer all questions|use black ink|do not write outside the box|foundation tier|higher tier|turn over|blank page|gcse\s+[a-z][a-z &/-]+paper\s+\d+[a-z]?|IB\/[A-Z0-9/.-]+)/gi;
+const FORMULA_PAGE_PATTERN = /\b(?:equation sheet|formulae? sheet|data sheet|periodic table)\b/i;
+const AQA_QUESTION_MARKER_PATTERN = /(?:0\s*)?(\d{1,2})\s*\.\s*(\d{1,2})/g;
+
+type DeterministicPageRole = "cover" | "instructions" | "questions" | "blank" | "formula" | "mark_scheme" | "other";
+
+type PreparedDeterministicPage = {
+  pageNumber: number;
+  role: DeterministicPageRole;
+  text: string;
+  ignoredFrontMatter: string | null;
+  firstQuestionMarker: string | null;
+};
+
+function stripAqaInstructionFragments(text: string) {
+  return text
+    .replace(FRONT_MATTER_STRIP_PATTERN, " ")
+    .replace(/\b(?:Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|Monday)\s+\d{1,2}\s+[A-Z][a-z]+\s+20\d{2}\b/gi, " ")
+    .replace(/\b(?:afternoon|morning)\b/gi, " ")
+    .replace(/\b(?:please write clearly in block capitals|fill in the boxes at the top of this page)\b/gi, " ")
+    .replace(/^\s*0\s*\d{1,2}\s+/i, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function findFirstAqaQuestionMarker(text: string) {
+  for (const match of text.matchAll(AQA_QUESTION_MARKER_PATTERN)) {
+    const index = match.index ?? 0;
+    const marker = `${Number(match[1])}.${Number(match[2])}`;
+    const suffix = text.slice(index, Math.min(text.length, index + 320));
+    const hasMarksNearby = /\[\s*\d{1,2}\s*marks?\s*]|\[\s*\d{1,2}\s*]/i.test(suffix);
+    const hasQuestionStem =
+      /(?:this question is about|where|what|which|describe|explain|calculate|give|state|complete|figure\s+\d+\s+shows|tick one box|tick two boxes|tick one|identify|suggest|compare|evaluate)/i.test(
+        suffix,
+      ) || /[A-Z][^.!?]{12,}[?.]/.test(suffix);
+    if (!hasMarksNearby && !hasQuestionStem) continue;
+    return { index, marker };
+  }
+  return null;
+}
+
+function classifyDeterministicPage(page: PagePromptContext, style: ReturnType<typeof detectDeterministicPaperStyle>): PreparedDeterministicPage {
+  const cleaned = cleanExamPageTextForParsing(page.text);
+  if (!cleaned) return { pageNumber: page.pageNumber, role: "blank", text: "", ignoredFrontMatter: null, firstQuestionMarker: null };
+  if (FORMULA_PAGE_PATTERN.test(cleaned)) {
+    return { pageNumber: page.pageNumber, role: "formula", text: cleaned, ignoredFrontMatter: null, firstQuestionMarker: null };
+  }
+
+  if (style === "aqa_dotted") {
+    const marker = findFirstAqaQuestionMarker(cleaned);
+    const hasFrontMatterSignals = FRONT_MATTER_SIGNAL_PATTERN.test(cleaned) || /GCSE\s+[A-Z]/i.test(cleaned);
+    if (!marker) {
+      const role = hasFrontMatterSignals ? (page.pageNumber === 1 ? "cover" : "instructions") : "other";
+      return { pageNumber: page.pageNumber, role, text: role === "other" ? cleaned : "", ignoredFrontMatter: role === "other" ? null : cleaned.slice(0, 220), firstQuestionMarker: null };
+    }
+
+    const prefix = cleaned.slice(0, marker.index).trim();
+    if (prefix && (hasFrontMatterSignals || FRONT_MATTER_SIGNAL_PATTERN.test(prefix))) {
+      const preservedPrefix = stripAqaInstructionFragments(prefix);
+      return {
+        pageNumber: page.pageNumber,
+        role: "questions",
+        text: joinPromptParts(preservedPrefix, cleaned.slice(marker.index).trim()),
+        ignoredFrontMatter: prefix.slice(0, 240),
+        firstQuestionMarker: marker.marker,
+      };
+    }
+
+    return {
+      pageNumber: page.pageNumber,
+      role: "questions",
+      text: cleaned,
+      ignoredFrontMatter: null,
+      firstQuestionMarker: marker.marker,
+    };
+  }
+
+  return { pageNumber: page.pageNumber, role: "questions", text: cleaned, ignoredFrontMatter: null, firstQuestionMarker: null };
+}
+
+function prepareDeterministicPages(pages: PagePromptContext[], style: ReturnType<typeof detectDeterministicPaperStyle>) {
+  return pages.map((page) => classifyDeterministicPage(page, style));
+}
+
 function parseVisiblePaperTotalMarks(coverText: string) {
   const match = coverText.match(/total marks?\s+(?:for this paper\s+)?(?:is|are)\s+(\d{1,3})/i) ?? coverText.match(/there are\s+(\d{1,3})\s+marks available/i);
   return match ? Number(match[1]) : null;
@@ -456,6 +543,12 @@ function detectDeterministicPaperStyle(pages: PagePromptContext[]) {
   const combined = pages.map((page) => page.text).join(" ");
   const aqaDottedMatches = combined.match(/\b0\s*\d{1,2}\s*\.\s*\d{1,2}\b/g) ?? [];
   if (aqaDottedMatches.length >= 6) return "aqa_dotted" as const;
+  if (
+    aqaDottedMatches.length >= 1 &&
+    /\b(?:for examiner'?s use|candidate number|question mark|time allowed|foundation tier|higher tier|answer all questions|materials|instructions)\b/i.test(combined)
+  ) {
+    return "aqa_dotted" as const;
+  }
   if (/\bOCR\b/i.test(pages[0]?.text ?? "")) return "ocr_hierarchical" as const;
   const ocrPatternMatches = combined.match(/\([a-z]\)\s+[A-Z]/g) ?? [];
   if (ocrPatternMatches.length >= 5) return "ocr_hierarchical" as const;
@@ -615,7 +708,8 @@ function extractOcrStyleQuestionsFromPages(pages: PagePromptContext[]) {
   for (const page of pages) {
     const pageText = cleanExamPageTextForParsing(page.text);
     if (!pageText) continue;
-    const tokenPattern = /\[\s*(\d{1,2})\s*(?:marks?)?\s*]|(?<![a-z])\(([ivx]+)\)(?![a-z])|(?<![a-z])\(([a-hj-z])\)(?![a-z])|\b(\d{1,2}\*?)(?=\s+[A-Z])/gi;
+    const tokenPattern =
+      /\[\s*(\d{1,2})\s*(?:marks?)?\s*]|(?<![a-z])\(([ivx]+)\)(?![a-z])|(?:^|\s)(\d{1,2}\*?)\s*\(([a-hj-z])\)(?![a-z])|(?<![a-z])\(([a-hj-z])\)(?![a-z])|\b(\d{1,2}\*?)(?=\s+[A-Z])/gi;
     let cursor = 0;
 
     for (const match of pageText.matchAll(tokenPattern)) {
@@ -623,9 +717,9 @@ function extractOcrStyleQuestionsFromPages(pages: PagePromptContext[]) {
       appendPrompt(pageText.slice(cursor, index), page.pageNumber);
       cursor = index + match[0].length;
 
-      if (match[4]) {
+      if (match[6]) {
         if (!isLikelyOcrMainQuestionStart(pageText, index)) continue;
-        currentMain = match[4];
+        currentMain = match[6];
         currentLetter = null;
         currentRoman = null;
         activeLevel = "main";
@@ -638,10 +732,25 @@ function extractOcrStyleQuestionsFromPages(pages: PagePromptContext[]) {
         continue;
       }
 
-      if (match[3]) {
+      if (match[3] && match[4]) {
+        if (!isLikelyOcrMainQuestionStart(pageText, index)) continue;
+        currentMain = match[3];
+        currentLetter = match[4].toLowerCase();
+        currentRoman = null;
+        activeLevel = "letter";
+        mainStem = "";
+        letterStem = "";
+        currentPrompt = "";
+        mainStemPages = new Set<number>();
+        letterStemPages = new Set<number>();
+        currentPromptPages = new Set<number>();
+        continue;
+      }
+
+      if (match[5]) {
         if (!currentMain) continue;
         if (activeLevel === "main") absorbCurrentIntoMainStem();
-        currentLetter = match[3].toLowerCase();
+        currentLetter = match[5].toLowerCase();
         currentRoman = null;
         activeLevel = "letter";
         letterStem = "";
@@ -676,6 +785,7 @@ function cleanAqaQuestionNumber(main: string, sub: string) {
 
 function extractAqaDottedQuestionsFromPages(pages: PagePromptContext[]) {
   const questions: QuestionExtractionOutput["questions"] = [];
+  const preparedPages = prepareDeterministicPages(pages, "aqa_dotted");
   let currentQuestionNumber: string | null = null;
   let currentPrompt = "";
   let currentPromptPages = new Set<number>();
@@ -713,8 +823,9 @@ function extractAqaDottedQuestionsFromPages(pages: PagePromptContext[]) {
     pendingPrefixPages = new Set<number>();
   };
 
-  for (const page of pages) {
-    const pageText = cleanExamPageTextForParsing(page.text);
+  for (const page of preparedPages) {
+    if (page.role === "cover" || page.role === "instructions" || page.role === "blank") continue;
+    const pageText = page.text;
     if (!pageText) continue;
     const tokenPattern = /(?:0\s*)?(\d{1,2})\s*\.\s*(\d{1,2})|\[\s*(\d{1,2})\s*(?:marks?)?\s*]/gi;
     let cursor = 0;
@@ -729,7 +840,7 @@ function extractAqaDottedQuestionsFromPages(pages: PagePromptContext[]) {
       if (match[1] && match[2]) {
         const nextQuestionNumber = cleanAqaQuestionNumber(match[1], match[2]);
         const main = nextQuestionNumber.split(".")[0];
-        const prefix = normalizeDeterministicPromptText(pendingPrefix);
+        const prefix = normalizeDeterministicPromptText(stripAqaInstructionFragments(pendingPrefix));
         if (prefix && !mainContexts.has(main) && /(?:this question is about|figure\s+\d+\s+shows|the diagram|the graph)/i.test(prefix)) {
           mainContexts.set(main, prefix);
         }
@@ -1860,10 +1971,24 @@ export async function processPaperWithAI(paper: PastPaper, onProgress: (update: 
     let output = buildDeterministicProcessedPaperOutput(paper, paperPages);
 
     if (output) {
+      const detectedStyle = detectDeterministicPaperStyle(paperPages);
+      const preparedPages = detectedStyle ? prepareDeterministicPages(paperPages, detectedStyle) : [];
       reporter.enterStage("building page inventory", 28, "Using deterministic parser for readable paper text", {
         pages: paperPages.length,
-        detectedStyle: detectDeterministicPaperStyle(paperPages),
+        detectedStyle,
+        pageTypes: preparedPages.map((page) => `p${page.pageNumber}:${page.role}`).join(" / "),
       });
+      preparedPages
+        .filter((page) => Boolean(page.ignoredFrontMatter))
+        .forEach((page) =>
+          reporter.log("building page inventory", "warn", "Removed front matter before deterministic question parsing", {
+            pageNumber: page.pageNumber,
+            detectedPageType: page.role,
+            chosenFirstQuestionMarker: page.firstQuestionMarker,
+            ignoredFrontMatterSnippet: page.ignoredFrontMatter,
+            warning: "question_text_contains_cover_instructions",
+          }),
+        );
       reporter.completeStage("building page inventory");
 
       reporter.enterStage("identifying questions", 42, "Recovered ordered question boundaries from readable page text", {

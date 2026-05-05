@@ -1080,6 +1080,7 @@ describe("processPaperWithAI", () => {
 
     const output = buildDeterministicProcessedPaperOutput(paper, pageTexts);
     const labels = output?.questions.map((question) => question.questionNumber) ?? [];
+    const firstPrompt = output?.questions[0]?.promptText ?? "";
 
     expect(output).not.toBeNull();
     expect(output?.totalMarks).toBe(100);
@@ -1090,6 +1091,51 @@ describe("processPaperWithAI", () => {
     expect(labels).toContain("2.1");
     expect(labels.every((label) => /^\d+\.\d+$/.test(label))).toBe(true);
     expect(new Set(labels).size).toBe(labels.length);
+    expect(firstPrompt).toMatch(/^This question is about the cell cycle\./);
+    expect(firstPrompt).toContain("Chromosomes are copied during the cell cycle.");
+    expect(firstPrompt).toContain("Where are chromosomes found?");
+    expect(firstPrompt).not.toMatch(/For Examiner|Question Mark|TOTAL|Time allowed|Materials|Instructions|Centre number|Candidate number|Surname|Forename/i);
+  });
+
+  it("strips AQA front-cover instructions when the first valid dotted question starts after them", () => {
+    const pageTexts = [
+      {
+        pageNumber: 1,
+        text: "For Examiner's Use Question Mark TOTAL Time allowed: 1 hour 45 minutes Materials Instructions Answer all questions Centre number Candidate number Surname Forename GCSE BIOLOGY Foundation Tier",
+        charCount: 173,
+        hasScreenshot: false as const,
+      },
+      {
+        pageNumber: 2,
+        text: "Do not write outside the box 0 1 This question is about the cell cycle. 0 1 . 1 Chromosomes are copied during the cell cycle. Where are chromosomes found? [1 mark]",
+        charCount: 164,
+        hasScreenshot: false as const,
+      },
+    ];
+    const paper = buildPdfPaper("bio front matter", "Biology", pageTexts);
+
+    const output = buildDeterministicProcessedPaperOutput(paper, pageTexts);
+
+    expect(output).not.toBeNull();
+    expect(output?.questions[0]?.questionNumber).toBe("1.1");
+    expect(output?.questions[0]?.promptText).toBe(
+      "This question is about the cell cycle. Chromosomes are copied during the cell cycle. Where are chromosomes found?",
+    );
+  });
+
+  it("processes the real OCR 2024 computer science paper without impossible numbering regressions", async () => {
+    const pageTexts = await loadPdfPageTexts(testPaperPath("June 2024 QP - Paper 1 OCR Computer Science GCSE.pdf"));
+    const paper = buildPdfPaper("comp sci p1 2024", "Computer Science", pageTexts);
+
+    const processed = await processPaperWithAI(paper, () => undefined, { fallbackModels: [] });
+    const labels = processed.questions.map((question) => question.questionNumber);
+
+    expect(processed.totalMarks).toBeGreaterThan(0);
+    expect(processed.durationMinutes).toBeGreaterThan(0);
+    expect(processed.questions.reduce((sum, question) => sum + question.maxMarks, 0)).toBe(processed.totalMarks);
+    expect(new Set(labels).size).toBe(labels.length);
+    expect(labels.every((label) => /^(?:\d+\*?|\d+\([a-z]+\)|\d+\([a-z]+\)\([ivx]+\))$/i.test(label))).toBe(true);
+    expect(labels.some((label) => /2\.81|9\(c\)|1\.8|3\.11/.test(label))).toBe(false);
   });
 
   it("extracts exact OCR mark-scheme sections with the right guidance for supported questions", async () => {

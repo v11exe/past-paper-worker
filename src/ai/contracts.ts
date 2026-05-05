@@ -42,7 +42,6 @@ export const aiProxyRequestSchema = z.object({
         dataBase64: z.string().min(1).max(9_000_000),
       }),
     )
-    .max(4)
     .default([]),
 });
 
