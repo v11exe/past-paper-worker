@@ -2,6 +2,7 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "past-paper-worker",
   "compatibility_date": "2026-05-05",
+  "pages_build_output_dir": "dist",
   "observability": {
     "enabled": true
   },
