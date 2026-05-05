@@ -3,17 +3,27 @@ const { expect, test } = require("@playwright/test");
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     window.localStorage.clear();
-    window.__PUTER_TEST_MOCK__ = {
-      auth: {
-        isSignedIn: () => true,
-      },
-      ai: {
-        chat: async (prompt) => {
-          if (prompt.includes("Give 3 helpful suggestions")) {
-            return "1. Process the paper first. 2. Answer every question. 3. Review missing points after marking.";
-          }
-          if (prompt.includes("Build a compact inventory")) {
-            return JSON.stringify({
+    window.__AI_TEST_MOCK__ = {
+      respond: async (request) => {
+        if (request.operation === "smoke_ping") {
+          return { ok: true, operation: request.operation, model: request.model, text: "{\"provider\":\"gemini\",\"keyConfigured\":true}" };
+        }
+        if (request.operation === "smoke_diagnostics") {
+          return { ok: true, operation: request.operation, model: request.model, text: "{\"example\":\"[REDACTED_GOOGLE_API_KEY]\"}" };
+        }
+        if (request.operation === "smoke_text" || request.operation === "suggestions") {
+          const text =
+            request.operation === "smoke_text"
+              ? "ok"
+              : "1. Process the paper first. 2. Answer every question. 3. Review missing points after marking.";
+          return { ok: true, operation: request.operation, model: request.model, text };
+        }
+        if (request.operation === "page_inventory") {
+          return {
+            ok: true,
+            operation: request.operation,
+            model: request.model,
+            text: JSON.stringify({
               title: "Mock GCSE Paper",
               year: 2025,
               series: "June",
@@ -21,10 +31,15 @@ test.beforeEach(async ({ page }) => {
               totalMarks: 2,
               durationMinutes: 1,
               pages: [{ pageNumber: 1, role: "questions", questionHints: ["1"], visualContent: ["Table 1"], textSummary: "One short question.", needsImage: true }],
-            });
-          }
-          if (prompt.includes("Identify the ordered question boundaries")) {
-            return JSON.stringify({
+            }),
+          };
+        }
+        if (request.operation === "question_boundaries") {
+          return {
+            ok: true,
+            operation: request.operation,
+            model: request.model,
+            text: JSON.stringify({
               questions: [
                 {
                   questionNumber: "1",
@@ -38,10 +53,43 @@ test.beforeEach(async ({ page }) => {
                   mediaRefs: ["Table 1"],
                 },
               ],
-            });
-          }
-          if (prompt.includes("Align mark-scheme content")) {
-            return JSON.stringify({
+            }),
+          };
+        }
+        if (request.operation === "question_extraction" || request.operation === "smoke_extraction") {
+          return {
+            ok: true,
+            operation: request.operation,
+            model: request.model,
+            text: JSON.stringify({
+              questions: [
+                {
+                  questionNumber: "1",
+                  parentQuestionNumber: null,
+                  numberingPath: ["1"],
+                  promptText: "Describe what is shown in Table 1.",
+                  maxMarks: 2,
+                  responseType: "short_text",
+                  originalFormat: "text",
+                  convertedFormat: null,
+                  originalContent: { evidenceSnippet: "Describe what is shown in Table 1.", imagePageReferences: [1], confidence: 92, extractionWarnings: [] },
+                  convertedContent: {},
+                  options: [],
+                  pageReferences: [1],
+                  mediaRefs: ["Table 1"],
+                  markSchemeRef: null,
+                  markSchemeData: null,
+                },
+              ],
+            }),
+          };
+        }
+        if (request.operation === "mark_scheme_alignment") {
+          return {
+            ok: true,
+            operation: request.operation,
+            model: request.model,
+            text: JSON.stringify({
               alignments: [
                 {
                   questionNumber: "1",
@@ -49,10 +97,15 @@ test.beforeEach(async ({ page }) => {
                   markSchemeData: { points: ["Describes the visible table", "Uses the table label accurately"] },
                 },
               ],
-            });
-          }
-          if (prompt.includes("Mark this answer")) {
-            return JSON.stringify({
+            }),
+          };
+        }
+        if (request.operation === "paper_mark" || request.operation === "smoke_marking") {
+          return {
+            ok: true,
+            operation: request.operation,
+            model: request.model,
+            text: JSON.stringify({
               awardedMarks: 1,
               maxMarks: 2,
               rationale: "The answer identifies one valid marking point.",
@@ -60,31 +113,10 @@ test.beforeEach(async ({ page }) => {
               markSchemeEvidence: "Award 1 mark for describing the visible table.",
               markSchemeReference: { point: "table" },
               confidence: 90,
-            });
-          }
-          return JSON.stringify({
-            questions: [
-              {
-                questionNumber: "1",
-                parentQuestionNumber: null,
-                numberingPath: ["1"],
-                promptText: "Describe what is shown in Table 1.",
-                maxMarks: 2,
-                responseType: "short_text",
-                originalFormat: "text",
-                convertedFormat: null,
-                originalContent: { evidenceSnippet: "Describe what is shown in Table 1.", imagePageReferences: [1], confidence: 92, extractionWarnings: [] },
-                convertedContent: {},
-                options: [],
-                pageReferences: [1],
-                mediaRefs: ["Table 1"],
-                markSchemeRef: null,
-                markSchemeData: null,
-              },
-            ],
-          });
-        },
-        listModels: async () => [{ id: "gpt-5.4-nano", aliases: [] }],
+            }),
+          };
+        }
+        return { ok: false, operation: request.operation, model: request.model, error: { type: "provider", message: `Unexpected operation: ${request.operation}`, retryable: false } };
       },
     };
   });
@@ -133,7 +165,7 @@ test("upload, process, take, and AI mark a paper", async ({ page }) => {
   await expect(page.getByText("Answered 1")).toBeVisible();
   await page.getByRole("button", { name: "AI mark" }).click();
 
-  await expect(page.getByText("Attempt marked with Puter AI.")).toBeVisible();
+  await expect(page.getByText("Attempt marked with Gemini AI.")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Review" })).toBeVisible();
   await expect(page.locator(".paper-mark-box strong", { hasText: "1/2" })).toBeVisible();
   await expect(page.getByText("The answer identifies one valid marking point.")).toBeVisible();

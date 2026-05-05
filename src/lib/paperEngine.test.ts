@@ -10,9 +10,9 @@ import {
   isAnswerAttempted,
   mapProcessedOutput,
   displayQuestionNumberForPaper,
-  markAnswerWithPuter,
+  markAnswerWithAI,
   pageContextsForAsset,
-  processPaperWithPuter,
+  processPaperWithAI,
   questionSupportIssue,
   startAttempt,
   supportedTotalMarksForPaper,
@@ -385,9 +385,9 @@ describe("pageContextsForAsset", () => {
   });
 });
 
-describe("markAnswerWithPuter", () => {
+describe("markAnswerWithAI", () => {
   afterEach(() => {
-    window.__PUTER_TEST_MOCK__ = undefined;
+    window.__AI_TEST_MOCK__ = undefined;
   });
 
   const question = {
@@ -414,11 +414,11 @@ describe("markAnswerWithPuter", () => {
   } as PastPaperAnswer;
 
   it("refuses to mark when no markSchemeData exists", async () => {
-    await expect(markAnswerWithPuter(basePaper, question, answer, 1)).rejects.toThrow("no aligned mark scheme");
+    await expect(markAnswerWithAI(basePaper, question, answer, 1)).rejects.toThrow("no aligned mark scheme");
   });
 
   it("marks when aligned markSchemeData exists", async () => {
-    window.__PUTER_TEST_MOCK__ = {
+    window.__AI_TEST_MOCK__ = {
       ai: {
         chat: async () =>
           JSON.stringify({
@@ -432,12 +432,12 @@ describe("markAnswerWithPuter", () => {
           }),
       },
     };
-    const mark = await markAnswerWithPuter(basePaper, { ...question, markSchemeData: { points: ["Visible mark point."] } }, answer, 1);
+    const mark = await markAnswerWithAI(basePaper, { ...question, markSchemeData: { points: ["Visible mark point."] } }, answer, 1);
     expect(mark.awardedMarks).toBe(1);
   });
 
   it("recovers readable mark-scheme text during marking when processed questions have no stored alignment", async () => {
-    window.__PUTER_TEST_MOCK__ = {
+    window.__AI_TEST_MOCK__ = {
       ai: {
         chat: async (prompt: string | unknown[]) => {
           const promptText = String(prompt);
@@ -488,14 +488,14 @@ describe("markAnswerWithPuter", () => {
       ],
     } as PastPaper;
 
-    const mark = await markAnswerWithPuter(paperWithReadableMarkScheme, q1c, { ...answer, questionId: q1c.id, responseText: "47" } as PastPaperAnswer, 1);
+    const mark = await markAnswerWithAI(paperWithReadableMarkScheme, q1c, { ...answer, questionId: q1c.id, responseText: "47" } as PastPaperAnswer, 1);
 
     expect(mark.awardedMarks).toBe(1);
     expect(mark.maxMarks).toBe(2);
   });
 
   it("uses the parent mark-scheme section for lettered subparts so the marker can choose the correct row", async () => {
-    window.__PUTER_TEST_MOCK__ = {
+    window.__AI_TEST_MOCK__ = {
       ai: {
         chat: async (prompt: string | unknown[]) => {
           const promptText = String(prompt);
@@ -553,7 +553,7 @@ describe("markAnswerWithPuter", () => {
       ],
     } as PastPaper;
 
-    const mark = await markAnswerWithPuter(paperWithQuestionSection, q3e, { ...answer, questionId: "q3e", responseText: "It prevents private data being read." } as PastPaperAnswer, 1);
+    const mark = await markAnswerWithAI(paperWithQuestionSection, q3e, { ...answer, questionId: "q3e", responseText: "It prevents private data being read." } as PastPaperAnswer, 1);
 
     expect(mark.awardedMarks).toBe(1);
   });
@@ -568,7 +568,7 @@ describe("markAnswerWithPuter", () => {
   });
 
   it("normalizes common marking response shape drift instead of rejecting the mark", async () => {
-    window.__PUTER_TEST_MOCK__ = {
+    window.__AI_TEST_MOCK__ = {
       ai: {
         chat: async () =>
           JSON.stringify({
@@ -582,7 +582,7 @@ describe("markAnswerWithPuter", () => {
       },
     };
 
-    const mark = await markAnswerWithPuter(basePaper, { ...question, markSchemeData: { points: ["Visible mark point."] } }, answer, 1);
+    const mark = await markAnswerWithAI(basePaper, { ...question, markSchemeData: { points: ["Visible mark point."] } }, answer, 1);
 
     expect(mark.awardedMarks).toBe(1);
     expect(mark.markSchemeEvidence).toBe("visible mark point; allow equivalent wording");
@@ -590,7 +590,7 @@ describe("markAnswerWithPuter", () => {
   });
 
   it("clamps impossible awarded marks to the question maximum", async () => {
-    window.__PUTER_TEST_MOCK__ = {
+    window.__AI_TEST_MOCK__ = {
       ai: {
         chat: async () =>
           JSON.stringify({
@@ -605,14 +605,14 @@ describe("markAnswerWithPuter", () => {
       },
     };
 
-    const mark = await markAnswerWithPuter(basePaper, { ...question, maxMarks: 1, markSchemeData: { points: ["Visible mark point."] } }, answer, 1);
+    const mark = await markAnswerWithAI(basePaper, { ...question, maxMarks: 1, markSchemeData: { points: ["Visible mark point."] } }, answer, 1);
 
     expect(mark.awardedMarks).toBe(1);
     expect(mark.maxMarks).toBe(1);
   });
 
   it("uses display numbering to find the correct mark-scheme section for simple reset question numbers", async () => {
-    window.__PUTER_TEST_MOCK__ = {
+    window.__AI_TEST_MOCK__ = {
       ai: {
         chat: async (prompt: string | unknown[]) => {
           expect(typeof prompt).toBe("string");
@@ -654,14 +654,14 @@ describe("markAnswerWithPuter", () => {
     } as PastPaper;
     const q2Answer = { ...answer, questionId: "q2", responseText: "Gene" } as PastPaperAnswer;
 
-    const mark = await markAnswerWithPuter(paperWithMarkScheme, q2, q2Answer, 1);
+    const mark = await markAnswerWithAI(paperWithMarkScheme, q2, q2Answer, 1);
 
     expect(displayQuestionNumberForPaper(paperWithMarkScheme, q2)).toBe("1.2");
     expect(mark.awardedMarks).toBe(1);
   });
 
   it("prefers already aligned mark-scheme data over display-number text windows", async () => {
-    window.__PUTER_TEST_MOCK__ = {
+    window.__AI_TEST_MOCK__ = {
       ai: {
         chat: async (prompt: string | unknown[]) => {
           const promptText = String(prompt);
@@ -701,13 +701,13 @@ describe("markAnswerWithPuter", () => {
       ],
     } as PastPaper;
 
-    const mark = await markAnswerWithPuter(paperWithMisleadingText, q2, { ...answer, questionId: "q2", responseText: "Gene" } as PastPaperAnswer, 1);
+    const mark = await markAnswerWithAI(paperWithMisleadingText, q2, { ...answer, questionId: "q2", responseText: "Gene" } as PastPaperAnswer, 1);
 
     expect(mark.awardedMarks).toBe(1);
   });
 
   it("falls back to existing aligned mark-scheme data when display numbering is only a UI label", async () => {
-    window.__PUTER_TEST_MOCK__ = {
+    window.__AI_TEST_MOCK__ = {
       ai: {
         chat: async (prompt: string | unknown[]) => {
           const promptText = String(prompt);
@@ -745,13 +745,13 @@ describe("markAnswerWithPuter", () => {
       ],
     } as PastPaper;
 
-    const mark = await markAnswerWithPuter(paperWithUnmatchedScheme, q2, { ...answer, questionId: "q2" } as PastPaperAnswer, 1);
+    const mark = await markAnswerWithAI(paperWithUnmatchedScheme, q2, { ...answer, questionId: "q2" } as PastPaperAnswer, 1);
 
     expect(mark.awardedMarks).toBe(1);
   });
 
   it("throws a marking error when the recovered mark scheme still does not match the question after retry", async () => {
-    window.__PUTER_TEST_MOCK__ = {
+    window.__AI_TEST_MOCK__ = {
       ai: {
         chat: async () =>
           JSON.stringify({
@@ -767,7 +767,7 @@ describe("markAnswerWithPuter", () => {
     };
 
     await expect(
-      markAnswerWithPuter(
+      markAnswerWithAI(
         basePaper,
         { ...question, maxMarks: 1, markSchemeData: { rows: [{ markPoint: "CPU", marks: 1 }], evidence: "CPU" } },
         { ...answer, responseText: "RAM" } as PastPaperAnswer,
@@ -783,10 +783,10 @@ describe("markAnswerWithPuter", () => {
     const q1d = { ...question, id: "q1d", questionNumber: "1(d)", maxMarks: 1, promptText: "Convert to hexadecimal.", markSchemeData: exactRow } as PastPaperQuestion;
     const q1e = { ...question, id: "q1e", questionNumber: "1(e)", maxMarks: 1, promptText: "Identify how many unique values.", markSchemeData: numericRow } as PastPaperQuestion;
 
-    const markedHex = await markAnswerWithPuter(basePaper, q1d, { ...answer, questionId: "q1d", responseText: "1011 = 11 = B 0000 = 0 = 0 B0 is the answer" } as PastPaperAnswer, 1);
-    const markedCount = await markAnswerWithPuter(basePaper, q1e, { ...answer, questionId: "q1e", responseText: "16" } as PastPaperAnswer, 1);
-    const wrongHex = await markAnswerWithPuter(basePaper, q1d, { ...answer, questionId: "q1d", responseText: "B1" } as PastPaperAnswer, 1);
-    const wrongCount = await markAnswerWithPuter(basePaper, q1e, { ...answer, questionId: "q1e", responseText: "2, either it is a 0 or a 1" } as PastPaperAnswer, 1);
+    const markedHex = await markAnswerWithAI(basePaper, q1d, { ...answer, questionId: "q1d", responseText: "1011 = 11 = B 0000 = 0 = 0 B0 is the answer" } as PastPaperAnswer, 1);
+    const markedCount = await markAnswerWithAI(basePaper, q1e, { ...answer, questionId: "q1e", responseText: "16" } as PastPaperAnswer, 1);
+    const wrongHex = await markAnswerWithAI(basePaper, q1d, { ...answer, questionId: "q1d", responseText: "B1" } as PastPaperAnswer, 1);
+    const wrongCount = await markAnswerWithAI(basePaper, q1e, { ...answer, questionId: "q1e", responseText: "2, either it is a 0 or a 1" } as PastPaperAnswer, 1);
 
     expect(markedHex.awardedMarks).toBe(1);
     expect(markedHex.markSchemeEvidence).toBe("B0");
@@ -833,13 +833,13 @@ describe("displayQuestionNumberForPaper", () => {
   });
 });
 
-describe("processPaperWithPuter", () => {
+describe("processPaperWithAI", () => {
   afterEach(() => {
-    window.__PUTER_TEST_MOCK__ = undefined;
+    window.__AI_TEST_MOCK__ = undefined;
   });
 
   it("fails clearly for image-only papers when the image call fails", async () => {
-    window.__PUTER_TEST_MOCK__ = {
+    window.__AI_TEST_MOCK__ = {
       ai: {
         chat: async (_prompt, media) => {
           if (Array.isArray(media) && media.length) throw new Error("image input unsupported");
@@ -879,11 +879,11 @@ describe("processPaperWithPuter", () => {
       ],
     } as PastPaper;
 
-    await expect(processPaperWithPuter(imageOnlyPaper, () => undefined)).rejects.toThrow("Image input failed");
+    await expect(processPaperWithAI(imageOnlyPaper, () => undefined)).rejects.toThrow("Image input failed");
   });
 
   it("retries text-only when images fail but readable text exists", async () => {
-    window.__PUTER_TEST_MOCK__ = {
+    window.__AI_TEST_MOCK__ = {
       ai: {
         chat: async (prompt, media) => {
           if (Array.isArray(media) && media.length) throw new Error("image input unsupported");
@@ -943,14 +943,14 @@ describe("processPaperWithPuter", () => {
       ],
     } as PastPaper;
 
-    const processed = await processPaperWithPuter(textRichPaper, () => undefined, { fallbackModels: [] });
+    const processed = await processPaperWithAI(textRichPaper, () => undefined, { fallbackModels: [] });
 
     expect(processed.processingStatus).toBe("ready");
     expect(processed.questions).toHaveLength(1);
   });
 
   it("repairs an empty first subpart when the model put the visible prompt on its parent container", async () => {
-    window.__PUTER_TEST_MOCK__ = {
+    window.__AI_TEST_MOCK__ = {
       ai: {
         chat: async (prompt) => {
           const text = String(prompt);
@@ -1005,7 +1005,7 @@ describe("processPaperWithPuter", () => {
       ],
     } as PastPaper;
 
-    const processed = await processPaperWithPuter(textRichPaper, () => undefined, { fallbackModels: [] });
+    const processed = await processPaperWithAI(textRichPaper, () => undefined, { fallbackModels: [] });
 
     expect(processed.processingStatus).toBe("ready");
     expect(processed.questions).toHaveLength(1);
@@ -1017,7 +1017,7 @@ describe("processPaperWithPuter", () => {
     const pageTexts = await loadPdfPageTexts(testPaperPath("June 2022 QP - Paper 1 OCR Computer Science GCSE (1).pdf"));
     const paper = buildPdfPaper("comp sci p1 2022", "Computer Science", pageTexts);
 
-    const processed = await processPaperWithPuter(paper, () => undefined, { fallbackModels: [] });
+    const processed = await processPaperWithAI(paper, () => undefined, { fallbackModels: [] });
     const labels = processed.questions.map((question) => question.questionNumber);
 
     expect(processed.totalMarks).toBe(80);
@@ -1080,7 +1080,7 @@ describe("processPaperWithPuter", () => {
     const markSchemePageTexts = await loadPdfPageTexts(testPaperPath("June 2022 MS - Paper 1 OCR Computer Science GCSE (1).pdf"));
     const paper = buildPdfPaperWithMarkScheme("comp sci p1 2022", "Computer Science", pageTexts, markSchemePageTexts);
 
-    const processed = await processPaperWithPuter(paper, () => undefined, { fallbackModels: [] });
+    const processed = await processPaperWithAI(paper, () => undefined, { fallbackModels: [] });
     const byNumber = new Map(processed.questions.map((question) => [question.questionNumber, question] as const));
     const q1c = byNumber.get("1(c)");
     const q3e = byNumber.get("3(e)");
@@ -1114,12 +1114,12 @@ describe("processPaperWithPuter", () => {
     const pageTexts = await loadPdfPageTexts(testPaperPath("June 2022 QP - Paper 1 OCR Computer Science GCSE (1).pdf"));
     const markSchemePageTexts = await loadPdfPageTexts(testPaperPath("June 2022 MS - Paper 1 OCR Computer Science GCSE (1).pdf"));
     const paper = buildPdfPaperWithMarkScheme("comp sci p1 2022", "Computer Science", pageTexts, markSchemePageTexts);
-    const processed = await processPaperWithPuter(paper, () => undefined, { fallbackModels: [] });
+    const processed = await processPaperWithAI(paper, () => undefined, { fallbackModels: [] });
     const q3f = processed.questions.find((question) => question.questionNumber === "3(f)");
     if (!q3f) throw new Error("Expected Q3(f) to exist in the processed OCR paper.");
 
     const seenModels: string[] = [];
-    window.__PUTER_TEST_MOCK__ = {
+    window.__AI_TEST_MOCK__ = {
       ai: {
         chat: async (prompt: string | unknown[], config?: unknown) => {
           const promptText = String(prompt);
@@ -1128,7 +1128,7 @@ describe("processPaperWithPuter", () => {
           expect(promptText).toContain("SMTP");
           expect(promptText).toContain("HTTPS");
           expect(promptText).not.toContain("Receive packets");
-          if (model === "gpt-5.4-nano") {
+          if (model === "gemini-2.5-flash-lite") {
             return JSON.stringify({
               awardedMarks: 0,
               maxMarks: 2,
@@ -1152,7 +1152,7 @@ describe("processPaperWithPuter", () => {
       },
     };
 
-    const mark = await markAnswerWithPuter(
+    const mark = await markAnswerWithAI(
       processed,
       q3f,
       {
@@ -1172,19 +1172,19 @@ describe("processPaperWithPuter", () => {
     );
 
     expect(mark.awardedMarks).toBe(2);
-    expect(seenModels).toContain("gpt-5.4-nano");
-    expect(seenModels).toContain("gpt-5.4-mini");
+    expect(seenModels).toContain("gemini-2.5-flash-lite");
+    expect(seenModels).toContain("gemini-2.5-flash");
   });
 
   it("includes OCR do-not-accept guidance in the marking prompt for physical security answers", async () => {
     const pageTexts = await loadPdfPageTexts(testPaperPath("June 2022 QP - Paper 1 OCR Computer Science GCSE (1).pdf"));
     const markSchemePageTexts = await loadPdfPageTexts(testPaperPath("June 2022 MS - Paper 1 OCR Computer Science GCSE (1).pdf"));
     const paper = buildPdfPaperWithMarkScheme("comp sci p1 2022", "Computer Science", pageTexts, markSchemePageTexts);
-    const processed = await processPaperWithPuter(paper, () => undefined, { fallbackModels: [] });
+    const processed = await processPaperWithAI(paper, () => undefined, { fallbackModels: [] });
     const q5a = processed.questions.find((question) => question.questionNumber === "5(a)");
     if (!q5a) throw new Error("Expected Q5(a) to exist in the processed OCR paper.");
 
-    window.__PUTER_TEST_MOCK__ = {
+    window.__AI_TEST_MOCK__ = {
       ai: {
         chat: async (prompt: string | unknown[]) => {
           const promptText = String(prompt);
@@ -1203,7 +1203,7 @@ describe("processPaperWithPuter", () => {
       },
     };
 
-    const mark = await markAnswerWithPuter(
+    const mark = await markAnswerWithAI(
       processed,
       q5a,
       {
