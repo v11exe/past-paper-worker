@@ -1,0 +1,2357 @@
+import { AnimatePresence, motion } from "framer-motion";
+import {
+  AlertCircle,
+  BarChart3,
+  BrainCircuit,
+  Check,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  Clock3,
+  Download,
+  Edit3,
+  Eye,
+  FileText,
+  FlaskConical,
+  Loader2,
+  Maximize2,
+  ListChecks,
+  Play,
+  RotateCcw,
+  Save,
+  ScanLine,
+  SkipForward,
+  Sparkles,
+  Trash2,
+  UploadCloud,
+  X,
+} from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { DEFAULT_PUTER_MODEL, FALLBACK_PUTER_MODELS, PUTER_MODEL_CHOICES, puterChat, runPuterSmokeTest } from "./ai/puterAI";
+import { AppLogo } from "./components/AppLogo";
+import { supportedSubjects } from "./subjects";
+import { extractFileAssetContent } from "./lib/fileText";
+import { createId } from "./lib/id";
+import {
+  acceptedMarks,
+  answerText,
+  bestScoreForPaper,
+  buildProcessingJob,
+  computeAttemptScores,
+  createMarkingErrorMark,
+  createRemark,
+  formatClock,
+  formatPercent,
+  isAnswerAttempted,
+  isMarkingErrorMark,
+  displayQuestionNumberForPaper,
+  markAnswerWithPuter,
+  nowIso,
+  processPaperWithPuter,
+  questionSupportIssue,
+  processingStages,
+  startAttempt,
+  supportedQuestionTypeLabels,
+  supportedTotalMarksForPaper,
+  unsupportedMarksForPaper,
+} from "./lib/paperEngine";
+import { clearData, loadData, saveData } from "./lib/storage";
+import type {
+  AppData,
+  PaperDraftInput,
+  PastPaper,
+  PastPaperAnswer,
+  PastPaperAsset,
+  PastPaperAttempt,
+  PastPaperProcessingJob,
+  PastPaperQuestion,
+  PastPaperQuestionMark,
+  PaperPageScreenshot,
+  ProcessingStage,
+  ProcessingDiagnostics,
+  PuterSmokeTestResult,
+} from "./types";
+
+const emptyDraft: PaperDraftInput = {
+  title: "",
+  subject: supportedSubjects[0],
+  topic: "",
+  subtopic: "",
+  year: "",
+  series: "",
+  paperCode: "",
+};
+
+function toNullable(value: string) {
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
+function toNullableNumber(value: string) {
+  const trimmed = value.trim();
+  return trimmed ? Number(trimmed) : null;
+}
+
+function displayMeta(paper: PastPaper) {
+  return [paper.year, paper.series, paper.paperCode].filter(Boolean).join(" / ") || "Metadata pending";
+}
+
+function statusLabel(value: string) {
+  const labels: Record<string, string> = {
+    unprocessed: "Ready to process",
+    processing: "Processing",
+    ready: "Ready",
+    failed: "Failed",
+    in_progress: "In progress",
+    submitted: "Submitted",
+    marked: "Marked",
+    saved: "Saved",
+  };
+  return labels[value] ?? value.replaceAll("_", " ");
+}
+
+function marksLabel(marks: number) {
+  return `${marks} ${marks === 1 ? "mark" : "marks"}`;
+}
+
+function sourcePagesLabel(question: PastPaperQuestion) {
+  const mediaPages = question.diagramMediaRefs.map((ref) => ref.pageNumber).filter((page): page is number => typeof page === "number");
+  const pages = [...new Set([...(question.pageReferences ?? []), ...(question.imagePageReferences ?? []), ...mediaPages])].sort((a, b) => a - b);
+  return pages.length ? pages.map((page) => `Page ${page}`).join(", ") : "No source page";
+}
+
+function questionSourcePageNumbers(question: PastPaperQuestion) {
+  const mediaPages = relevantQuestionMediaRefs(question).map((ref) => ref.pageNumber).filter((page): page is number => typeof page === "number");
+  const preferred = mediaPages.length ? mediaPages : question.pageReferences;
+  return [...new Set(preferred ?? [])].sort((a, b) => a - b);
+}
+
+function relevantQuestionMediaRefs(question: PastPaperQuestion) {
+  const promptMentionsFigure = /\b(figure|diagram|graph|map|source|image|photo|photograph|flowchart)\b/i.test(question.promptText);
+  return question.diagramMediaRefs.filter((ref) => {
+    const label = ref.label?.trim() ?? "";
+    if (!label || label === "Media reference") return false;
+    const kind = String(ref.kind ?? "").toLowerCase();
+    const refMentionsFigure = /\b(figure|diagram|graph|map|source|image|photo|photograph|flowchart)\b/i.test(`${label} ${ref.description ?? ""} ${kind}`);
+    return promptMentionsFigure && refMentionsFigure && kind !== "table";
+  });
+}
+
+function questionSourceScreenshots(paper: PastPaper, question: PastPaperQuestion): PaperPageScreenshot[] {
+  const paperAsset = paper.assets.find((asset) => asset.kind === "paper");
+  const mediaRefs = relevantQuestionMediaRefs(question);
+  if (!paperAsset?.pageScreenshots?.length || !mediaRefs.length) return [];
+  const pageNumbers = new Set(mediaRefs.map((ref) => ref.pageNumber).filter((page): page is number => typeof page === "number"));
+  return paperAsset.pageScreenshots.filter((screenshot) => pageNumbers.has(screenshot.pageNumber) && screenshot.dataUrl);
+}
+
+function preferredAttemptTotal(paper: PastPaper, attempt: PastPaperAttempt) {
+  return supportedTotalMarksForPaper(paper) || attempt.totalMarks;
+}
+
+function displayAttemptScores(paper: PastPaper, attempt: PastPaperAttempt) {
+  return computeAttemptScores(attempt, paper);
+}
+
+function scoreSummary(score: number, total: number) {
+  return `${score}/${total} (${formatPercent(score, total)})`;
+}
+
+function latestJob(paper: PastPaper, kind?: PastPaperProcessingJob["kind"]) {
+  return [...paper.jobs].reverse().find((job) => !kind || job.kind === kind) ?? null;
+}
+
+function latestAcceptedMark(attempt: PastPaperAttempt | null, questionId: string) {
+  if (!attempt) return null;
+  return [...acceptedMarks(attempt, questionId)].sort((a, b) => b.reviewVersion - a.reviewVersion)[0] ?? null;
+}
+
+function displayQuestionLabel(paper: PastPaper, question: PastPaperQuestion) {
+  return displayQuestionNumberForPaper(paper, question);
+}
+
+function scoreColor(awarded: number, maxMarks: number) {
+  if (maxMarks <= 0) return "#a7b0bb";
+  const percent = Math.max(0, Math.min(1, awarded / maxMarks));
+  if (percent <= 0) return "#ff818f";
+  if (percent < 0.25) return "#f59e42";
+  if (percent < 0.5) return "#f6c453";
+  if (percent < 0.75) return "#d9ee6f";
+  if (percent < 1) return "#a8f08c";
+  return "#80f6b4";
+}
+
+function scoreStyle(mark: PastPaperQuestionMark | null, maxMarks: number): React.CSSProperties | undefined {
+  if (!mark) return undefined;
+  if (isMarkingErrorMark(mark)) return { color: "#7dc7ff" };
+  return { color: scoreColor(mark.awardedMarks, maxMarks) };
+}
+
+function predictedScoreStyle(answer: PastPaperAnswer | null | undefined, maxMarks: number): React.CSSProperties | undefined {
+  if (!answer?.skippedWithConfidence) return undefined;
+  return { color: scoreColor(answer.confidencePredictedMarks ?? 0, maxMarks) };
+}
+
+function reviewQuestionGroups(paper: PastPaper) {
+  const groups = new Map<string, { question: PastPaperQuestion; index: number; label: string }[]>();
+  paper.questions.forEach((question, index) => {
+    const label = displayQuestionLabel(paper, question);
+    const group = label.match(/^(\d+)/)?.[1] ?? "Other";
+    const items = groups.get(group) ?? [];
+    items.push({ question, index, label });
+    groups.set(group, items);
+  });
+  return [...groups.entries()].map(([group, questions]) => ({ group, questions }));
+}
+
+function subjectPaperGroups(papers: PastPaper[]) {
+  const groups = new Map<string, PastPaper[]>();
+  papers.forEach((paper) => {
+    const items = groups.get(paper.subject) ?? [];
+    items.push(paper);
+    groups.set(paper.subject, items);
+  });
+  return [...groups.entries()].map(([subject, items]) => ({
+    subject,
+    papers: [...items].sort((a, b) => (b.year ?? -1) - (a.year ?? -1) || a.title.localeCompare(b.title)),
+  }));
+}
+
+function markSchemeDataText(question: PastPaperQuestion | null) {
+  if (!question?.markSchemeData) return "No aligned mark-scheme row is stored for this question.";
+  const data = question.markSchemeData;
+  const rows = Array.isArray(data.rows) ? data.rows : [];
+  const rowText = rows
+    .map((row, index) => {
+      const value = row && typeof row === "object" ? (row as Record<string, unknown>) : {};
+      return [
+        `Row ${index + 1}`,
+        typeof value.markPoint === "string" ? `Mark point: ${value.markPoint}` : null,
+        Array.isArray(value.accept) && value.accept.length ? `Also accept: ${value.accept.join("; ")}` : null,
+        Array.isArray(value.doNotAccept) && value.doNotAccept.length ? `Do not accept: ${value.doNotAccept.join("; ")}` : null,
+        Array.isArray(value.ignore) && value.ignore.length ? `Ignore: ${value.ignore.join("; ")}` : null,
+        typeof value.guidance === "string" ? `Guidance: ${value.guidance}` : null,
+      ]
+        .filter(Boolean)
+        .join("\n");
+    })
+    .join("\n\n");
+  const evidence = typeof data.evidence === "string" ? data.evidence : "";
+  const points = Array.isArray(data.points) ? data.points.join("\n") : "";
+  return [rowText, evidence ? `Evidence:\n${evidence}` : null, points && !rowText ? `Points:\n${points}` : null].filter(Boolean).join("\n\n") || JSON.stringify(data, null, 2);
+}
+
+function textLengthForAsset(asset: PastPaperAsset) {
+  return asset.pageTexts?.reduce((sum, page) => sum + page.charCount, 0) ?? asset.textContent?.length ?? 0;
+}
+
+function latestPuterRequest(diagnostics?: ProcessingDiagnostics | null) {
+  return diagnostics?.puterRequests.at(-1) ?? null;
+}
+
+function diagnosticBundle(paper: PastPaper, attempts: PastPaperAttempt[] = []) {
+  return {
+    exportedAt: new Date().toISOString(),
+    paper: {
+      id: paper.id,
+      title: paper.title,
+      subject: paper.subject,
+      processingStatus: paper.processingStatus,
+      processingError: paper.processingError,
+      totalMarks: paper.totalMarks,
+      durationMinutes: paper.durationMinutes,
+    },
+    processingDiagnostics: paper.processingDiagnostics ?? null,
+    jobs: paper.jobs.map((job) => ({
+      id: job.id,
+      kind: job.kind,
+      status: job.status,
+      attemptId: job.attemptId,
+      remarkId: job.remarkId,
+      progressPercent: job.progressPercent,
+      currentStage: job.currentStage,
+      errorMessage: job.errorMessage,
+      createdAt: job.createdAt,
+      updatedAt: job.updatedAt,
+      diagnostics: job.diagnostics ?? null,
+    })),
+    questions: paper.questions.map((question) => ({
+      id: question.id,
+      questionNumber: question.questionNumber,
+      maxMarks: question.maxMarks,
+      responseType: question.responseType,
+      optionsCount: question.options.length,
+      sourcePages: questionSourcePageNumbers(question),
+      mediaRefs: question.diagramMediaRefs,
+      hasMarkSchemeData: Boolean(question.markSchemeData),
+      markSchemeRef: question.markSchemeRef,
+      markSchemeDataPreview: question.markSchemeData ? JSON.stringify(question.markSchemeData).slice(0, 2400) : null,
+      supportIssue: questionSupportIssue(question),
+      extractionWarnings: question.extractionWarnings ?? [],
+    })),
+    attempts: attempts
+      .filter((attempt) => attempt.paperId === paper.id)
+      .map((attempt) => ({
+        id: attempt.id,
+        status: attempt.status,
+        startedAt: attempt.startedAt,
+        submittedAt: attempt.submittedAt,
+        completedAt: attempt.completedAt,
+        actualScore: attempt.actualScore,
+        confidenceAdjustedScore: attempt.confidenceAdjustedScore,
+        totalMarks: preferredAttemptTotal(paper, attempt),
+        answeredCount: attempt.answers.filter(isAnswerAttempted).length,
+        skippedCount: attempt.answers.filter((answer) => answer.skipped).length,
+        unansweredCount: attempt.answers.filter((answer) => !answer.skipped && !isAnswerAttempted(answer)).length,
+        answers: attempt.answers.map((answer) => ({
+          questionId: answer.questionId,
+          attempted: isAnswerAttempted(answer),
+          skipped: answer.skipped,
+          hasText: Boolean(answer.responseText?.trim()),
+          hasNumeric: answer.numericResponse !== null,
+          selectedOptionsCount: answer.selectedOptions.length,
+        })),
+        marks: attempt.marks.map((mark) => ({
+          questionId: mark.questionId,
+          source: mark.source,
+          awardedMarks: mark.awardedMarks,
+          maxMarks: mark.maxMarks,
+          accepted: mark.accepted,
+          rationale: mark.rationale,
+          markSchemeEvidence: mark.markSchemeEvidence,
+        })),
+      })),
+    assets: paper.assets.map((asset) => ({
+      id: asset.id,
+      kind: asset.kind,
+      fileName: asset.fileName,
+      mimeType: asset.mimeType,
+      size: asset.size,
+      pageCount: asset.pageCount ?? null,
+      textLength: textLengthForAsset(asset),
+      pageTextLengths: (asset.pageTexts ?? []).map((page) => ({ pageNumber: page.pageNumber, charCount: page.charCount })),
+      extractionDiagnostics: asset.extractionDiagnostics ?? null,
+      screenshotMetadata: (asset.pageScreenshots ?? []).map((screenshot) => ({
+        pageNumber: screenshot.pageNumber,
+        width: screenshot.width,
+        height: screenshot.height,
+        byteSize: screenshot.byteSize,
+        thumbnailByteSize: screenshot.thumbnailByteSize,
+        mimeType: screenshot.mimeType,
+      })),
+      screenshotThumbnails: (asset.pageScreenshots ?? []).map((screenshot) => ({
+        pageNumber: screenshot.pageNumber,
+        thumbnailDataUrl: screenshot.thumbnailDataUrl,
+      })),
+    })),
+  };
+}
+
+function downloadDiagnosticBundle(paper: PastPaper, attempts: PastPaperAttempt[] = []) {
+  const blob = new Blob([JSON.stringify(diagnosticBundle(paper, attempts), null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${paper.title.replace(/[^a-z0-9]+/gi, "-").replace(/(^-|-$)/g, "").toLowerCase() || "paper"}-diagnostics.json`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function SectionFrame({ title, subtitle, actions, children }: { title: string; subtitle?: string; actions?: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <section className="section-frame">
+      <div className="section-frame__header">
+        <div>
+          <h2>{title}</h2>
+          {subtitle ? <p>{subtitle}</p> : null}
+        </div>
+        {actions ? <div className="button-row">{actions}</div> : null}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function InlineStatus({ pending, error, success }: { pending?: boolean; error?: string | null; success?: string | null }) {
+  if (pending) {
+    return (
+      <div className="inline-status" role="status">
+        <ScanLine size={16} className="spin" />
+        <span>Working...</span>
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <div className="inline-status inline-status--error" role="alert">
+        <AlertCircle size={16} />
+        <span>{error}</span>
+      </div>
+    );
+  }
+  if (success) {
+    return (
+      <div className="inline-status inline-status--success" role="status">
+        <Check size={16} />
+        <span>{success}</span>
+      </div>
+    );
+  }
+  return null;
+}
+
+const stageProgressRanges: Record<ProcessingStage, [number, number]> = {
+  uploading: [0, 10],
+  extracting: [10, 22],
+  "building page inventory": [22, 38],
+  "identifying questions": [38, 52],
+  "extracting question details": [52, 78],
+  "aligning mark scheme": [78, 90],
+  finalising: [90, 100],
+  "marking answers": [8, 96],
+  "remarking question": [8, 96],
+};
+
+function processingStatusMessages(paper: PastPaper, job: PastPaperProcessingJob | null, diagnostics: ProcessingDiagnostics | null, visualPercent: number) {
+  const stage = job?.currentStage ?? diagnostics?.currentStage ?? "uploading";
+  const pageCount = Math.max(1, diagnostics?.paperPageCount ?? paper.assets.find((asset) => asset.kind === "paper")?.pageCount ?? 1);
+  const currentPage = Math.max(1, Math.min(pageCount, Math.ceil((visualPercent / 100) * pageCount)));
+  const latestPrompt = diagnostics?.promptStats.at(-1);
+  const latestRequest = latestPuterRequest(diagnostics);
+  const questionCount = paper.questions.length || latestPrompt?.pageNumbers?.length || pageCount;
+  const currentQuestion = Math.max(1, Math.min(questionCount, Math.ceil((visualPercent / 100) * questionCount)));
+
+  const byStage: Record<ProcessingStage, string[]> = {
+    uploading: ["Preparing files for extraction", "Checking document metadata"],
+    extracting: [`Reading page ${currentPage} of ${pageCount}`, "Separating paper text from mark scheme text"],
+    "building page inventory": [`Scanning page ${currentPage} of ${pageCount}`, "Building a compact page inventory", "Checking figures, tables, and source pages"],
+    "identifying questions": [`Finding question boundaries on page ${currentPage}`, "Looking for subquestions and mark allocations", "Mapping question ranges to source pages"],
+    "extracting question details": [`Reading question ${currentQuestion}`, latestPrompt?.pageNumbers?.length ? `Extracting pages ${latestPrompt.pageNumbers.join(", ")}` : "Extracting question wording", "Checking options, marks, and source figures"],
+    "aligning mark scheme": ["Reading mark scheme rows", "Matching answers to question numbers", "Checking accept and do-not-accept guidance"],
+    finalising: ["Running source-grounding checks", "Checking extracted marks against paper metadata", "Preparing the paper dashboard"],
+    "marking answers": [`Marking answered question ${currentQuestion}`, "Applying aligned mark scheme rows"],
+    "remarking question": ["Rechecking the selected answer", "Comparing against the stored mark scheme row"],
+  };
+
+  return [
+    ...(byStage[stage] ?? ["Working through the paper"]),
+    latestRequest?.status === "running" ? `Waiting for ${latestRequest.label}` : null,
+    latestRequest?.status === "success" ? `Completed ${latestRequest.label}` : null,
+  ].filter((message): message is string => Boolean(message));
+}
+
+function ProcessingPanel({ paper, job, variant = "full" }: { paper: PastPaper; job: PastPaperProcessingJob | null; variant?: "full" | "compact" }) {
+  const activeIndex = processingStages.findIndex((stage) => job?.currentStage === stage);
+  const percent = job?.progressPercent ?? (paper.processingStatus === "ready" ? 100 : 0);
+  const diagnostics = job?.diagnostics ?? paper.processingDiagnostics ?? null;
+  const latestRequest = latestPuterRequest(diagnostics);
+  const errorMessage = job?.errorMessage ?? paper.processingError ?? null;
+  const paperTextChars = paper.assets.find((asset) => asset.kind === "paper") ? textLengthForAsset(paper.assets.find((asset) => asset.kind === "paper")!) : 0;
+  const [visualPercent, setVisualPercent] = useState(percent);
+  const [messageIndex, setMessageIndex] = useState(0);
+  const stage = job?.currentStage ?? diagnostics?.currentStage ?? "uploading";
+  const stageRange = useMemo(() => stageProgressRanges[stage] ?? ([percent, Math.min(99, percent + 8)] as [number, number]), [percent, stage]);
+  const isRunning = job?.status === "running" || paper.processingStatus === "processing";
+  const messages = useMemo(() => processingStatusMessages(paper, job, diagnostics, visualPercent), [paper, job, diagnostics, visualPercent]);
+  const activeMessage = messages[messageIndex % Math.max(messages.length, 1)] ?? "Working through the paper";
+  const compact = variant === "compact";
+
+  useEffect(() => {
+    setVisualPercent((value) => Math.max(value, percent));
+  }, [percent]);
+
+  useEffect(() => {
+    if (!isRunning) {
+      setVisualPercent(percent);
+      return;
+    }
+    const timer = window.setInterval(() => {
+      setVisualPercent((value) => {
+        const floor = Math.max(value, percent, stageRange[0]);
+        const cap = Math.max(stageRange[0], stageRange[1] - 0.8);
+        if (floor >= cap) return floor;
+        return Math.min(cap, floor + 0.35);
+      });
+    }, 240);
+    return () => window.clearInterval(timer);
+  }, [isRunning, percent, stageRange]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setMessageIndex((value) => value + 1), 1450);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  return (
+    <div className={`paper-processing-panel paper-processing-panel--${variant}`}>
+      <div className="paper-processing-panel__body">
+        <div className="loading-stage__header">
+          <div>
+            <span className="eyebrow">Processing</span>
+            <strong>{paper.title}</strong>
+          </div>
+          <motion.div className="processing-live-status" role="status" aria-live="polite" layout transition={{ layout: { duration: 0.24, ease: "easeOut" } }}>
+            <Loader2 size={18} className="processing-spinner" />
+            <AnimatePresence mode="wait">
+              <motion.span key={activeMessage} layout initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} transition={{ duration: 0.24, ease: "easeOut" }}>
+                {activeMessage}
+              </motion.span>
+            </AnimatePresence>
+          </motion.div>
+        </div>
+        <div className="loading-stage__bar">
+          <motion.span animate={{ width: `${Math.max(percent, visualPercent)}%` }} transition={{ duration: 0.45, ease: "easeOut" }} />
+        </div>
+        {compact ? (
+          <div className="processing-compact-meta">
+            <span>{stage}</span>
+            <span>{Math.round(Math.max(percent, visualPercent))}%</span>
+            {diagnostics ? <span>{diagnostics.paperPageCount} pages</span> : null}
+          </div>
+        ) : (
+          <div className="loading-stage__steps">
+            {processingStages.map((stage, index) => (
+              <div key={stage} className={index <= Math.max(activeIndex, 0) ? "loading-step loading-step--active" : "loading-step"}>
+                <span>{index + 1}</span>
+                <small>{stage}</small>
+              </div>
+            ))}
+          </div>
+        )}
+        {diagnostics && !compact ? (
+          <div className="diagnostic-grid">
+            <span>Pages {diagnostics.paperPageCount}</span>
+            <span>Text {paperTextChars.toLocaleString()} chars</span>
+            <span>Screenshots {diagnostics.screenshotStats.filter((item) => item.assetKind === "paper").length}</span>
+            <span>Prompt {diagnostics.promptStats.at(-1)?.charCount.toLocaleString() ?? 0} chars</span>
+            <span>Model {latestRequest?.model ?? DEFAULT_PUTER_MODEL}</span>
+            <span>Last {diagnostics.lastSuccessfulStage ?? "none"}</span>
+          </div>
+        ) : null}
+        {diagnostics && !compact ? (
+          <details className="diagnostics-details">
+            <summary>Diagnostics details</summary>
+            <div className="diagnostics-details__grid">
+              <span>Stage timings: {diagnostics.stageTimings.map((timing) => `${timing.stage} ${timing.elapsedMs ?? 0}ms`).join(" / ") || "none"}</span>
+              <span>Page text: {diagnostics.pageTextStats.map((page) => `${page.assetKind} p${page.pageNumber} ${page.charCount}`).join(" / ") || "none"}</span>
+              <span>
+                Screenshots:{" "}
+                {diagnostics.screenshotStats.map((shot) => `${shot.assetKind} p${shot.pageNumber} ${shot.width}x${shot.height} ${shot.byteSize}b`).join(" / ") || "none"}
+              </span>
+              <span>Requests: {diagnostics.puterRequests.map((request) => `${request.label} ${request.status} ${request.startedAt} ${request.endedAt ?? ""}`).join(" / ") || "none"}</span>
+              <span>Schema paths: {diagnostics.schemaErrors.flatMap((item) => item.paths).join(", ") || "none"}</span>
+              <span>Integrity: {diagnostics.integrityFailures?.join(" / ") || "none"}</span>
+            </div>
+          </details>
+        ) : null}
+        {job?.status === "failed" || paper.processingStatus === "failed" ? (
+          <div className="processing-error">
+            {(errorMessage ?? "Processing failed").split("\n").map((line) => (
+              <p key={line}>{line}</p>
+            ))}
+          </div>
+        ) : null}
+        {!compact ? (
+          <div className="button-row">
+            <button className="secondary-button" onClick={() => downloadDiagnosticBundle(paper)} disabled={!diagnostics && !paper.assets.some((asset) => asset.extractionDiagnostics)}>
+              <Download size={16} /> Export diagnostics
+            </button>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function UploadModal({
+  open,
+  pending,
+  onClose,
+  onSubmit,
+}: {
+  open: boolean;
+  pending: boolean;
+  onClose: () => void;
+  onSubmit: (draft: PaperDraftInput, paperFile: File, markSchemeFile: File | null, processNow: boolean) => void;
+}) {
+  const [draft, setDraft] = useState(emptyDraft);
+  const [paperFile, setPaperFile] = useState<File | null>(null);
+  const [markSchemeFile, setMarkSchemeFile] = useState<File | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setDraft(emptyDraft);
+    setPaperFile(null);
+    setMarkSchemeFile(null);
+  }, [open]);
+
+  const submit = (processNow: boolean) => {
+    if (!paperFile) return;
+    onClose();
+    onSubmit(draft, paperFile, markSchemeFile, processNow);
+  };
+
+  return (
+    <AnimatePresence>
+      {open ? (
+        <motion.div className="paper-modal" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+          <motion.div className="paper-modal__panel" initial={{ y: 18, scale: 0.98 }} animate={{ y: 0, scale: 1 }} exit={{ y: 18, scale: 0.98 }}>
+            <div className="section-frame__header">
+              <div>
+                <span className="eyebrow">Upload</span>
+                <h2>New past paper</h2>
+              </div>
+              <button className="icon-button" onClick={onClose} aria-label="Close upload">
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="form-grid form-grid--two">
+              <label className="field">
+                <span>Title</span>
+                <input value={draft.title} onChange={(event) => setDraft((state) => ({ ...state, title: event.target.value }))} placeholder="OCR J277 Paper 1" />
+              </label>
+              <label className="field">
+                <span>Subject</span>
+                <select value={draft.subject} onChange={(event) => setDraft((state) => ({ ...state, subject: event.target.value }))}>
+                  {supportedSubjects.map((subject) => (
+                    <option key={subject}>{subject}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="field">
+                <span>Topic</span>
+                <input value={draft.topic} onChange={(event) => setDraft((state) => ({ ...state, topic: event.target.value }))} />
+              </label>
+              <label className="field">
+                <span>Subtopic</span>
+                <input value={draft.subtopic} onChange={(event) => setDraft((state) => ({ ...state, subtopic: event.target.value }))} />
+              </label>
+              <label className="field">
+                <span>Year</span>
+                <input value={draft.year} onChange={(event) => setDraft((state) => ({ ...state, year: event.target.value }))} inputMode="numeric" />
+              </label>
+              <label className="field">
+                <span>Series</span>
+                <input value={draft.series} onChange={(event) => setDraft((state) => ({ ...state, series: event.target.value }))} placeholder="June" />
+              </label>
+              <label className="field">
+                <span>Paper code</span>
+                <input value={draft.paperCode} onChange={(event) => setDraft((state) => ({ ...state, paperCode: event.target.value }))} />
+              </label>
+              <label className="field">
+                <span>Past paper file</span>
+                <input type="file" accept=".pdf,.png,.jpg,.jpeg,.webp" onChange={(event) => setPaperFile(event.target.files?.[0] ?? null)} />
+              </label>
+              <label className="field">
+                <span>Mark scheme file</span>
+                <input type="file" accept=".pdf,.png,.jpg,.jpeg,.webp" onChange={(event) => setMarkSchemeFile(event.target.files?.[0] ?? null)} />
+              </label>
+            </div>
+
+            <div className="button-row">
+              <button className="secondary-button" onClick={() => submit(false)} disabled={!paperFile || pending}>
+                <Save size={16} /> Submit
+              </button>
+              <button className="primary-button" onClick={() => submit(true)} disabled={!paperFile || pending}>
+                <ScanLine size={16} /> Process and submit
+              </button>
+            </div>
+          </motion.div>
+        </motion.div>
+      ) : null}
+    </AnimatePresence>
+  );
+}
+
+function MetadataModal({
+  open,
+  draft,
+  onChange,
+  onClose,
+  onSave,
+}: {
+  open: boolean;
+  draft: PaperDraftInput;
+  onChange: (draft: PaperDraftInput) => void;
+  onClose: () => void;
+  onSave: () => void;
+}) {
+  return (
+    <AnimatePresence>
+      {open ? (
+        <motion.div className="paper-modal" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+          <motion.div className="paper-modal__panel" initial={{ y: 18, scale: 0.98 }} animate={{ y: 0, scale: 1 }} exit={{ y: 18, scale: 0.98 }}>
+            <div className="section-frame__header">
+              <div>
+                <span className="eyebrow">Paper settings</span>
+                <h2>Edit metadata</h2>
+              </div>
+              <button className="icon-button" onClick={onClose} aria-label="Close metadata editor">
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="form-grid form-grid--two">
+              <label className="field">
+                <span>Title</span>
+                <input value={draft.title} onChange={(event) => onChange({ ...draft, title: event.target.value })} />
+              </label>
+              <label className="field">
+                <span>Subject</span>
+                <select value={draft.subject} onChange={(event) => onChange({ ...draft, subject: event.target.value })}>
+                  {supportedSubjects.map((subject) => (
+                    <option key={subject}>{subject}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="field">
+                <span>Topic</span>
+                <input value={draft.topic} onChange={(event) => onChange({ ...draft, topic: event.target.value })} />
+              </label>
+              <label className="field">
+                <span>Subtopic</span>
+                <input value={draft.subtopic} onChange={(event) => onChange({ ...draft, subtopic: event.target.value })} />
+              </label>
+              <label className="field">
+                <span>Year</span>
+                <input value={draft.year} onChange={(event) => onChange({ ...draft, year: event.target.value })} inputMode="numeric" />
+              </label>
+              <label className="field">
+                <span>Series</span>
+                <input value={draft.series} onChange={(event) => onChange({ ...draft, series: event.target.value })} />
+              </label>
+              <label className="field">
+                <span>Paper code</span>
+                <input value={draft.paperCode} onChange={(event) => onChange({ ...draft, paperCode: event.target.value })} />
+              </label>
+            </div>
+
+            <div className="button-row">
+              <button className="secondary-button" onClick={onClose}>
+                <X size={16} /> Cancel
+              </button>
+              <button className="primary-button" onClick={onSave}>
+                <Save size={16} /> Save metadata
+              </button>
+            </div>
+          </motion.div>
+        </motion.div>
+      ) : null}
+    </AnimatePresence>
+  );
+}
+
+function ConfidenceSkipModal({
+  open,
+  question,
+  value,
+  onChange,
+  onClose,
+  onConfirm,
+}: {
+  open: boolean;
+  question: PastPaperQuestion | null;
+  value: number | "";
+  onChange: (value: number | "") => void;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <AnimatePresence>
+      {open && question ? (
+        <motion.div className="paper-modal paper-modal--mini" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+          <motion.div className="paper-modal__panel paper-modal__panel--mini" initial={{ y: 18, scale: 0.98 }} animate={{ y: 0, scale: 1 }} exit={{ y: 18, scale: 0.98 }}>
+            <div className="section-frame__header">
+              <div>
+                <span className="eyebrow">Skip with confidence</span>
+                <h2>Predicted marks</h2>
+                <p>This question is out of {marksLabel(question.maxMarks)}.</p>
+              </div>
+              <button className="icon-button" onClick={onClose} aria-label="Close confidence skip">
+                <X size={16} />
+              </button>
+            </div>
+            <label className="field">
+              <span>Your predicted marks</span>
+              <input
+                autoFocus
+                type="number"
+                min={0}
+                max={question.maxMarks}
+                value={value}
+                onChange={(event) => onChange(event.target.value === "" ? "" : Math.max(0, Math.min(question.maxMarks, Number(event.target.value))))}
+              />
+            </label>
+            <div className="button-row">
+              <button className="secondary-button" onClick={onClose}>
+                <X size={16} /> Cancel
+              </button>
+              <button className="primary-button" onClick={onConfirm}>
+                <SkipForward size={16} /> Skip question
+              </button>
+            </div>
+          </motion.div>
+        </motion.div>
+      ) : null}
+    </AnimatePresence>
+  );
+}
+
+function QuestionSourceImages({ paper, question }: { paper: PastPaper; question: PastPaperQuestion }) {
+  const screenshots = questionSourceScreenshots(paper, question);
+  const mediaRefs = relevantQuestionMediaRefs(question);
+  if (!screenshots.length && !mediaRefs.length) return null;
+
+  return (
+    <div className="question-source-media" aria-label="Source figures and page images">
+      <div className="question-source-media__header">
+        <span className="eyebrow">Source figures</span>
+        {screenshots.length ? <span>{screenshots.map((shot) => `Page ${shot.pageNumber}`).join(", ")}</span> : null}
+      </div>
+      {screenshots.length ? (
+        <div className="question-source-media__strip">
+          {screenshots.map((shot) => (
+            <figure key={`${shot.pageNumber}-${shot.width}-${shot.height}`} className="source-page-shot">
+              <img src={shot.dataUrl} alt={`Source page ${shot.pageNumber} for question ${question.questionNumber}`} />
+              <figcaption>Page {shot.pageNumber}</figcaption>
+            </figure>
+          ))}
+        </div>
+      ) : null}
+      {mediaRefs.length ? (
+        <div className="chip-wrap">
+          {mediaRefs.map((ref) => (
+            <span key={ref.id} className="static-chip">
+              {ref.label}
+              {ref.pageNumber ? `, page ${ref.pageNumber}` : ""}
+            </span>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function basicCleanPrompt(promptText: string) {
+  return promptText
+    .replace(/\s*(?:[[(]\s*\d+\s*(?:marks?)?\s*[\])]|\[\s*\d+\s*])/gi, "")
+    .replace(/^\s*(?:question\s*)?\d+\s*(?:[.)/-]\s*)?/i, "")
+    .replace(/^\s*(?:\([a-z]\)|[a-z][.)])\s*/i, "")
+    .replace(/^\s*(?:\([ivx]+\)|[ivx]+[.)])\s*/i, "")
+    .replace(/\s+/g, " ")
+    .replace(/\s+([?.!,;:])/g, "$1")
+    .trim();
+}
+
+function cleanVisiblePrompt(promptText: string) {
+  const cleaned = basicCleanPrompt(promptText);
+  const tickSplit = cleaned.split(/\bTick\s+one\s+box\.?/i);
+  const tail = tickSplit[1]?.trim() ?? "";
+  if (!tail) return cleaned;
+  const words = tail.split(/\s+/).filter(Boolean);
+  if (/^((?:[A-H]\s*){2,})$/i.test(tail) || (words.length >= 2 && words.length <= 8 && words.every((word) => word.length <= 28))) {
+    return `${tickSplit[0].trim()} Tick one box.`;
+  }
+  return cleaned;
+}
+
+function embeddedChoiceOptions(promptText: string) {
+  const cleaned = basicCleanPrompt(promptText);
+  const tickSplit = cleaned.split(/\bTick\s+one\s+box\.?/i);
+  const tail = tickSplit[1]?.trim() ?? "";
+  if (!tail) return [] as string[];
+  const letterRun = tail.match(/^((?:[A-H]\s*){2,})$/i);
+  if (letterRun) return tail.split(/\s+/).filter(Boolean);
+  const words = tail.split(/\s+/).filter(Boolean);
+  if (words.length >= 2 && words.length <= 8 && words.every((word) => word.length <= 28)) return words;
+  return [];
+}
+
+function AnswerInput({ question, answer, onChange }: { question: PastPaperQuestion; answer: PastPaperAnswer; onChange: (patch: Partial<PastPaperAnswer>) => void }) {
+  if (answer.skipped) return null;
+
+  if (question.responseType === "numeric") {
+    return (
+      <input
+        aria-label="Numeric answer"
+        placeholder="Numeric answer"
+        value={answer.numericResponse ?? ""}
+        onChange={(event) => onChange({ numericResponse: event.target.value === "" ? null : Number(event.target.value), skipped: false, skippedWithConfidence: false, confidencePredictedMarks: null })}
+      />
+    );
+  }
+
+  if (question.responseType === "single_choice" || question.responseType === "multi_select") {
+    const options = question.options.length ? question.options : embeddedChoiceOptions(question.promptText);
+    if (!options.length) {
+      return (
+        <div className="choice-fallback">
+          <p>Options were not extracted cleanly. Type the visible choice letter or answer text.</p>
+          <input
+            aria-label="Choice answer"
+            placeholder="Choice answer"
+            value={answer.responseText ?? ""}
+            onChange={(event) => onChange({ responseText: event.target.value, selectedOptions: [], skipped: false, skippedWithConfidence: false, confidencePredictedMarks: null })}
+          />
+        </div>
+      );
+    }
+
+    return (
+      <div className="choice-list choice-list--compact">
+        {options.map((option) => {
+          const checked = answer.selectedOptions.includes(option);
+          return (
+            <label key={option} className="choice-row">
+              <input
+                type={question.responseType === "single_choice" ? "radio" : "checkbox"}
+                name={`question-${question.id}`}
+                checked={checked}
+                onChange={() => {
+                  const selectedOptions =
+                    question.responseType === "single_choice"
+                      ? [option]
+                      : checked
+                        ? answer.selectedOptions.filter((item) => item !== option)
+                        : [...answer.selectedOptions, option];
+                  onChange({ selectedOptions, skipped: false, skippedWithConfidence: false, confidencePredictedMarks: null });
+                }}
+              />
+              <span>{option}</span>
+            </label>
+          );
+        })}
+      </div>
+    );
+  }
+
+  return (
+    <textarea
+      aria-label="Written answer"
+      placeholder={question.responseType === "short_text" ? "Short answer" : "Long-form answer"}
+      value={answer.responseText ?? ""}
+      onChange={(event) => onChange({ responseText: event.target.value, skipped: false, skippedWithConfidence: false, confidencePredictedMarks: null })}
+    />
+  );
+}
+
+export function App() {
+  const [data, setData] = useState<AppData>(() => loadData());
+  const [selectedPaperId, setSelectedPaperId] = useState<string | null>(null);
+  const [selectedAttemptId, setSelectedAttemptId] = useState<string | null>(null);
+  const [activeQuestionIndex, setActiveQuestionIndex] = useState(0);
+  const [reviewIndex, setReviewIndex] = useState(0);
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [clockNow, setClockNow] = useState(() => Date.now());
+  const [editingMetadata, setEditingMetadata] = useState(false);
+  const [metadataDraft, setMetadataDraft] = useState<PaperDraftInput>(emptyDraft);
+  const [suggestions, setSuggestions] = useState<string | null>(null);
+  const [puterModel, setPuterModel] = useState(DEFAULT_PUTER_MODEL);
+  const [smokeTest, setSmokeTest] = useState<PuterSmokeTestResult | null>(null);
+  const [smokeBusy, setSmokeBusy] = useState(false);
+  const [isFocusMode, setIsFocusMode] = useState(false);
+  const [fullscreenSupported, setFullscreenSupported] = useState(false);
+  const cancelledProcessingJobs = useRef(new Set<string>());
+  const [confidenceSkipOpen, setConfidenceSkipOpen] = useState(false);
+  const [confidenceDraft, setConfidenceDraft] = useState<number | "">("");
+  const [questionsExpanded, setQuestionsExpanded] = useState(false);
+  const [markSchemeDetailsOpen, setMarkSchemeDetailsOpen] = useState(false);
+
+  useEffect(() => saveData(data), [data]);
+
+  useEffect(() => {
+    if (selectedPaperId && !data.papers.some((paper) => paper.id === selectedPaperId)) setSelectedPaperId(null);
+  }, [data.papers, selectedPaperId]);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => setClockNow(Date.now()), 1000);
+    return () => window.clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    setFullscreenSupported(Boolean(document.documentElement.requestFullscreen));
+    const onFullscreenChange = () => {
+      if (!document.fullscreenElement) setIsFocusMode(false);
+    };
+    document.addEventListener("fullscreenchange", onFullscreenChange);
+    return () => document.removeEventListener("fullscreenchange", onFullscreenChange);
+  }, []);
+
+  const selectedPaper = data.papers.find((paper) => paper.id === selectedPaperId) ?? null;
+  const selectedAttempt = data.attempts.find((attempt) => attempt.id === selectedAttemptId && (!selectedPaper || attempt.paperId === selectedPaper.id)) ?? null;
+  const activeQuestion = selectedPaper?.questions[activeQuestionIndex] ?? null;
+  const activeAnswer = selectedAttempt?.answers.find((answer) => answer.questionId === activeQuestion?.id) ?? null;
+  const activeSupportIssue = activeQuestion ? questionSupportIssue(activeQuestion) : null;
+  const reviewQuestion = selectedPaper?.questions[reviewIndex] ?? null;
+  const reviewAnswer = selectedAttempt?.answers.find((answer) => answer.questionId === reviewQuestion?.id) ?? null;
+  const reviewSupportIssue = reviewQuestion ? questionSupportIssue(reviewQuestion) : null;
+  const reviewMark = reviewQuestion ? latestAcceptedMark(selectedAttempt, reviewQuestion.id) : null;
+  const displayScores = selectedPaper && selectedAttempt ? displayAttemptScores(selectedPaper, selectedAttempt) : selectedAttempt;
+  const processingQueue = data.papers.filter((paper) => paper.processingStatus === "processing").length;
+
+  useEffect(() => {
+    if (!selectedPaper?.questions.length) {
+      setReviewIndex(0);
+      return;
+    }
+    setReviewIndex((value) => Math.min(value, selectedPaper.questions.length - 1));
+  }, [selectedPaper?.id, selectedPaper?.questions.length, selectedAttemptId]);
+
+  useEffect(() => {
+    setQuestionsExpanded(false);
+  }, [selectedPaper?.id]);
+
+  useEffect(() => {
+    setMarkSchemeDetailsOpen(false);
+  }, [reviewQuestion?.id, selectedAttemptId]);
+
+  const analytics = useMemo(() => {
+    const markedAttempts = data.attempts.filter((attempt) => attempt.status === "marked");
+    const completed = markedAttempts.length;
+    const scoredAttempts = markedAttempts
+      .map((attempt) => {
+        const paper = data.papers.find((item) => item.id === attempt.paperId);
+        if (!paper) return null;
+        const scores = displayAttemptScores(paper, attempt);
+        const total = preferredAttemptTotal(paper, attempt);
+        return total > 0 ? (scores.actualScore / total) * 100 : null;
+      })
+      .filter((value): value is number => typeof value === "number");
+    const averagePercent = scoredAttempts.length ? scoredAttempts.reduce((sum, value) => sum + value, 0) / scoredAttempts.length : null;
+    const overtime = data.attempts.reduce((sum, attempt) => sum + attempt.overtimeSeconds, 0);
+    return { completed, averagePercent, overtime, ready: scoredAttempts.length >= 2 };
+  }, [data.attempts, data.papers]);
+
+  useEffect(() => {
+    if (!selectedPaper) return;
+    setMetadataDraft({
+      title: selectedPaper.title,
+      subject: selectedPaper.subject,
+      topic: selectedPaper.topic ?? "",
+      subtopic: selectedPaper.subtopic ?? "",
+      year: selectedPaper.year ? String(selectedPaper.year) : "",
+      series: selectedPaper.series ?? "",
+      paperCode: selectedPaper.paperCode ?? "",
+    });
+  }, [selectedPaper]);
+
+  function patchPaper(paperId: string, updater: (paper: PastPaper) => PastPaper) {
+    setData((current) => ({ ...current, papers: current.papers.map((paper) => (paper.id === paperId ? updater(paper) : paper)) }));
+  }
+
+  function patchAttempt(attemptId: string, updater: (attempt: PastPaperAttempt) => PastPaperAttempt) {
+    setData((current) => ({ ...current, attempts: current.attempts.map((attempt) => (attempt.id === attemptId ? updater(attempt) : attempt)) }));
+  }
+
+  function updateJob(paperId: string, jobId: string, patch: Partial<PastPaperProcessingJob>) {
+    patchPaper(paperId, (paper) => ({
+      ...paper,
+      jobs: paper.jobs.map((job) => (job.id === jobId ? { ...job, ...patch, updatedAt: nowIso() } : job)),
+      processingDiagnostics: patch.diagnostics ?? paper.processingDiagnostics ?? null,
+      updatedAt: nowIso(),
+    }));
+  }
+
+  async function runProcessing(paper: PastPaper) {
+    const job = buildProcessingJob(paper.id);
+    let latestDiagnostics: ProcessingDiagnostics | null = null;
+    cancelledProcessingJobs.current.delete(job.id);
+    patchPaper(paper.id, (current) => ({
+      ...current,
+      processingStatus: "processing",
+      processingError: null,
+      jobs: [...current.jobs, { ...job, status: "running" }],
+      updatedAt: nowIso(),
+    }));
+
+    try {
+      const processed = await processPaperWithPuter(
+        paper,
+        (update) => {
+          if (cancelledProcessingJobs.current.has(job.id)) return;
+          latestDiagnostics = update.diagnostics;
+          updateJob(paper.id, job.id, { currentStage: update.stage, progressPercent: update.percent, status: "running", diagnostics: update.diagnostics });
+        },
+        { model: puterModel, fallbackModels: FALLBACK_PUTER_MODELS.filter((model) => model !== puterModel) },
+      );
+      if (cancelledProcessingJobs.current.has(job.id)) return;
+      patchPaper(paper.id, (current) => ({
+        ...current,
+        ...processed,
+        jobs: current.jobs.map((item) =>
+          item.id === job.id ? { ...item, status: "completed", progressPercent: 100, currentStage: "finalising", diagnostics: processed.processingDiagnostics ?? latestDiagnostics, updatedAt: nowIso() } : item,
+        ),
+      }));
+      setStatus("Paper processed into structured questions.");
+      setError(null);
+    } catch (reason) {
+      if (cancelledProcessingJobs.current.has(job.id)) return;
+      const message = reason instanceof Error ? reason.message : "Processing failed";
+      patchPaper(paper.id, (current) => ({
+        ...current,
+        processingStatus: "failed",
+        processingError: message,
+        processingDiagnostics: latestDiagnostics ?? current.processingDiagnostics ?? null,
+        jobs: current.jobs.map((item) =>
+          item.id === job.id ? { ...item, status: "failed", errorMessage: message, diagnostics: latestDiagnostics ?? item.diagnostics ?? null, updatedAt: nowIso() } : item,
+        ),
+      }));
+      setError(message);
+    }
+  }
+
+  function cancelProcessing(paper: PastPaper) {
+    const now = nowIso();
+    const runningJobs = paper.jobs.filter((job) => job.kind === "processing" && (job.status === "running" || job.status === "queued"));
+    runningJobs.forEach((job) => cancelledProcessingJobs.current.add(job.id));
+    patchPaper(paper.id, (current) => ({
+      ...current,
+      processingStatus: "failed",
+      processingError: "Processing cancelled. You can restart it now.",
+      jobs: current.jobs.map((job) =>
+        job.kind === "processing" && (job.status === "running" || job.status === "queued")
+          ? { ...job, status: "cancelled", errorMessage: "Processing cancelled by user.", updatedAt: now }
+          : job,
+      ),
+      updatedAt: now,
+    }));
+    setStatus("Processing cancelled. You can restart it now.");
+    setError(null);
+  }
+
+  async function createAsset(file: File, paperId: string, kind: PastPaperAsset["kind"]): Promise<PastPaperAsset> {
+    const extracted = await extractFileAssetContent(file);
+    return {
+      id: createId("asset"),
+      paperId,
+      kind,
+      fileName: file.name,
+      mimeType: file.type,
+      size: file.size,
+      textContent: extracted.textContent,
+      pageCount: extracted.pageCount,
+      pageTexts: extracted.pageTexts,
+      pageScreenshots: extracted.pageScreenshots,
+      extractionDiagnostics: extracted.extractionDiagnostics,
+      objectUrl: file.type.startsWith("image/") ? URL.createObjectURL(file) : null,
+      createdAt: nowIso(),
+    };
+  }
+
+  async function handleUpload(draft: PaperDraftInput, paperFile: File, markSchemeFile: File | null, processNow: boolean) {
+    setBusy(true);
+    setError(null);
+    try {
+      const paperId = createId("paper");
+      const paperAsset = await createAsset(paperFile, paperId, "paper");
+      const markSchemeAsset = markSchemeFile ? await createAsset(markSchemeFile, paperId, "mark_scheme") : null;
+      const createdAt = nowIso();
+      const paper: PastPaper = {
+        id: paperId,
+        title: draft.title.trim() || paperFile.name.replace(/\.[^.]+$/, ""),
+        subject: draft.subject,
+        topic: toNullable(draft.topic),
+        subtopic: toNullable(draft.subtopic),
+        year: toNullableNumber(draft.year),
+        series: toNullable(draft.series),
+        paperCode: toNullable(draft.paperCode),
+        totalMarks: null,
+        durationMinutes: null,
+        hasMarkScheme: Boolean(markSchemeAsset),
+        processingStatus: "unprocessed",
+        processingError: null,
+        processingDiagnostics: null,
+        assets: [paperAsset, ...(markSchemeAsset ? [markSchemeAsset] : [])],
+        questions: [],
+        jobs: [],
+        createdAt,
+        updatedAt: createdAt,
+      };
+      setData((current) => ({ ...current, papers: [paper, ...current.papers] }));
+      setSelectedPaperId(paper.id);
+      setUploadOpen(false);
+      setStatus(processNow ? "Paper saved and queued for processing." : "Paper saved.");
+      if (processNow) void runProcessing(paper);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Upload failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function saveMetadata() {
+    if (!selectedPaper) return;
+    patchPaper(selectedPaper.id, (paper) => ({
+      ...paper,
+      title: metadataDraft.title.trim() || paper.title,
+      subject: metadataDraft.subject,
+      topic: toNullable(metadataDraft.topic),
+      subtopic: toNullable(metadataDraft.subtopic),
+      year: toNullableNumber(metadataDraft.year),
+      series: toNullable(metadataDraft.series),
+      paperCode: toNullable(metadataDraft.paperCode),
+      updatedAt: nowIso(),
+    }));
+    setEditingMetadata(false);
+    setStatus("Metadata saved.");
+  }
+
+  function deletePaper(paperId: string) {
+    setData((current) => ({
+      papers: current.papers.filter((paper) => paper.id !== paperId),
+      attempts: current.attempts.filter((attempt) => attempt.paperId !== paperId),
+    }));
+    if (selectedPaperId === paperId) setSelectedPaperId(null);
+    setSelectedAttemptId(null);
+    setStatus("Paper deleted.");
+  }
+
+  function deleteAttempt(attemptId: string) {
+    setData((current) => ({ ...current, attempts: current.attempts.filter((attempt) => attempt.id !== attemptId) }));
+    if (selectedAttemptId === attemptId) setSelectedAttemptId(null);
+    setStatus("Attempt deleted.");
+  }
+
+  function cancelAttempt() {
+    if (!selectedAttempt || selectedAttempt.status !== "in_progress") return;
+    deleteAttempt(selectedAttempt.id);
+    setActiveQuestionIndex(0);
+    setReviewIndex(0);
+    void exitFocusMode();
+    setStatus("Attempt cancelled.");
+  }
+
+  function startAttemptLabel(paper: PastPaper) {
+    const hasAttempts = data.attempts.some((attempt) => attempt.paperId === paper.id);
+    if (!hasAttempts) return "Start paper";
+    return "Retry paper";
+  }
+
+  async function enterFocusMode() {
+    setIsFocusMode(true);
+    if (document.fullscreenElement || !document.documentElement.requestFullscreen) return;
+    try {
+      await document.documentElement.requestFullscreen();
+    } catch {
+      setStatus("Focus mode enabled without browser fullscreen.");
+    }
+  }
+
+  async function exitFocusMode() {
+    setIsFocusMode(false);
+    if (document.fullscreenElement) {
+      try {
+        await document.exitFullscreen();
+      } catch {
+        // CSS focus mode has already been cleared.
+      }
+    }
+  }
+
+  function beginAttempt(paper: PastPaper) {
+    if (paper.processingStatus !== "ready" || !paper.questions.length) {
+      setError("Process the paper before starting an attempt.");
+      return;
+    }
+    const attempt = startAttempt(paper);
+    setData((current) => ({ ...current, attempts: [attempt, ...current.attempts] }));
+    setSelectedPaperId(paper.id);
+    setSelectedAttemptId(attempt.id);
+    setActiveQuestionIndex(0);
+    setReviewIndex(0);
+    setStatus("Attempt started.");
+    setError(null);
+    void enterFocusMode();
+  }
+
+  const updateAnswer = useCallback((questionId: string, patch: Partial<PastPaperAnswer>) => {
+    if (!selectedAttempt) return;
+    patchAttempt(selectedAttempt.id, (attempt) => ({
+      ...attempt,
+      answers: attempt.answers.map((answer) => (answer.questionId === questionId ? { ...answer, ...patch, updatedAt: nowIso() } : answer)),
+    }));
+  }, [selectedAttempt]);
+
+  const submitCurrentAnswer = useCallback((next = true) => {
+    if (!activeQuestion || !activeAnswer) return;
+    updateAnswer(activeQuestion.id, { skipped: activeAnswer.skipped, updatedAt: nowIso() });
+    setStatus(`Answer saved for question ${activeQuestion.questionNumber}.`);
+    if (next) setActiveQuestionIndex((value) => Math.min((selectedPaper?.questions.length ?? 1) - 1, value + 1));
+  }, [activeAnswer, activeQuestion, selectedPaper?.questions.length, updateAnswer]);
+
+  useEffect(() => {
+    if (!selectedAttempt || selectedAttempt.status !== "in_progress") return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      const isCommandEnter = (event.ctrlKey || event.metaKey) && event.key === "Enter";
+      if (isCommandEnter) {
+        event.preventDefault();
+        submitCurrentAnswer(activeQuestionIndex < (selectedPaper?.questions.length ?? 1) - 1);
+      }
+      if (event.altKey && event.key === "ArrowLeft") {
+        event.preventDefault();
+        setActiveQuestionIndex((value) => Math.max(0, value - 1));
+      }
+      if (event.altKey && event.key === "ArrowRight") {
+        event.preventDefault();
+        setActiveQuestionIndex((value) => Math.min((selectedPaper?.questions.length ?? 1) - 1, value + 1));
+      }
+      if (event.key === "Escape" && isFocusMode) {
+        event.preventDefault();
+        void exitFocusMode();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [activeQuestionIndex, isFocusMode, selectedAttempt, selectedPaper?.questions.length, submitCurrentAnswer]);
+
+  function skipQuestion(withConfidence: boolean, predictedOverride?: number) {
+    if (!activeQuestion || !activeAnswer) return;
+    const predicted = withConfidence ? Math.max(0, Math.min(activeQuestion.maxMarks, predictedOverride ?? activeAnswer.confidencePredictedMarks ?? 0)) : null;
+    updateAnswer(activeQuestion.id, {
+      responseText: null,
+      numericResponse: null,
+      selectedOptions: [],
+      skipped: true,
+      skippedWithConfidence: withConfidence,
+      confidencePredictedMarks: predicted,
+    });
+    setStatus(withConfidence ? "Question skipped with confidence score." : "Question skipped.");
+    setActiveQuestionIndex((value) => Math.min((selectedPaper?.questions.length ?? 1) - 1, value + 1));
+  }
+
+  function openConfidenceSkip() {
+    if (!activeQuestion || !activeAnswer) return;
+    setConfidenceDraft(activeAnswer.confidencePredictedMarks ?? "");
+    setConfidenceSkipOpen(true);
+  }
+
+  function confirmConfidenceSkip() {
+    if (!activeQuestion) return;
+    setConfidenceSkipOpen(false);
+    skipQuestion(true, confidenceDraft === "" ? 0 : confidenceDraft);
+  }
+
+  function unskipQuestion() {
+    if (!activeQuestion || !activeAnswer) return;
+    updateAnswer(activeQuestion.id, {
+      skipped: false,
+      skippedWithConfidence: false,
+      confidencePredictedMarks: null,
+    });
+    setStatus("Question unskipped.");
+  }
+
+  function reportUnsupportedQuestion(question: PastPaperQuestion) {
+    patchPaper(question.paperId, (paper) => ({
+      ...paper,
+      questions: paper.questions.map((item) =>
+        item.id === question.id
+          ? {
+              ...item,
+              originalContent: {
+                ...item.originalContent,
+                unsupportedReportedAt: nowIso(),
+              },
+              extractionWarnings: [...(item.extractionWarnings ?? []), "User reported this unsupported-format classification for review."],
+            }
+          : item,
+      ),
+      updatedAt: nowIso(),
+    }));
+    const label = selectedPaper ? displayQuestionLabel(selectedPaper, question) : question.questionNumber;
+    setStatus(`Reported question ${label} for format review.`);
+  }
+
+  function submitAttempt() {
+    if (!selectedAttempt || !selectedPaper) return;
+    const elapsed = Math.max(0, Math.floor((Date.now() - new Date(selectedAttempt.startedAt).getTime()) / 1000));
+    const limit = (selectedPaper.durationMinutes ?? 0) * 60;
+    patchAttempt(selectedAttempt.id, (attempt) =>
+      computeAttemptScores(
+        {
+          ...attempt,
+          status: "submitted",
+          submittedAt: nowIso(),
+          durationSeconds: elapsed,
+          overtimeSeconds: limit ? Math.max(0, elapsed - limit) : 0,
+        },
+        selectedPaper,
+      ),
+    );
+    setStatus("Attempt submitted.");
+    void exitFocusMode();
+  }
+
+  async function markAttempt() {
+    if (!selectedAttempt || !selectedPaper) return;
+    if (!selectedPaper.hasMarkScheme) {
+      setError("A mark scheme is required before AI marking can run.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    const job: PastPaperProcessingJob = {
+      ...buildProcessingJob(selectedPaper.id),
+      attemptId: selectedAttempt.id,
+      kind: "marking",
+      currentStage: "marking answers",
+    };
+    patchPaper(selectedPaper.id, (paper) => ({ ...paper, jobs: [...paper.jobs, { ...job, status: "running", progressPercent: 4 }] }));
+
+    try {
+      const marks: PastPaperQuestionMark[] = [];
+      const answeredQuestions = selectedPaper.questions
+        .map((question) => ({ question, answer: selectedAttempt.answers.find((item) => item.questionId === question.id) ?? null }))
+        .filter((item) => !questionSupportIssue(item.question))
+        .filter((item): item is { question: PastPaperQuestion; answer: PastPaperAnswer } => Boolean(item.answer && isAnswerAttempted(item.answer)));
+      const failures: string[] = [];
+      if (!answeredQuestions.length) throw new Error("No answered questions to mark. Skipped and unanswered questions are ignored.");
+      for (const [index, { question, answer }] of answeredQuestions.entries()) {
+        updateJob(selectedPaper.id, job.id, { progressPercent: 8 + Math.round((index / Math.max(answeredQuestions.length, 1)) * 82), currentStage: "marking answers" });
+        try {
+          const version = selectedAttempt.marks.filter((mark) => mark.questionId === question.id).length + 1;
+          marks.push(await markAnswerWithPuter(selectedPaper, question, answer, version, "ai", { model: puterModel, fallbackModels: FALLBACK_PUTER_MODELS.filter((model) => model !== puterModel) }));
+        } catch (reason) {
+          const message = reason instanceof Error ? reason.message : String(reason);
+          failures.push(`Question ${question.questionNumber}: ${message}`);
+          marks.push(createMarkingErrorMark(answer.id, question.id, question.maxMarks, message, "ai", selectedAttempt.marks.filter((mark) => mark.questionId === question.id).length + 1));
+        }
+      }
+      if (!marks.length) {
+        throw new Error(
+          [
+            "No answered questions had aligned mark-scheme data, so AI marking was not run.",
+            failures.length ? `Marking diagnostics: ${failures.slice(0, 5).join(" / ")}` : "Marking diagnostics: no per-question error was returned.",
+            "Export diagnostics for the paper to inspect mark-scheme alignment and answered-question state.",
+          ].join("\n"),
+        );
+      }
+      patchAttempt(selectedAttempt.id, (attempt) =>
+        computeAttemptScores(
+          {
+            ...attempt,
+            status: "marked",
+            completedAt: nowIso(),
+            marks: [...attempt.marks.map((mark) => (marks.some((newMark) => newMark.questionId === mark.questionId) ? { ...mark, accepted: false } : mark)), ...marks],
+          },
+          selectedPaper,
+        ),
+      );
+      updateJob(selectedPaper.id, job.id, { status: "completed", progressPercent: 100 });
+      const errorCount = marks.filter((mark) => isMarkingErrorMark(mark)).length;
+      const scoredCount = marks.length - errorCount;
+      setStatus(
+        `Attempt marked with Puter AI. ${scoredCount} answered question${scoredCount === 1 ? "" : "s"} scored${errorCount ? `, ${errorCount} flagged as mark-scheme errors` : ""}.`,
+      );
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : "Marking failed";
+      updateJob(selectedPaper.id, job.id, { status: "failed", errorMessage: message });
+      setError(message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function requestRemark(answer: PastPaperAnswer) {
+    if (!selectedAttempt || !selectedPaper) return;
+    const question = selectedPaper.questions.find((item) => item.id === answer.questionId);
+    if (!question) return;
+    setBusy(true);
+    setError(null);
+    const remark = createRemark(selectedAttempt.id, answer, null);
+    patchAttempt(selectedAttempt.id, (attempt) => ({ ...attempt, remarks: [...attempt.remarks, { ...remark, status: "running" }] }));
+
+    try {
+      const version = selectedAttempt.marks.filter((mark) => mark.questionId === question.id).length + 1;
+      const proposed = await markAnswerWithPuter(selectedPaper, question, answer, version, "remark", { model: puterModel, fallbackModels: FALLBACK_PUTER_MODELS.filter((model) => model !== puterModel) });
+      patchAttempt(selectedAttempt.id, (attempt) => ({
+        ...attempt,
+        marks: [...attempt.marks, proposed],
+        remarks: attempt.remarks.map((item) => (item.id === remark.id ? { ...item, status: "completed", proposedMarkId: proposed.id } : item)),
+      }));
+      setStatus("Remark completed. Review it before accepting.");
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : "Remark failed";
+      patchAttempt(selectedAttempt.id, (attempt) => ({ ...attempt, remarks: attempt.remarks.map((item) => (item.id === remark.id ? { ...item, status: "failed", notes: message } : item)) }));
+      setError(message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function acceptRemark(remarkId: string) {
+    if (!selectedAttempt || !selectedPaper) return;
+    const remark = selectedAttempt.remarks.find((item) => item.id === remarkId);
+    if (!remark?.proposedMarkId) return;
+    patchAttempt(selectedAttempt.id, (attempt) =>
+      computeAttemptScores(
+        {
+          ...attempt,
+          marks: attempt.marks.map((mark) =>
+            mark.id === remark.proposedMarkId ? { ...mark, accepted: true } : mark.questionId === remark.questionId ? { ...mark, accepted: false } : mark,
+          ),
+          remarks: attempt.remarks.map((item) =>
+            item.id === remarkId ? { ...item, acceptedMarkId: remark.proposedMarkId, acceptedAt: nowIso() } : item,
+          ),
+        },
+        selectedPaper,
+      ),
+    );
+  }
+
+  async function askForSuggestions() {
+    setBusy(true);
+    setError(null);
+    try {
+      const text = await puterChat("Give 3 helpful suggestions for a student using an AI past paper worker. Keep it concise.", {
+        model: puterModel,
+        fallbackModels: FALLBACK_PUTER_MODELS.filter((model) => model !== puterModel),
+        timeoutMs: 45_000,
+        requestLabel: "AI suggestions",
+      });
+      setSuggestions(text);
+      setStatus("AI suggestions loaded.");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Suggestions failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runSmokeTest() {
+    setSmokeBusy(true);
+    setError(null);
+    try {
+      const result = await runPuterSmokeTest(puterModel);
+      setSmokeTest(result);
+      if (selectedPaper) {
+        patchPaper(selectedPaper.id, (paper) => {
+          const diagnostics = paper.processingDiagnostics;
+          if (!diagnostics) return paper;
+          return {
+            ...paper,
+            processingDiagnostics: {
+              ...diagnostics,
+              updatedAt: nowIso(),
+              smokeTests: [...diagnostics.smokeTests, result],
+            },
+          };
+        });
+      }
+      setStatus("Puter smoke test complete.");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Puter smoke test failed");
+    } finally {
+      setSmokeBusy(false);
+    }
+  }
+
+  const elapsedSeconds = selectedAttempt ? Math.max(0, Math.floor((clockNow - new Date(selectedAttempt.startedAt).getTime()) / 1000)) : 0;
+  const durationLimit = selectedPaper?.durationMinutes ? selectedPaper.durationMinutes * 60 : 0;
+  const secondsRemaining = durationLimit ? durationLimit - elapsedSeconds : elapsedSeconds;
+  const overtimeSeconds = durationLimit ? Math.max(0, elapsedSeconds - durationLimit) : 0;
+  const markingJob = selectedPaper ? latestJob(selectedPaper, "marking") : null;
+  const appMode =
+    selectedAttempt?.status === "in_progress"
+      ? "taking"
+      : markingJob?.status === "running"
+        ? "marking"
+        : selectedAttempt?.status === "marked"
+          ? "review"
+          : selectedAttempt?.status === "submitted"
+            ? "submitted"
+            : selectedPaper?.processingStatus === "processing"
+              ? "processing"
+              : selectedPaper?.processingStatus === "ready"
+                ? "ready"
+                : data.papers.length
+                  ? "catalogue"
+                  : "empty";
+
+  return (
+    <div className={`app-shell app-shell--${appMode}${isFocusMode ? " app-shell--focus" : ""}`}>
+      {appMode !== "taking" && appMode !== "processing" && appMode !== "marking" && appMode !== "review" ? (
+      <aside className="shell-sidebar">
+        <button className="shell-brand shell-brand--button glass-chrome" onClick={() => { setSelectedPaperId(null); setSelectedAttemptId(null); }} aria-label="Open full dashboard">
+          <AppLogo size={44} />
+        </button>
+
+        <div className="shell-sidebar__block glass-chrome">
+          <span className="eyebrow">Queue</span>
+          <div className="metric-row">
+            <span>Processing</span>
+            <strong>{processingQueue}</strong>
+          </div>
+          <div className="metric-row">
+            <span>Papers</span>
+            <strong>{data.papers.length}</strong>
+          </div>
+          <button className="primary-button primary-button--wide" onClick={() => setUploadOpen(true)}>
+            <UploadCloud size={16} /> Upload paper
+          </button>
+        </div>
+
+        <div className="shell-sidebar__block shell-sidebar__block--grow glass-chrome">
+          <span className="eyebrow">Catalogue</span>
+          <div className="paper-mini-list">
+            {data.papers.map((paper) => (
+              <button
+                key={paper.id}
+                className={paper.id === selectedPaperId ? "list-button list-button--active" : "list-button"}
+                onClick={() => {
+                  setSelectedPaperId(paper.id);
+                  setSelectedAttemptId(null);
+                }}
+              >
+                <div>
+                  <strong>{paper.title}</strong>
+                  <span>{statusLabel(paper.processingStatus)}</span>
+                </div>
+                <FileText size={16} />
+              </button>
+            ))}
+            {!data.papers.length ? <p className="muted-copy">No papers yet.</p> : null}
+          </div>
+        </div>
+      </aside>
+      ) : null}
+
+      <main className="shell-workspace">
+        {appMode === "taking" && selectedPaper && activeQuestion ? (
+          <header className="focus-topbar">
+            <AppLogo size={32} />
+            <div className="focus-topbar__title">
+              <strong>{selectedPaper.title}</strong>
+              <span>
+                Question {displayQuestionLabel(selectedPaper, activeQuestion)} / {activeQuestionIndex + 1} of {selectedPaper.questions.length} / {marksLabel(activeQuestion.maxMarks)}
+              </span>
+            </div>
+            <div className={overtimeSeconds ? "focus-timer focus-timer--overtime" : "focus-timer"}>
+              <Clock3 size={16} /> {durationLimit ? formatClock(secondsRemaining) : formatClock(elapsedSeconds)}
+            </div>
+            <button className="secondary-button" onClick={submitAttempt}>
+              <Check size={16} /> End attempt
+            </button>
+            <button className="secondary-button danger-button" onClick={cancelAttempt}>
+              <Trash2 size={16} /> Cancel
+            </button>
+            <button className="secondary-button" onClick={() => void exitFocusMode()} title={fullscreenSupported ? "Exit browser fullscreen or CSS focus mode" : "Exit CSS focus mode"}>
+              <X size={16} /> Exit focus
+            </button>
+          </header>
+        ) : (
+          <header className="workspace-header glass-chrome">
+            <div>
+              <span className="eyebrow">{statusLabel(appMode)}</span>
+              <h1>{appMode === "empty" ? "Build a grounded paper from the real upload." : "Past papers, processed with source checks."}</h1>
+            </div>
+            <div className="button-row">
+              <a className="secondary-button" href={`${import.meta.env.BASE_URL}puter-test.html`} target="_blank" rel="noreferrer">
+                <Sparkles size={16} /> Puter test
+              </a>
+              <button className="secondary-button" onClick={() => void runSmokeTest()} disabled={smokeBusy}>
+                <FlaskConical size={16} /> Smoke test
+              </button>
+              {appMode === "catalogue" || appMode === "ready" || appMode === "empty" ? (
+                <button className="secondary-button" onClick={askForSuggestions} disabled={busy}>
+                  <BrainCircuit size={16} /> AI suggestions
+                </button>
+              ) : null}
+            </div>
+          </header>
+        )}
+
+        <InlineStatus pending={busy} error={error} success={status} />
+
+        {appMode === "catalogue" ? (
+        <div className="stats-grid">
+          <div className="stat-card">
+            <span>Completed attempts</span>
+            <strong>{analytics.completed}</strong>
+          </div>
+          <div className="stat-card">
+            <span>Average score</span>
+            <strong>{analytics.averagePercent === null ? "-" : `${analytics.averagePercent.toFixed(1)}%`}</strong>
+          </div>
+          <div className="stat-card">
+            <span>Overtime</span>
+            <strong>{formatClock(analytics.overtime)}</strong>
+          </div>
+        </div>
+        ) : null}
+
+        {suggestions && (appMode === "catalogue" || appMode === "ready" || appMode === "empty") ? (
+          <SectionFrame title="AI Suggestions" subtitle="Generated through Puter.js from the frontend.">
+            <p className="reading-copy">{suggestions}</p>
+          </SectionFrame>
+        ) : null}
+
+        {appMode === "empty" ? (
+          <section className="empty-state glass-chrome">
+            <AppLogo size={44} />
+            <h2>Upload a past paper to begin</h2>
+            <p>Questions are only shown after extraction passes source-grounding and completeness checks.</p>
+            <button className="primary-button" onClick={() => setUploadOpen(true)}>
+              <UploadCloud size={16} /> Upload paper
+            </button>
+          </section>
+        ) : null}
+
+        {appMode === "catalogue" ? (
+        <SectionFrame title="Paper Catalogue" subtitle="Grouped by subject and ordered by identified year. Open a paper for its dedicated dashboard.">
+          <div className="subject-catalogue">
+            {subjectPaperGroups(data.papers).map((group) => (
+              <section className="subject-catalogue__row" key={group.subject}>
+                <div className="subject-catalogue__header">
+                  <span className="eyebrow">{group.subject}</span>
+                  <strong>{group.papers.length} paper{group.papers.length === 1 ? "" : "s"}</strong>
+                </div>
+                <div className="paper-catalogue-strip">
+                  {group.papers.map((paper) => (
+              <article key={paper.id} className={paper.id === selectedPaperId ? "paper-card paper-card--active" : "paper-card"}>
+                <button
+                  className="paper-card__main"
+                  onClick={() => {
+                    setSelectedPaperId(paper.id);
+                    setSelectedAttemptId(null);
+                  }}
+                >
+                  <span className="eyebrow">{paper.subject}</span>
+                  <strong>{paper.title}</strong>
+                  <span>{displayMeta(paper)}</span>
+                </button>
+                <div className="paper-card__metrics">
+                  <span>{paper.hasMarkScheme ? "Mark scheme" : "No mark scheme"}</span>
+                  <span>{paper.totalMarks ?? "?"} marks</span>
+                  <span>{paper.durationMinutes ? `${paper.durationMinutes} min` : "No timer"}</span>
+                  <span>{statusLabel(paper.processingStatus)}</span>
+                  <span>{data.attempts.filter((attempt) => attempt.paperId === paper.id).length} attempts</span>
+                  <span>Best {bestScoreForPaper(data, paper.id) ?? "-"}</span>
+                </div>
+                {paper.processingStatus === "processing" ? <ProcessingPanel paper={paper} job={latestJob(paper, "processing")} variant="compact" /> : null}
+                <div className="paper-card__actions">
+                  <button
+                    className="icon-button"
+                    aria-label="Open paper"
+                    onClick={() => {
+                      setSelectedPaperId(paper.id);
+                      setSelectedAttemptId(null);
+                    }}
+                  >
+                    <Eye size={16} />
+                  </button>
+                  <button className="icon-button" aria-label="Process paper" onClick={() => void runProcessing(paper)} disabled={paper.processingStatus === "processing"}>
+                    <ScanLine size={16} />
+                  </button>
+                  <button className="icon-button" aria-label={startAttemptLabel(paper)} onClick={() => beginAttempt(paper)} disabled={paper.processingStatus !== "ready"}>
+                    <Play size={16} />
+                  </button>
+                  <button className="icon-button" aria-label="Delete paper" onClick={() => deletePaper(paper.id)}>
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+              </article>
+                  ))}
+                </div>
+              </section>
+            ))}
+            {!data.papers.length ? <p className="muted-copy">Upload a PDF or image past paper to begin.</p> : null}
+          </div>
+        </SectionFrame>
+        ) : null}
+
+        {selectedPaper && appMode === "processing" ? (
+          <div className="mode-panel mode-panel--processing">
+            <ProcessingPanel paper={selectedPaper} job={latestJob(selectedPaper, "processing")} />
+            <div className="button-row mode-panel__actions">
+              <button
+                className="secondary-button"
+                onClick={() => {
+                  setSelectedPaperId(null);
+                  setSelectedAttemptId(null);
+                }}
+              >
+                <ChevronLeft size={16} /> Dashboard
+              </button>
+              <button className="secondary-button danger-button" onClick={() => cancelProcessing(selectedPaper)} disabled={selectedPaper.processingStatus !== "processing"}>
+                <X size={16} /> Cancel processing
+              </button>
+              <button className="secondary-button" onClick={() => void runProcessing(selectedPaper)} disabled={selectedPaper.processingStatus === "processing"}>
+                <RotateCcw size={16} /> Retry
+              </button>
+              <button className="secondary-button" onClick={() => void runSmokeTest()} disabled={smokeBusy}>
+                <FlaskConical size={16} /> Run smoke test
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        {selectedPaper && appMode !== "processing" ? (
+          <div className={appMode === "taking" ? "workspace-grid workspace-grid--taking" : appMode === "review" ? "workspace-grid workspace-grid--review" : "workspace-grid workspace-grid--split"}>
+            <SectionFrame
+              title={selectedPaper.title}
+              subtitle={`${selectedPaper.processingStatus} / ${selectedPaper.totalMarks ?? "?"} marks / ${selectedPaper.durationMinutes ?? "no timer"} min`}
+              actions={
+                <>
+                  <button
+                    className="secondary-button"
+                    onClick={() => {
+                      setSelectedPaperId(null);
+                      setSelectedAttemptId(null);
+                    }}
+                  >
+                    <ChevronLeft size={16} /> Dashboard
+                  </button>
+                  <button className="secondary-button" onClick={() => setEditingMetadata(true)}>
+                    <Edit3 size={16} /> Edit metadata
+                  </button>
+                  <button className="secondary-button" onClick={() => void runProcessing(selectedPaper)} disabled={selectedPaper.processingStatus === "processing"}>
+                    <ScanLine size={16} /> Process
+                  </button>
+                  <button className="primary-button" onClick={() => beginAttempt(selectedPaper)} disabled={selectedPaper.processingStatus !== "ready"}>
+                    <Maximize2 size={16} /> {startAttemptLabel(selectedPaper)}
+                  </button>
+                  <button className="secondary-button danger-button" onClick={() => deletePaper(selectedPaper.id)}>
+                    <Trash2 size={16} /> Delete paper
+                  </button>
+                </>
+              }
+            >
+              {selectedPaper.processingStatus === "processing" || selectedPaper.processingStatus === "failed" ? <ProcessingPanel paper={selectedPaper} job={latestJob(selectedPaper, "processing")} /> : null}
+
+              {!selectedAttempt ? (
+                <div className="question-disclosure">
+                  <button className="question-disclosure__toggle" onClick={() => setQuestionsExpanded((value) => !value)} aria-expanded={questionsExpanded}>
+                    <span>{questionsExpanded ? "Hide questions" : "Show questions"}</span>
+                    <small>{selectedPaper.questions.length} extracted</small>
+                    <ChevronDown size={16} className={questionsExpanded ? "question-disclosure__icon question-disclosure__icon--open" : "question-disclosure__icon"} />
+                  </button>
+                  <AnimatePresence initial={false}>
+                    {questionsExpanded ? (
+                      <motion.div className="paper-question-overview" initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }}>
+                        {reviewQuestionGroups(selectedPaper).map(({ group, questions }) => (
+                          <div className="review-question-row" key={group}>
+                            <span className="review-question-row__label">Q{group}</span>
+                            <div className="review-question-row__items">
+                              {questions.map(({ question, label }) => (
+                                <div className="review-question-nav__button question-overview-tile" key={question.id} title={cleanVisiblePrompt(question.promptText)}>
+                                  <span>{label}</span>
+                                  <small>{marksLabel(question.maxMarks)}</small>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </motion.div>
+                    ) : null}
+                  </AnimatePresence>
+                  {!selectedPaper.questions.length ? <p className="muted-copy">No structured questions yet. Process the paper to extract them.</p> : null}
+                </div>
+              ) : null}
+
+              {selectedAttempt && selectedAttempt.status === "in_progress" && activeQuestion && activeAnswer ? (
+                <div className="paper-taking-stage">
+                  <div className="paper-timer-strip">
+                    <span>
+                      <ListChecks size={16} /> {activeQuestionIndex + 1}/{selectedPaper.questions.length}
+                    </span>
+                    <span>{marksLabel(activeQuestion.maxMarks)}</span>
+                    <span className={overtimeSeconds ? "paper-timer-strip__overtime" : ""}>
+                      <Clock3 size={16} /> {durationLimit ? formatClock(secondsRemaining) : formatClock(elapsedSeconds)}
+                    </span>
+                  </div>
+                  <article className="question-card question-card--focused">
+                    <div className="question-card__header">
+                      <strong>Question {displayQuestionLabel(selectedPaper, activeQuestion)}</strong>
+                      <span>{marksLabel(activeQuestion.maxMarks)}</span>
+                    </div>
+                    <div className="chip-wrap">
+                      <span className="static-chip">{sourcePagesLabel(activeQuestion)}</span>
+                      {activeQuestion.extractionWarnings?.length ? <span className="static-chip">Has extraction warnings</span> : null}
+                    </div>
+                    <QuestionSourceImages paper={selectedPaper} question={activeQuestion} />
+                    <p className="question-prompt">{cleanVisiblePrompt(activeQuestion.promptText)}</p>
+                    <div className={activeAnswer.skipped ? "answer-workspace answer-workspace--skipped" : "answer-workspace"}>
+                      {activeSupportIssue ? (
+                        <div className="unsupported-question-state">
+                          <div>
+                            <span className="eyebrow">Unsupported format</span>
+                            <strong>This question cannot be read by the current answer UI.</strong>
+                            <p>{activeSupportIssue.reason}</p>
+                          </div>
+                          <div className="supported-format-panel">
+                            <span className="eyebrow">Currently supported</span>
+                            <div className="chip-wrap">
+                              {supportedQuestionTypeLabels.map((label) => (
+                                <span className="static-chip" key={label}>
+                                  {label}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                          <div className="button-row button-row--start">
+                            <button className="secondary-button" onClick={() => reportUnsupportedQuestion(activeQuestion)} disabled={activeSupportIssue.reported}>
+                              <AlertCircle size={16} /> {activeSupportIssue.reported ? "Reported" : "Report inaccurate classification"}
+                            </button>
+                          </div>
+                          <p className="muted-copy">{marksLabel(activeQuestion.maxMarks)} will be deducted from the attempt total.</p>
+                        </div>
+                      ) : (
+                        <AnswerInput question={activeQuestion} answer={activeAnswer} onChange={(patch) => updateAnswer(activeQuestion.id, patch)} />
+                      )}
+                      {!activeSupportIssue && activeAnswer.skipped ? (
+                        <div className="skipped-answer-state">
+                          <div className="skipped-answer-state__icon">
+                            <Check size={22} />
+                          </div>
+                          <div>
+                            <span className="eyebrow">{activeAnswer.skippedWithConfidence ? "Skipped with confidence" : "Skipped"}</span>
+                            <strong>
+                              {activeAnswer.skippedWithConfidence
+                                ? `You predicted ${activeAnswer.confidencePredictedMarks ?? 0}/${activeQuestion.maxMarks} ${activeQuestion.maxMarks === 1 ? "mark" : "marks"}`
+                                : "This question is skipped"}
+                            </strong>
+                            <p>The answer field is locked while this question is skipped.</p>
+                          </div>
+                          <button className="secondary-button" onClick={unskipQuestion}>
+                            <Edit3 size={16} /> Do question
+                          </button>
+                        </div>
+                      ) : !activeSupportIssue ? (
+                        <div className="paper-confidence-row">
+                          <span>Not answering this one?</span>
+                          <button className="secondary-button" onClick={openConfidenceSkip}>
+                            <SkipForward size={16} /> Skip with confidence
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
+                    <div className="button-row">
+                      <button className="secondary-button" onClick={() => setActiveQuestionIndex((value) => Math.max(0, value - 1))} disabled={activeQuestionIndex === 0}>
+                        <ChevronLeft size={16} /> Previous
+                      </button>
+                      <button className="secondary-button" onClick={() => skipQuestion(false)}>
+                        <SkipForward size={16} /> Skip
+                      </button>
+                      <button
+                        className={activeQuestionIndex >= selectedPaper.questions.length - 1 ? "primary-button" : "secondary-button"}
+                        onClick={() => (activeQuestionIndex >= selectedPaper.questions.length - 1 ? submitAttempt() : activeSupportIssue ? setActiveQuestionIndex((value) => Math.min(selectedPaper.questions.length - 1, value + 1)) : submitCurrentAnswer(true))}
+                      >
+                        {activeQuestionIndex >= selectedPaper.questions.length - 1 ? <Check size={16} /> : <Save size={16} />}
+                        {activeQuestionIndex >= selectedPaper.questions.length - 1 ? "Submit paper" : activeSupportIssue ? "Next" : "Save & Next"}
+                      </button>
+                      <button className="secondary-button" onClick={() => setActiveQuestionIndex((value) => Math.min(selectedPaper.questions.length - 1, value + 1))}>
+                        Next <ChevronRight size={16} />
+                      </button>
+                    </div>
+                  </article>
+                </div>
+              ) : null}
+
+              {selectedAttempt && selectedAttempt.status === "submitted" ? (
+                <div className="submitted-summary">
+                  <div className="summary-strip">
+                    <span>Answered {selectedAttempt.answers.filter(isAnswerAttempted).length}</span>
+                    <span>Skipped {selectedAttempt.answers.filter((answer) => answer.skipped).length}</span>
+                    <span>Unanswered {selectedAttempt.answers.filter((answer) => !answer.skipped && !isAnswerAttempted(answer)).length}</span>
+                    <span>Confidence {scoreSummary(displayScores?.confidenceAdjustedScore ?? selectedAttempt.confidenceAdjustedScore, preferredAttemptTotal(selectedPaper, selectedAttempt))}</span>
+                    {unsupportedMarksForPaper(selectedPaper) ? <span className="summary-strip__warning">Unsupported -{unsupportedMarksForPaper(selectedPaper)} marks</span> : null}
+                  </div>
+                  <div className="button-row">
+                    {selectedPaper.hasMarkScheme ? (
+                      <button className="primary-button" onClick={() => void markAttempt()} disabled={busy}>
+                        <BrainCircuit size={16} /> AI mark answered
+                      </button>
+                    ) : (
+                      <div className="processing-error">
+                        <p>No aligned mark scheme. AI marking is disabled because marks will not be fabricated.</p>
+                      </div>
+                    )}
+                    <button className="secondary-button" onClick={() => downloadDiagnosticBundle(selectedPaper, data.attempts)}>
+                      <Download size={16} /> Export diagnostics
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
+              {selectedAttempt && selectedAttempt.status === "marked" && reviewQuestion && reviewAnswer ? (
+                <div className="marked-review-stage">
+                  <div className="review-focus-header">
+                    <div>
+                      <span className="eyebrow">Marked review</span>
+                      <h2>Review</h2>
+                      <p>
+                        {scoreSummary(displayScores?.actualScore ?? selectedAttempt.actualScore, preferredAttemptTotal(selectedPaper, selectedAttempt))} actual
+                        {displayScores && displayScores.confidenceAdjustedScore !== displayScores.actualScore ? ` / ${scoreSummary(displayScores.confidenceAdjustedScore, preferredAttemptTotal(selectedPaper, selectedAttempt))} confidence` : ""}
+                      </p>
+                      {unsupportedMarksForPaper(selectedPaper) ? <p className="unsupported-total-note">{unsupportedMarksForPaper(selectedPaper)} marks deducted for unsupported questions.</p> : null}
+                    </div>
+                    <div className="button-row">
+                      <button className="secondary-button" onClick={() => setSelectedAttemptId(null)}>
+                        <ChevronLeft size={16} /> Back to paper
+                      </button>
+                      <button className="secondary-button" onClick={() => setReviewIndex((value) => Math.max(0, value - 1))} disabled={reviewIndex === 0}>
+                        <ChevronLeft size={16} /> Previous
+                      </button>
+                      <button className="secondary-button" onClick={() => setReviewIndex((value) => Math.min(selectedPaper.questions.length - 1, value + 1))} disabled={reviewIndex >= selectedPaper.questions.length - 1}>
+                        Next <ChevronRight size={16} />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="review-question-nav" aria-label="Review question navigation">
+                    {reviewQuestionGroups(selectedPaper).map(({ group, questions }) => (
+                      <div className="review-question-row" key={group}>
+                        <span className="review-question-row__label">Q{group}</span>
+                        <div className="review-question-row__items">
+                          {questions.map(({ question, index, label }) => {
+                            const mark = latestAcceptedMark(selectedAttempt, question.id);
+                            const answer = selectedAttempt.answers.find((item) => item.questionId === question.id);
+                            const supportIssue = questionSupportIssue(question);
+                            const attempted = Boolean(answer && isAnswerAttempted(answer));
+                            const predicted = answer?.skippedWithConfidence ? answer.confidencePredictedMarks ?? 0 : null;
+                            const markingError = isMarkingErrorMark(mark);
+                            const buttonClass = [
+                              "review-question-nav__button",
+                              index === reviewIndex ? "review-question-nav__button--active" : "",
+                              mark || predicted !== null ? "review-question-nav__button--marked" : "",
+                              supportIssue ? "review-question-nav__button--unsupported" : "",
+                              markingError ? "review-question-nav__button--error" : "",
+                              !attempted && predicted === null ? "review-question-nav__button--unanswered" : "",
+                            ]
+                              .filter(Boolean)
+                              .join(" ");
+                            return (
+                              <button key={question.id} className={buttonClass} onClick={() => setReviewIndex(index)} aria-label={`Review question ${label}`}>
+                                <span>{label}</span>
+                                <small style={mark ? scoreStyle(mark, question.maxMarks) : predictedScoreStyle(answer, question.maxMarks)}>
+                                  {supportIssue ? `-${question.maxMarks}` : markingError ? "Error" : mark ? `${mark.awardedMarks}/${question.maxMarks}` : predicted !== null ? `Pred ${predicted}/${question.maxMarks}` : attempted ? "Unmarked" : "Blank"}
+                                </small>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <article className="paper-review-card paper-review-card--focus">
+                    <div className="question-card__header">
+                      <strong>Question {displayQuestionLabel(selectedPaper, reviewQuestion)}</strong>
+                      <span>{marksLabel(reviewQuestion.maxMarks)}</span>
+                    </div>
+                    <p className="question-prompt">{cleanVisiblePrompt(reviewQuestion.promptText)}</p>
+                    <QuestionSourceImages paper={selectedPaper} question={reviewQuestion} />
+                    <div className="paper-answer-box">
+                      <span className="eyebrow">Your answer</span>
+                      <p>{answerText(reviewAnswer, reviewQuestion)}</p>
+                    </div>
+                    <div className="paper-mark-box">
+                      <div>
+                        <span className="eyebrow">Marks</span>
+                        <strong style={reviewMark ? scoreStyle(reviewMark, reviewQuestion.maxMarks) : predictedScoreStyle(reviewAnswer, reviewQuestion.maxMarks)}>
+                          {reviewSupportIssue
+                            ? "Deducted"
+                            : reviewMark && isMarkingErrorMark(reviewMark)
+                            ? "Error"
+                            : reviewMark
+                            ? `${reviewMark.awardedMarks}/${reviewQuestion.maxMarks}`
+                            : reviewAnswer.skippedWithConfidence
+                              ? `${reviewAnswer.confidencePredictedMarks ?? 0}/${reviewQuestion.maxMarks} predicted`
+                              : "Unmarked"}
+                        </strong>
+                      </div>
+                      <p>
+                        {reviewSupportIssue
+                          ? `Unsupported question format. ${marksLabel(reviewQuestion.maxMarks)} deducted from the attempt total.`
+                          : reviewMark && isMarkingErrorMark(reviewMark)
+                          ? reviewMark.rationale
+                          : reviewMark?.rationale ??
+                            (reviewAnswer.skippedWithConfidence
+                            ? "Skipped with confidence. This predicted score is included in the confidence-adjusted total, not the actual mark."
+                            : selectedPaper.hasMarkScheme
+                              ? "Not marked yet."
+                              : "No mark scheme attached, so marks are not fabricated.")}
+                      </p>
+                      {reviewMark?.missingPoints.length ? (
+                        <div className="chip-wrap">
+                          {reviewMark.missingPoints.map((point) => (
+                            <span className="static-chip" key={point}>
+                              {point}
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
+                      {reviewMark?.markSchemeEvidence ? <p className="muted-copy">{reviewMark.markSchemeEvidence}</p> : null}
+                    </div>
+                    <div className="button-row">
+                      <button className="secondary-button" onClick={() => void requestRemark(reviewAnswer)} disabled={!reviewMark || busy}>
+                        <RotateCcw size={16} /> Remark
+                      </button>
+                      <button className="secondary-button" onClick={() => downloadDiagnosticBundle(selectedPaper, data.attempts)}>
+                        <Download size={16} /> Export diagnostics
+                      </button>
+                      {reviewQuestion.markSchemeData ? (
+                        <button className="secondary-button" onClick={() => setMarkSchemeDetailsOpen((value) => !value)}>
+                          <ListChecks size={16} /> {markSchemeDetailsOpen ? "Hide mark scheme row" : "Show mark scheme row"}
+                        </button>
+                      ) : null}
+                    </div>
+                    {markSchemeDetailsOpen ? <pre className="mark-scheme-row-panel">{markSchemeDataText(reviewQuestion)}</pre> : null}
+                    {selectedAttempt.remarks.filter((remark) => remark.questionId === reviewQuestion.id).length ? (
+                      <div className="paper-history-list">
+                        {selectedAttempt.remarks
+                          .filter((remark) => remark.questionId === reviewQuestion.id)
+                          .map((remark) => {
+                            const proposed = selectedAttempt.marks.find((mark) => mark.id === remark.proposedMarkId);
+                            return (
+                              <div className="remark-card" key={remark.id}>
+                                <div>
+                                  <strong>Remark {statusLabel(remark.status)}</strong>
+                                  <p>{proposed ? `Proposed ${proposed.awardedMarks}/${reviewQuestion.maxMarks}` : remark.notes ?? "Pending"}</p>
+                                </div>
+                                {proposed && !remark.acceptedAt ? (
+                                  <button className="chip-button" onClick={() => acceptRemark(remark.id)}>
+                                    Accept
+                                  </button>
+                                ) : null}
+                              </div>
+                            );
+                          })}
+                      </div>
+                    ) : null}
+                  </article>
+                </div>
+              ) : null}
+            </SectionFrame>
+
+            {appMode !== "taking" && appMode !== "marking" && appMode !== "review" ? (
+            <SectionFrame
+              title="Review"
+              subtitle={selectedAttempt && displayScores ? `${scoreSummary(displayScores.actualScore, preferredAttemptTotal(selectedPaper, selectedAttempt))} actual / ${scoreSummary(displayScores.confidenceAdjustedScore, preferredAttemptTotal(selectedPaper, selectedAttempt))} confidence-adjusted` : "Attempts and marking history appear here."}
+              actions={
+                selectedAttempt ? (
+                  <>
+                    <button className="secondary-button" onClick={() => setReviewIndex((value) => Math.max(0, value - 1))} disabled={reviewIndex === 0}>
+                      <ChevronLeft size={16} />
+                    </button>
+                    <button className="secondary-button" onClick={() => setReviewIndex((value) => Math.min(selectedPaper.questions.length - 1, value + 1))} disabled={reviewIndex >= selectedPaper.questions.length - 1}>
+                      <ChevronRight size={16} />
+                    </button>
+                  </>
+                ) : null
+              }
+            >
+              <div className="attempt-list">
+                {data.attempts
+                  .filter((attempt) => attempt.paperId === selectedPaper.id)
+                  .map((attempt) => (
+                    <div key={attempt.id} className={attempt.id === selectedAttemptId ? "attempt-row attempt-row--active" : "attempt-row"}>
+                      <button className="attempt-row__select" onClick={() => setSelectedAttemptId(attempt.id)}>
+                        <div>
+                          <strong>{new Date(attempt.startedAt).toLocaleString()}</strong>
+                      <span>{statusLabel(attempt.status)}</span>
+                        </div>
+                        <span>{formatPercent(displayAttemptScores(selectedPaper, attempt).actualScore, preferredAttemptTotal(selectedPaper, attempt))}</span>
+                      </button>
+                      <button className="icon-button danger-button" aria-label="Delete attempt" onClick={() => deleteAttempt(attempt.id)}>
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  ))}
+              </div>
+
+              {selectedAttempt && reviewQuestion && reviewAnswer ? (
+                <article className="paper-review-card">
+                  <div className="question-card__header">
+                    <strong>Question {displayQuestionLabel(selectedPaper, reviewQuestion)}</strong>
+                    <span>{marksLabel(reviewQuestion.maxMarks)}</span>
+                  </div>
+                  <p>{cleanVisiblePrompt(reviewQuestion.promptText)}</p>
+                  <QuestionSourceImages paper={selectedPaper} question={reviewQuestion} />
+                  <div className="paper-answer-box">
+                    <span className="eyebrow">Your answer</span>
+                    <p>{answerText(reviewAnswer, reviewQuestion)}</p>
+                  </div>
+                  <div className="paper-mark-box">
+                    <div>
+                      <span className="eyebrow">Marks</span>
+                      <strong style={reviewMark ? scoreStyle(reviewMark, reviewQuestion.maxMarks) : predictedScoreStyle(reviewAnswer, reviewQuestion.maxMarks)}>
+                        {reviewSupportIssue
+                          ? "Deducted"
+                          : reviewMark && isMarkingErrorMark(reviewMark)
+                          ? "Error"
+                          : reviewMark
+                          ? `${reviewMark.awardedMarks}/${reviewQuestion.maxMarks}`
+                          : reviewAnswer.skippedWithConfidence
+                            ? `${reviewAnswer.confidencePredictedMarks ?? 0}/${reviewQuestion.maxMarks} predicted`
+                            : "Unmarked"}
+                      </strong>
+                    </div>
+                      <p>
+                      {reviewSupportIssue
+                        ? `Unsupported question format. ${marksLabel(reviewQuestion.maxMarks)} deducted from the attempt total.`
+                        : reviewMark && isMarkingErrorMark(reviewMark)
+                          ? reviewMark.rationale
+                        : reviewMark?.rationale ??
+                          (reviewAnswer.skippedWithConfidence
+                          ? "Skipped with confidence. This predicted score is included in the confidence-adjusted total, not the actual mark."
+                          : selectedPaper.hasMarkScheme
+                            ? "Not marked yet."
+                            : "No mark scheme attached, so marks are not fabricated.")}
+                    </p>
+                    {reviewMark?.missingPoints.length ? (
+                      <div className="chip-wrap">
+                        {reviewMark.missingPoints.map((point) => (
+                          <span className="static-chip" key={point}>
+                            {point}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+                    {reviewMark?.markSchemeEvidence ? <p className="muted-copy">{reviewMark.markSchemeEvidence}</p> : null}
+                  </div>
+                  <div className="button-row">
+                    <button className="secondary-button" onClick={() => void requestRemark(reviewAnswer)} disabled={!reviewMark || busy}>
+                      <RotateCcw size={16} /> Remark
+                    </button>
+                    {reviewQuestion.markSchemeData ? (
+                      <button className="secondary-button" onClick={() => setMarkSchemeDetailsOpen((value) => !value)}>
+                        <ListChecks size={16} /> {markSchemeDetailsOpen ? "Hide mark scheme row" : "Show mark scheme row"}
+                      </button>
+                    ) : null}
+                  </div>
+                  {markSchemeDetailsOpen ? <pre className="mark-scheme-row-panel">{markSchemeDataText(reviewQuestion)}</pre> : null}
+                  {selectedAttempt.remarks.filter((remark) => remark.questionId === reviewQuestion.id).length ? (
+                    <div className="paper-history-list">
+                      {selectedAttempt.remarks
+                        .filter((remark) => remark.questionId === reviewQuestion.id)
+                        .map((remark) => {
+                          const proposed = selectedAttempt.marks.find((mark) => mark.id === remark.proposedMarkId);
+                          return (
+                            <div className="remark-card" key={remark.id}>
+                              <div>
+                                <strong>Remark {statusLabel(remark.status)}</strong>
+                                <p>{proposed ? `Proposed ${proposed.awardedMarks}/${reviewQuestion.maxMarks}` : remark.notes ?? "Pending"}</p>
+                              </div>
+                              {proposed && !remark.acceptedAt ? (
+                                <button className="chip-button" onClick={() => acceptRemark(remark.id)}>
+                                  Accept
+                                </button>
+                              ) : null}
+                            </div>
+                          );
+                        })}
+                    </div>
+                  ) : null}
+                </article>
+              ) : (
+                <p className="muted-copy">Select or start an attempt to review answers.</p>
+              )}
+            </SectionFrame>
+            ) : null}
+          </div>
+        ) : null}
+      </main>
+
+      {appMode === "catalogue" || appMode === "ready" || appMode === "empty" ? (
+      <aside className="shell-inspector">
+        <div className="inspector-panel glass-chrome">
+          <span className="eyebrow">System</span>
+          <div className="metric-row">
+            <span>AI provider</span>
+            <strong>Puter.js</strong>
+          </div>
+          <div className="metric-row">
+            <span>Model</span>
+            <strong>{puterModel}</strong>
+          </div>
+          <label className="field compact-field">
+            <span>Model switch</span>
+            <select value={puterModel} onChange={(event) => setPuterModel(event.target.value)}>
+              {PUTER_MODEL_CHOICES.map((model) => (
+                <option key={model} value={model}>
+                  {model}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="metric-row">
+            <span>API key</span>
+            <strong>None</strong>
+          </div>
+          <p className="muted-copy">OpenAI server calls and environment variables are not used in this standalone product. Fallbacks run through Puter.js if the selected model errors or times out.</p>
+          {smokeTest ? (
+            <div className="smoke-summary">
+              <span className="eyebrow">Last smoke test</span>
+              <div className="metric-row">
+                <span>Model listed</span>
+                <strong>{smokeTest.modelCheck.supported === null ? "unknown" : smokeTest.modelCheck.supported ? "yes" : "no"}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Text call</span>
+                <strong>{smokeTest.textCall.success ? "ok" : "failed"}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Image call</span>
+                <strong>{smokeTest.imageCall.success ? "ok" : "failed"}</strong>
+              </div>
+              <p className="muted-copy">{smokeTest.imageCall.callShape}</p>
+            </div>
+          ) : null}
+        </div>
+        <div className="inspector-panel glass-chrome">
+          <span className="eyebrow">Analytics</span>
+          {analytics.ready ? (
+            <div className="chart-frame">
+              <BarChart3 size={18} />
+              <div className="metric-row">
+                <span>Marked attempts</span>
+                <strong>{analytics.completed}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Average</span>
+                <strong>{analytics.averagePercent?.toFixed(1)}%</strong>
+              </div>
+              <p>Scores use the adjusted total after unsupported questions are removed.</p>
+            </div>
+          ) : (
+            <div className="analytics-placeholder">
+              <BarChart3 size={20} />
+              <strong>Analytics is being worked on</strong>
+              <p>More useful trends will appear here once there are enough marked attempts to compare.</p>
+            </div>
+          )}
+          <button
+            className="secondary-button danger-button primary-button--wide"
+            onClick={() => {
+              clearData();
+              setData({ papers: [], attempts: [] });
+              setSelectedPaperId(null);
+              setSelectedAttemptId(null);
+            }}
+          >
+            Clear local data
+          </button>
+        </div>
+      </aside>
+      ) : null}
+
+      <UploadModal open={uploadOpen} pending={busy} onClose={() => setUploadOpen(false)} onSubmit={handleUpload} />
+      <MetadataModal open={editingMetadata && Boolean(selectedPaper)} draft={metadataDraft} onChange={setMetadataDraft} onClose={() => setEditingMetadata(false)} onSave={saveMetadata} />
+      <ConfidenceSkipModal
+        open={confidenceSkipOpen}
+        question={activeQuestion}
+        value={confidenceDraft}
+        onChange={setConfidenceDraft}
+        onClose={() => setConfidenceSkipOpen(false)}
+        onConfirm={confirmConfidenceSkip}
+      />
+    </div>
+  );
+}

@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Puter AI Smoke Test</title>
+    <script src="https://js.puter.com/v2/"></script>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #050607;
+        color: #f4f7fb;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 28px;
+      }
+
+      main {
+        width: min(820px, 100%);
+        display: grid;
+        gap: 18px;
+      }
+
+      .panel,
+      .result {
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 18px;
+        background: rgba(255, 255, 255, 0.045);
+        box-shadow: 0 20px 70px rgba(0, 0, 0, 0.38);
+      }
+
+      .panel {
+        padding: 22px;
+      }
+
+      h1 {
+        margin: 0 0 8px;
+        font-size: clamp(1.5rem, 3vw, 2.2rem);
+      }
+
+      p {
+        color: rgba(244, 247, 251, 0.68);
+        line-height: 1.55;
+      }
+
+      button {
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 999px;
+        padding: 11px 16px;
+        background: #80f6b4;
+        color: #03100a;
+        font: inherit;
+        font-weight: 800;
+        cursor: pointer;
+      }
+
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.55;
+      }
+
+      .results {
+        display: grid;
+        gap: 12px;
+      }
+
+      .result {
+        padding: 16px;
+      }
+
+      .result strong {
+        display: block;
+        margin-bottom: 8px;
+      }
+
+      .error {
+        color: #ff818f;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="panel">
+        <h1>Puter AI Smoke Test</h1>
+        <p>
+          Runs the same text and image call shapes used by the app, then reports raw timing and support details.
+        </p>
+        <button id="run-tests">Run Puter smoke test</button>
+      </section>
+      <section class="results" id="results" aria-live="polite"></section>
+    </main>
+
+    <script>
+      const model = "gpt-5.4-nano";
+      const tinyImage =
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+      const results = document.getElementById("results");
+      const button = document.getElementById("run-tests");
+
+      function textFromResponse(response) {
+        if (typeof response === "string") return response;
+        if (response?.message?.content) return response.message.content;
+        if (response?.text) return response.text;
+        return JSON.stringify(response);
+      }
+
+      function withTimeout(promise, ms) {
+        let timeoutId;
+        const timeout = new Promise((_, reject) => {
+          timeoutId = window.setTimeout(() => reject(new Error(`Puter request timed out after ${ms / 1000}s`)), ms);
+        });
+        return Promise.race([promise, timeout]).finally(() => window.clearTimeout(timeoutId));
+      }
+
+      function serialiseError(error) {
+        if (error instanceof Error) {
+          return {
+            name: error.name,
+            message: error.message,
+            stack: error.stack,
+          };
+        }
+        return error;
+      }
+
+      async function runStep(title, call, timeoutMs) {
+        const item = document.createElement("article");
+        item.className = "result";
+        item.innerHTML = `<strong>${title}</strong><p>Loading...</p>`;
+        results.appendChild(item);
+        const started = performance.now();
+        try {
+          const response = await withTimeout(call(), timeoutMs);
+          item.querySelector("p").textContent = JSON.stringify(
+            {
+              model,
+              elapsedMs: Math.round(performance.now() - started),
+              success: true,
+              raw: textFromResponse(response),
+            },
+            null,
+            2,
+          );
+          item.dataset.status = "success";
+        } catch (error) {
+          item.querySelector("p").className = "error";
+          item.querySelector("p").textContent = JSON.stringify(
+            {
+              model,
+              elapsedMs: Math.round(performance.now() - started),
+              success: false,
+              rawError: serialiseError(error),
+            },
+            null,
+            2,
+          );
+          item.dataset.status = "error";
+        }
+      }
+
+      async function runTests() {
+        button.disabled = true;
+        results.innerHTML = "";
+
+        if (!window.puter?.ai?.chat) {
+          results.innerHTML = `<article class="result"><strong>Puter.js</strong><p class="error">Puter.js did not expose puter.ai.chat()</p></article>`;
+          button.disabled = false;
+          return;
+        }
+
+        await runStep("Model list support", async () => {
+          if (!puter.ai.listModels) return { supported: null, reason: "puter.ai.listModels() unavailable" };
+          const models = await puter.ai.listModels();
+          return {
+            supported: models.some((entry) => entry.id === model || entry.id === `openai/${model}` || entry.aliases?.includes?.(model)),
+            returnedModels: models.length,
+          };
+        }, 15000);
+
+        await runStep("Text call", () => puter.ai.chat("Reply with exactly: ok", { model, temperature: 0, max_tokens: 8 }), 25000);
+
+        await runStep(
+          "Image call: puter.ai.chat(prompt, [mediaDataUrl], options)",
+          () => puter.ai.chat('Reply with JSON only: {"imageInputSeen":true}', [tinyImage], { model, temperature: 0, max_tokens: 40 }),
+          30000,
+        );
+
+        button.disabled = false;
+      }
+
+      button.addEventListener("click", runTests);
+      window.addEventListener("DOMContentLoaded", runTests);
+    </script>
+  </body>
+</html>
