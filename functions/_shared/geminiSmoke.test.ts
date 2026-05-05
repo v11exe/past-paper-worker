@@ -87,7 +87,7 @@ function stubGeminiFetch(): typeof fetch {
 
 describe("Gemini smoke suite", () => {
   it("verifies ping, text, extraction, marking, and redaction paths through the proxy", async () => {
-    const env = { GEMINI_API_KEY: process.env.GEMINI_API_KEY ?? "test-key" };
+    const env = { GEMINI_API_KEY: "test-key" };
     const fetchImpl = stubGeminiFetch();
 
     const ping = await handleAiProxyRequest(request({ operation: "smoke_ping", model: "gemini-2.5-flash-lite", prompt: "ping" }), env, { fetchImpl });
