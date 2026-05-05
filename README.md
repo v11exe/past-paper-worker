@@ -1,6 +1,6 @@
 # Past Paper Worker
 
-A Vite + React app for uploading past papers, extracting structured questions, taking attempts, and marking answers with Gemini through a secure Cloudflare Pages / Worker proxy.
+A Vite + React app for uploading past papers, extracting structured questions, taking attempts, and marking answers with Gemini through a secure Cloudflare Worker proxy.
 
 ## What it does
 
@@ -70,7 +70,7 @@ Frontend-safe config belongs in `.env.local`:
 VITE_GEMINI_PROXY_URL=http://127.0.0.1:8788/api/ai
 ```
 
-Server-side secret belongs in Cloudflare Worker / Pages Functions secrets only:
+Server-side secret belongs in Cloudflare Worker secrets only:
 
 ```bash
 GEMINI_API_KEY=PASTE_ROTATED_GEMINI_KEY_HERE
@@ -78,15 +78,14 @@ GEMINI_API_KEY=PASTE_ROTATED_GEMINI_KEY_HERE
 
 Use `.dev.vars.example` as the local template for worker secrets.
 
-## Cloudflare Pages deployment
+## Cloudflare Worker deployment
 
-This project is set up for Cloudflare Pages with a secure Gemini proxy route.
+This project is set up for a Cloudflare Worker with static assets and a secure Gemini proxy route.
 
-- Framework preset: `Vite`
 - Build command: `npm run build`
-- Build output directory: `dist`
+- Wrangler deploy command: `npm run deploy`
 
-Set the `GEMINI_API_KEY` secret in Cloudflare for the Pages Function / Worker runtime.
+Set the `GEMINI_API_KEY` secret in Cloudflare for the Worker runtime.
 
 The frontend calls `/api/ai` by default in production, so the key stays server-side.
 

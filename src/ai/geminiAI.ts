@@ -177,7 +177,7 @@ async function ensureProxyConfigured() {
   const proxyUrl = resolveProxyUrl();
   if (proxyUrl) return proxyUrl;
   throw new Error(
-    "Gemini proxy URL is not configured for local development. Set VITE_GEMINI_PROXY_URL in .env.local or run the app through the Cloudflare Pages function route.",
+    "Gemini proxy URL is not configured for local development. Set VITE_GEMINI_PROXY_URL in .env.local or run the app through the Cloudflare Worker route.",
   );
 }
 
