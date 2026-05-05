@@ -181,6 +181,28 @@ p {
   overflow: auto;
 }
 
+.update-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.update-card__body strong {
+  font-size: 1rem;
+}
+
+.update-card__body p {
+  margin-bottom: 0;
+}
+
+.update-card__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
 .wordmark,
 .section-frame__header,
 .question-card__header,

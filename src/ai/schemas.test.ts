@@ -320,4 +320,20 @@ describe("normalizePaperMarkOutput", () => {
     expect(result.missingPoints).toEqual([]);
     expect(result.markSchemeEvidence).toContain("Correct identification");
   });
+
+  it("zeros contradictory full-mark outputs when the model says the answer is incorrect", () => {
+    const normalized = normalizePaperMarkOutput({
+      awardedMarks: 2,
+      maxMarks: 2,
+      rationale: "The student's working is incorrect and the final answer is incorrect.",
+      missingPoints: [],
+      markSchemeEvidence: "answer 47",
+      markSchemeReference: "01(c)",
+    });
+
+    const result = paperMarkOutputSchema.parse(normalized);
+
+    expect(result.awardedMarks).toBe(0);
+    expect(result.maxMarks).toBe(2);
+  });
 });

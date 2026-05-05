@@ -70,6 +70,11 @@ function hasPositiveMarkingSignal(value: string) {
   return /\b(correct|credit|award|allow|accept|matches|identified|identification|earns?|scores?|full marks?)\b/.test(text);
 }
 
+function hasNegativeMarkingSignal(value: string) {
+  const text = value.toLowerCase();
+  return /\b(incorrect|wrong|does not follow|doesn't follow|final answer is incorrect|not correct|cannot be awarded|no marks?|fails to|did not provide|does not provide|insufficient|nothing relevant|no relevant|no matching)\b/.test(text);
+}
+
 function isRealMissingPoint(value: string) {
   const text = value.toLowerCase();
   if (hasPositiveMarkingSignal(value)) return false;
@@ -377,10 +382,17 @@ export function normalizePaperMarkOutput(input: unknown): unknown {
       ? { reference: textFromUnknown(input.markSchemeReference) }
       : {};
   const positiveEvidence = [rationale, evidenceText ?? "", ...positiveMissingPoints].some(hasPositiveMarkingSignal);
+  const negativeEvidence = [rationale, evidenceText ?? "", ...rawMissingPoints].some(hasNegativeMarkingSignal);
   const insufficiencySignal = /\b(?:insufficient|does not include|doesn't include|no relevant|no matching|no mark scheme|nothing relevant|cannot be awarded|not enough evidence)\b/i.test(
     [rationale, evidenceText ?? "", ...rawMissingPoints].join(" "),
   );
-  const awardedMarks = insufficiencySignal ? 0 : rawAwardedMarks === 0 && maxMarks > 0 && positiveEvidence && !missingPoints.length ? maxMarks : rawAwardedMarks;
+  const awardedMarks = negativeEvidence
+    ? 0
+    : insufficiencySignal
+      ? 0
+      : rawAwardedMarks === 0 && maxMarks > 0 && positiveEvidence && !missingPoints.length
+        ? maxMarks
+        : rawAwardedMarks;
 
   return {
     ...input,

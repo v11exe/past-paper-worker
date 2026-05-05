@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DEFAULT_AI_MODEL, FALLBACK_AI_MODELS, AI_MODEL_CHOICES, ensureAIReadyForUserAction, aiChat, runAISmokeTest } from "./ai/provider";
+import { appMeta } from "./appMeta";
 import { AppLogo } from "./components/AppLogo";
 import { supportedSubjects } from "./subjects";
 import { extractFileAssetContent } from "./lib/fileText";
@@ -107,6 +108,15 @@ function statusLabel(value: string) {
     saved: "Saved",
   };
   return labels[value] ?? value.replaceAll("_", " ");
+}
+
+function formatUpdateTimestamp(value: string) {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "Time unavailable";
+  return new Intl.DateTimeFormat("en-GB", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(parsed);
 }
 
 function marksLabel(marks: number) {
@@ -1638,6 +1648,18 @@ export function App() {
               </button>
             ))}
             {!data.papers.length ? <p className="muted-copy">No papers yet.</p> : null}
+          </div>
+        </div>
+
+        <div className="shell-sidebar__block glass-chrome update-card">
+          <span className="eyebrow">Recent update</span>
+          <div className="update-card__body">
+            <strong>{appMeta.version}</strong>
+            <p>{appMeta.commitMessage}</p>
+            <div className="update-card__meta">
+              {appMeta.commitHash ? <span>Commit {appMeta.commitHash}</span> : null}
+              <span>{formatUpdateTimestamp(appMeta.updatedAt)}</span>
+            </div>
           </div>
         </div>
       </aside>

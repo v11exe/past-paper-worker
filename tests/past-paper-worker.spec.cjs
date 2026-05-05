@@ -145,7 +145,7 @@ test("upload, process, take, and AI mark a paper", async ({ page }) => {
 
   await page.getByRole("button", { name: /Show questions/ }).click();
   await expect(page.getByText("Q1")).toBeVisible();
-  await expect(page.getByText("1.1")).toBeVisible();
+  await expect(page.getByText("1.1", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "AI suggestions" }).click();
   await expect(page.getByText("Process the paper first.")).toBeVisible();
   await page.getByRole("button", { name: "Smoke test" }).click();
