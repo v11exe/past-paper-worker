@@ -1,35 +1,47 @@
 # Past Paper Worker
 
-A standalone React/Vite app for uploading past papers, extracting structured questions, taking attempts, and marking answered questions with Puter.js AI calls from the browser.
+A Vite + React app for uploading past papers, extracting structured questions, taking attempts, and marking answers with Gemini through a secure Cloudflare Pages / Worker proxy.
 
-## What Works Locally
+## What it does
 
-- Upload PDFs or images for the question paper and optional mark scheme.
-- Extract question metadata, source pages, marks, and answer formats.
-- Take a paper in focus mode with normal skips or confidence skips.
-- AI-mark answered questions using the uploaded mark scheme.
-- Save papers and attempts in the browser with `localStorage`.
+- Upload a question paper and optional mark scheme.
+- Extract structured questions, marks, numbering, and supported answer formats.
+- Run timed attempts in focus mode.
+- Mark answered questions against the uploaded mark scheme.
+- Export diagnostics when processing or marking goes wrong.
 
-## Privacy And Storage
+## Storage and privacy
 
-This app does not set cookies. It stores papers, attempts, metadata, diagnostics, and reduced page thumbnails in the current browser's `localStorage` so each browser profile keeps its own data. Full page screenshots are stripped before persistence to reduce storage pressure.
+This app stores papers, attempts, metadata, diagnostics, and reduced thumbnails in the current browser's `localStorage`.
 
-Uploaded files and extracted text stay in the browser unless you run an AI action through Puter.js. AI processing and marking send the relevant prompts and attached page images to Puter.js from the frontend.
+- There is no database.
+- There is no app backend for user data.
+- Each browser profile keeps its own local data.
+- Full-size screenshots are stripped before persistence to reduce storage pressure.
 
-## Development
-
-```bash
-npm install
-npm run dev
-```
-
-Open `http://127.0.0.1:5177`.
+AI actions do require a backend proxy for Gemini. The browser never receives the Gemini API key directly.
 
 ## Install
 
 ```bash
 npm install
 ```
+
+## Run locally
+
+Start the frontend:
+
+```bash
+npm run dev
+```
+
+For AI features in local development, point the frontend at a Gemini proxy route with `.env.local`:
+
+```bash
+VITE_GEMINI_PROXY_URL=http://127.0.0.1:8788/api/ai
+```
+
+Use `.env.local.example` as the template.
 
 ## Build
 
@@ -39,34 +51,47 @@ npm run build
 
 The production build is written to `dist/`.
 
-## Checks Before Pushing
+## Checks
 
 ```bash
 npm run lint
+npm run typecheck
 npm test
 npm run build
 npm run e2e
+npm run smoke:gemini
 ```
 
-## Static Hosting
+## Gemini configuration
 
-The app is built with a relative Vite base (`./`), so the `dist` folder can be hosted at a domain root or a subpath. It needs a static host that serves `index.html`, `assets/*`, `logo.svg`, and `puter-test.html`.
+Frontend-safe config belongs in `.env.local`:
 
-For GitHub Pages, build with `npm run build` and publish the `dist/` folder. For Netlify, Vercel, Cloudflare Pages, or another static host, use:
+```bash
+VITE_GEMINI_PROXY_URL=http://127.0.0.1:8788/api/ai
+```
 
-- Build command: `npm run build`
-- Output directory: `dist`
+Server-side secret belongs in Cloudflare Worker / Pages Functions secrets only:
 
-No backend environment variables are required.
+```bash
+GEMINI_API_KEY=PASTE_ROTATED_GEMINI_KEY_HERE
+```
 
-### Cloudflare Pages
+Use `.dev.vars.example` as the local template for worker secrets.
 
-This project is safe to deploy to Cloudflare Pages as a static site:
+## Cloudflare Pages deployment
+
+This project is set up for Cloudflare Pages with a secure Gemini proxy route.
 
 - Framework preset: `Vite`
 - Build command: `npm run build`
 - Build output directory: `dist`
 
-Because app data is stored in browser `localStorage`, there is no backend or database to configure for deployment.
+Set the `GEMINI_API_KEY` secret in Cloudflare for the Pages Function / Worker runtime.
 
-Because the app does not set cookies, it does not need a cookie consent popup for its own storage. If you add third-party analytics, ads, or tracking later, add consent before enabling those services.
+The frontend calls `/api/ai` by default in production, so the key stays server-side.
+
+## Notes
+
+- The Vite base is relative (`./`) so static assets can be served from a root domain or subpath.
+- AI features will not work on a purely static host unless it also provides the `/api/ai` Gemini proxy.
+- The app itself does not set cookies. If you add third-party analytics later, handle consent separately.
