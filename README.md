@@ -21,6 +21,8 @@ This app stores papers, attempts, metadata, diagnostics, and reduced thumbnails 
 
 AI actions do require a backend proxy for Gemini. The browser never receives the Gemini API key directly.
 
+Feedback submissions also go through the Worker so the Resend API key stays server-side.
+
 ## Install
 
 ```bash
@@ -42,6 +44,8 @@ VITE_GEMINI_PROXY_URL=http://127.0.0.1:8788/api/ai
 ```
 
 Use `.env.local.example` as the template.
+
+The feedback form does not need any frontend secret or extra Vite environment variable.
 
 ## Build
 
@@ -74,9 +78,17 @@ Server-side secret belongs in Cloudflare Worker secrets only:
 
 ```bash
 GEMINI_API_KEY=PASTE_ROTATED_GEMINI_KEY_HERE
+RESEND_API_KEY=PASTE_RESEND_API_KEY_HERE
 ```
 
 Use `.dev.vars.example` as the local template for worker secrets.
+
+Optional Worker runtime settings for feedback email delivery:
+
+```bash
+FEEDBACK_TO_EMAIL=feedback@omair.uk
+FEEDBACK_FROM_EMAIL=Revision Feedback <feedback@omair.uk>
+```
 
 ## Cloudflare Worker deployment
 
@@ -85,9 +97,15 @@ This project is set up for a Cloudflare Worker with static assets and a secure G
 - Build command: `npm run build`
 - Wrangler deploy command: `npm run deploy`
 
-Set the `GEMINI_API_KEY` secret in Cloudflare for the Worker runtime.
+Set these Worker runtime secrets/settings in Cloudflare:
+
+- required: `GEMINI_API_KEY`
+- required: `RESEND_API_KEY`
+- optional: `FEEDBACK_TO_EMAIL`
+- optional: `FEEDBACK_FROM_EMAIL`
 
 The frontend calls `/api/ai` by default in production, so the key stays server-side.
+The in-app feedback form posts to `/api/feedback`, and the Worker forwards it to Resend without exposing any mail secret to the browser.
 
 ## Notes
 

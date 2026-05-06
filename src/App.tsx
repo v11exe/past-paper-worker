@@ -15,6 +15,7 @@ import {
   FlaskConical,
   Loader2,
   Maximize2,
+  MessageSquare,
   ListChecks,
   Play,
   RotateCcw,
@@ -31,6 +32,18 @@ import { appMeta } from "./appMeta";
 import { AppLogo } from "./components/AppLogo";
 import { supportedSubjects } from "./subjects";
 import { extractFileAssetContent } from "./lib/fileText";
+import {
+  FEEDBACK_TYPE_OPTIONS,
+  clearFeedbackDraft,
+  emptyFeedbackDraft,
+  feedbackDraftIsValid,
+  loadFeedbackDraft,
+  saveFeedbackDraft,
+  submitFeedback,
+  validateFeedbackDraft,
+  type FeedbackDraft,
+  type FeedbackValidationErrors,
+} from "./lib/feedback";
 import { createId } from "./lib/id";
 import {
   acceptedMarks,
@@ -752,6 +765,113 @@ function MetadataModal({
   );
 }
 
+function FeedbackModal({
+  open,
+  draft,
+  errors,
+  pending,
+  submitEnabled,
+  serverError,
+  onChange,
+  onBlur,
+  onClose,
+  onSubmit,
+}: {
+  open: boolean;
+  draft: FeedbackDraft;
+  errors: FeedbackValidationErrors;
+  pending: boolean;
+  submitEnabled: boolean;
+  serverError: string | null;
+  onChange: (patch: Partial<FeedbackDraft>) => void;
+  onBlur: (field: keyof FeedbackDraft) => void;
+  onClose: () => void;
+  onSubmit: () => void;
+}) {
+  return (
+    <AnimatePresence>
+      {open ? (
+        <motion.div className="paper-modal" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+          <motion.div className="paper-modal__panel feedback-modal__panel" initial={{ y: 18, scale: 0.98 }} animate={{ y: 0, scale: 1 }} exit={{ y: 18, scale: 0.98 }}>
+            <div className="section-frame__header">
+              <div>
+                <span className="eyebrow">Feedback</span>
+                <h2>Send feedback</h2>
+                <p>Share bugs, tweaks, and ideas without leaving the app.</p>
+              </div>
+              <button className="icon-button" onClick={onClose} aria-label="Close feedback form">
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="form-grid form-grid--two feedback-form-grid">
+              <label className={errors.type ? "field field--invalid" : "field"}>
+                <span>Feedback type</span>
+                <select aria-label="Feedback type" value={draft.type} onChange={(event) => onChange({ type: event.target.value as FeedbackDraft["type"] })} onBlur={() => onBlur("type")}>
+                  {FEEDBACK_TYPE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                {errors.type ? <small className="field__error">{errors.type}</small> : null}
+              </label>
+
+              <label className={errors.email ? "field field--invalid" : "field"}>
+                <span>Email</span>
+                <input
+                  type="email"
+                  aria-label="Email"
+                  inputMode="email"
+                  autoComplete="email"
+                  placeholder="you@example.com"
+                  value={draft.email}
+                  onChange={(event) => onChange({ email: event.target.value })}
+                  onBlur={() => onBlur("email")}
+                />
+                {errors.email ? <small className="field__error">{errors.email}</small> : null}
+              </label>
+
+              <label className={errors.title ? "field field--invalid feedback-form-grid__full" : "field feedback-form-grid__full"}>
+                <span>Title</span>
+                <input aria-label="Title" value={draft.title} onChange={(event) => onChange({ title: event.target.value })} onBlur={() => onBlur("title")} maxLength={120} />
+                {errors.title ? <small className="field__error">{errors.title}</small> : null}
+              </label>
+
+              <label className={errors.description ? "field field--invalid feedback-form-grid__full" : "field feedback-form-grid__full"}>
+                <span>Description</span>
+                <textarea aria-label="Description" value={draft.description} onChange={(event) => onChange({ description: event.target.value })} onBlur={() => onBlur("description")} maxLength={4000} />
+                {errors.description ? <small className="field__error">{errors.description}</small> : null}
+              </label>
+
+              <label className="feedback-honeypot" aria-hidden="true" tabIndex={-1}>
+                <span>Leave blank</span>
+                <input aria-label="Leave blank" value={draft.website} onChange={(event) => onChange({ website: event.target.value })} onBlur={() => onBlur("website")} autoComplete="off" />
+              </label>
+            </div>
+
+            {serverError ? (
+              <div className="processing-error">
+                <p>{serverError}</p>
+              </div>
+            ) : null}
+
+            <div className="button-row">
+              <button className="secondary-button" onClick={onClose} disabled={pending}>
+                <X size={16} /> Cancel
+              </button>
+              <button className="primary-button" onClick={onSubmit} disabled={!submitEnabled}>
+                {pending ? <Loader2 size={16} className="processing-spinner" /> : <MessageSquare size={16} />}
+                {pending ? "Sending..." : "Send feedback"}
+              </button>
+            </div>
+          </motion.div>
+        </motion.div>
+      ) : null}
+    </AnimatePresence>
+  );
+}
+
 function ConfidenceSkipModal({
   open,
   question,
@@ -970,6 +1090,11 @@ export function App() {
   const [confidenceDraft, setConfidenceDraft] = useState<number | "">("");
   const [questionsExpanded, setQuestionsExpanded] = useState(false);
   const [markSchemeDetailsOpen, setMarkSchemeDetailsOpen] = useState(false);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [feedbackDraft, setFeedbackDraft] = useState<FeedbackDraft>(() => emptyFeedbackDraft());
+  const [feedbackTouched, setFeedbackTouched] = useState<Partial<Record<keyof FeedbackDraft, boolean>>>({});
+  const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
+  const [feedbackError, setFeedbackError] = useState<string | null>(null);
 
   useEffect(() => saveData(data), [data]);
 
@@ -1019,6 +1144,11 @@ export function App() {
     setMarkSchemeDetailsOpen(false);
   }, [reviewQuestion?.id, selectedAttemptId]);
 
+  useEffect(() => {
+    if (!feedbackOpen) return;
+    saveFeedbackDraft(feedbackDraft);
+  }, [feedbackDraft, feedbackOpen]);
+
   const analytics = useMemo(() => {
     const markedAttempts = data.attempts.filter((attempt) => attempt.status === "marked");
     const completed = markedAttempts.length;
@@ -1048,6 +1178,57 @@ export function App() {
       paperCode: selectedPaper.paperCode ?? "",
     });
   }, [selectedPaper]);
+
+  function openFeedback() {
+    setFeedbackDraft(loadFeedbackDraft());
+    setFeedbackTouched({});
+    setFeedbackError(null);
+    setFeedbackOpen(true);
+  }
+
+  function closeFeedback() {
+    setFeedbackOpen(false);
+    setFeedbackError(null);
+  }
+
+  function patchFeedbackDraft(patch: Partial<FeedbackDraft>) {
+    setFeedbackDraft((current) => ({ ...current, ...patch }));
+    setFeedbackError(null);
+  }
+
+  function touchFeedbackField(field: keyof FeedbackDraft) {
+    setFeedbackTouched((current) => ({ ...current, [field]: true }));
+  }
+
+  async function submitFeedbackForm() {
+    const draftErrors = validateFeedbackDraft(feedbackDraft);
+    if (!feedbackDraftIsValid(draftErrors)) {
+      setFeedbackTouched({
+        type: true,
+        email: true,
+        title: true,
+        description: true,
+        website: true,
+      });
+      return;
+    }
+
+    setFeedbackSubmitting(true);
+    setFeedbackError(null);
+    try {
+      await submitFeedback(feedbackDraft, { path: feedbackContextPath(), appVersion: appMeta.version });
+      clearFeedbackDraft();
+      setFeedbackDraft(emptyFeedbackDraft());
+      setFeedbackTouched({});
+      setFeedbackOpen(false);
+      setStatus("Feedback sent. Thank you.");
+      setError(null);
+    } catch (reason) {
+      setFeedbackError(reason instanceof Error ? reason.message : "Feedback could not be sent. Please try again.");
+    } finally {
+      setFeedbackSubmitting(false);
+    }
+  }
 
   function patchPaper(paperId: string, updater: (paper: PastPaper) => PastPaper) {
     setData((current) => ({ ...current, papers: current.papers.map((paper) => (paper.id === paperId ? updater(paper) : paper)) }));
@@ -1604,6 +1785,30 @@ export function App() {
                 : data.papers.length
                   ? "catalogue"
                   : "empty";
+  const feedbackErrors = useMemo(() => {
+    const errors = validateFeedbackDraft(feedbackDraft);
+    const visible: FeedbackValidationErrors = {};
+    (Object.keys(errors) as Array<keyof FeedbackDraft>).forEach((key) => {
+      if (feedbackTouched[key]) visible[key] = errors[key];
+    });
+    return visible;
+  }, [feedbackDraft, feedbackTouched]);
+  const feedbackCanSubmit = feedbackDraftIsValid(validateFeedbackDraft(feedbackDraft)) && !feedbackSubmitting;
+  const showFeedbackButton =
+    (appMode === "empty" || appMode === "catalogue" || appMode === "ready") &&
+    !uploadOpen &&
+    !editingMetadata &&
+    !confidenceSkipOpen &&
+    !feedbackOpen &&
+    !busy &&
+    !smokeBusy;
+
+  function feedbackContextPath() {
+    const page = window.location.pathname || "/";
+    if (selectedPaper && selectedAttempt?.status === "submitted") return `${page}#submitted/${selectedPaper.id}`;
+    if (selectedPaper) return `${page}#paper/${selectedPaper.id}`;
+    return `${page}#${appMode}`;
+  }
 
   return (
     <div className={`app-shell app-shell--${appMode}${isFocusMode ? " app-shell--focus" : ""}`}>
@@ -2392,6 +2597,18 @@ export function App() {
 
       <UploadModal open={uploadOpen} pending={busy} onClose={() => setUploadOpen(false)} onSubmit={handleUpload} />
       <MetadataModal open={editingMetadata && Boolean(selectedPaper)} draft={metadataDraft} onChange={setMetadataDraft} onClose={() => setEditingMetadata(false)} onSave={saveMetadata} />
+      <FeedbackModal
+        open={feedbackOpen}
+        draft={feedbackDraft}
+        errors={feedbackErrors}
+        pending={feedbackSubmitting}
+        submitEnabled={feedbackCanSubmit}
+        serverError={feedbackError}
+        onChange={patchFeedbackDraft}
+        onBlur={touchFeedbackField}
+        onClose={closeFeedback}
+        onSubmit={() => void submitFeedbackForm()}
+      />
       <ConfidenceSkipModal
         open={confidenceSkipOpen}
         question={activeQuestion}
@@ -2400,6 +2617,11 @@ export function App() {
         onClose={() => setConfidenceSkipOpen(false)}
         onConfirm={confirmConfidenceSkip}
       />
+      {showFeedbackButton ? (
+        <button className="feedback-fab" type="button" aria-label="Send feedback" onClick={openFeedback}>
+          <MessageSquare size={20} />
+        </button>
+      ) : null}
     </div>
   );
 }

@@ -15,6 +15,6 @@
     "nodejs_compat"
   ],
   "secrets": {
-    "required": ["GEMINI_API_KEY"]
+    "required": ["GEMINI_API_KEY", "RESEND_API_KEY"]
   }
 }

@@ -1,4 +1,5 @@
 import { handleAiProxyRequest } from "../functions/_shared/geminiProxy";
+import { handleFeedbackRequest } from "../functions/_shared/feedbackProxy";
 import type { AIProxyFailureResponse, AIProxyOperation } from "../src/ai/contracts";
 
 type AssetBinding = {
@@ -7,6 +8,9 @@ type AssetBinding = {
 
 type WorkerEnv = {
   GEMINI_API_KEY?: string;
+  RESEND_API_KEY?: string;
+  FEEDBACK_TO_EMAIL?: string;
+  FEEDBACK_FROM_EMAIL?: string;
   ASSETS: AssetBinding;
 };
 
@@ -16,6 +20,10 @@ function isAiRoute(pathname: string) {
 
 function isDebugEnvRoute(pathname: string) {
   return pathname === "/api/debug/env";
+}
+
+function isFeedbackRoute(pathname: string) {
+  return pathname === "/api/feedback";
 }
 
 function json(data: unknown, status = 200) {
@@ -72,6 +80,9 @@ export default {
         return missingRuntimeKeyResponse(request);
       }
       return handleAiProxyRequest(request, env);
+    }
+    if (isFeedbackRoute(url.pathname)) {
+      return handleFeedbackRequest(request, env);
     }
     return env.ASSETS.fetch(request);
   },

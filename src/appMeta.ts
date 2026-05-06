@@ -10,7 +10,7 @@ declare const __APP_META__: AppMeta | undefined;
 export const appMeta: AppMeta = typeof __APP_META__ !== "undefined"
   ? __APP_META__
   : {
-      version: "v1.16",
+      version: "v1.17",
       updatedAt: new Date(0).toISOString(),
       commitHash: null,
       commitMessage: "Local build metadata unavailable",
