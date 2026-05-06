@@ -8,6 +8,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Clock3,
+  Copy,
   Download,
   Edit3,
   Eye,
@@ -22,7 +23,10 @@ import {
   RotateCcw,
   Save,
   ScanLine,
+  Settings2,
   SkipForward,
+  Sparkles,
+  Target,
   Trash2,
   UploadCloud,
   X,
@@ -99,6 +103,95 @@ const emptyDraft: PaperDraftInput = {
   paperCode: "",
 };
 
+type ThemeMode = "dark" | "dim" | "contrast";
+type AccentColour = "mint" | "blue" | "purple" | "amber" | "rose";
+type DashboardDensity = "comfortable" | "compact";
+type NotificationDuration = "normal" | "longer" | "reduced";
+type MotionPreference = "system" | "reduce";
+type FigurePreference = "show" | "collapse";
+type NavPreference = "grid" | "list";
+type LandingPreference = "overview" | "catalogue" | "last_paper";
+
+type AppPreferences = {
+  themeMode: ThemeMode;
+  accentColour: AccentColour;
+  dashboardDensity: DashboardDensity;
+  showTechnicalModel: boolean;
+  sourceFigures: FigurePreference;
+  questionNavigation: NavPreference;
+  notificationDuration: NotificationDuration;
+  reduceMotion: MotionPreference;
+  defaultLanding: LandingPreference;
+};
+
+type ToastKind = "success" | "error" | "warning" | "info";
+
+type ToastItem = {
+  id: string;
+  kind: ToastKind;
+  message: string;
+  durationMs: number;
+};
+
+const PREFERENCES_STORAGE_KEY = "past-paper-worker:preferences:v1";
+
+const defaultPreferences: AppPreferences = {
+  themeMode: "dark",
+  accentColour: "mint",
+  dashboardDensity: "comfortable",
+  showTechnicalModel: true,
+  sourceFigures: "show",
+  questionNavigation: "grid",
+  notificationDuration: "normal",
+  reduceMotion: "system",
+  defaultLanding: "overview",
+};
+
+const accentOptions: Array<{ value: AccentColour; label: string }> = [
+  { value: "mint", label: "Mint" },
+  { value: "blue", label: "Blue" },
+  { value: "purple", label: "Purple" },
+  { value: "amber", label: "Amber" },
+  { value: "rose", label: "Rose" },
+];
+
+function loadPreferences(): AppPreferences {
+  try {
+    const raw = window.localStorage.getItem(PREFERENCES_STORAGE_KEY);
+    if (!raw) return defaultPreferences;
+    const parsed = JSON.parse(raw) as Partial<AppPreferences>;
+    return {
+      ...defaultPreferences,
+      ...parsed,
+      themeMode: ["dark", "dim", "contrast"].includes(String(parsed.themeMode)) ? (parsed.themeMode as ThemeMode) : defaultPreferences.themeMode,
+      accentColour: accentOptions.some((option) => option.value === parsed.accentColour) ? (parsed.accentColour as AccentColour) : defaultPreferences.accentColour,
+      dashboardDensity: parsed.dashboardDensity === "compact" ? "compact" : "comfortable",
+      notificationDuration: parsed.notificationDuration === "longer" || parsed.notificationDuration === "reduced" ? parsed.notificationDuration : "normal",
+      reduceMotion: parsed.reduceMotion === "reduce" ? "reduce" : "system",
+      sourceFigures: parsed.sourceFigures === "collapse" ? "collapse" : "show",
+      questionNavigation: parsed.questionNavigation === "list" ? "list" : "grid",
+      defaultLanding: parsed.defaultLanding === "catalogue" || parsed.defaultLanding === "last_paper" ? parsed.defaultLanding : "overview",
+    };
+  } catch {
+    return defaultPreferences;
+  }
+}
+
+function savePreferences(preferences: AppPreferences) {
+  try {
+    window.localStorage.setItem(PREFERENCES_STORAGE_KEY, JSON.stringify(preferences));
+  } catch {
+    // Local-only preferences are best effort.
+  }
+}
+
+function toastDuration(kind: ToastKind, preference: NotificationDuration) {
+  const base = kind === "success" ? 4000 : kind === "info" ? 5000 : kind === "warning" ? 6000 : 7000;
+  if (preference === "longer") return Math.round(base * 1.55);
+  if (preference === "reduced") return Math.round(base * 0.62);
+  return base;
+}
+
 function toNullable(value: string) {
   const trimmed = value.trim();
   return trimmed ? trimmed : null;
@@ -122,6 +215,7 @@ function statusLabel(value: string) {
     in_progress: "In progress",
     submitted: "Submitted",
     marked: "Marked",
+    attempted: "Attempted",
     saved: "Saved",
   };
   return labels[value] ?? value.replaceAll("_", " ");
@@ -243,6 +337,71 @@ function subjectPaperGroups(papers: PastPaper[]) {
   }));
 }
 
+function attemptsForPaper(data: AppData, paperId: string) {
+  return data.attempts.filter((attempt) => attempt.paperId === paperId);
+}
+
+function paperStatusTone(paper: PastPaper, attempts: PastPaperAttempt[]) {
+  if (attempts.some((attempt) => attempt.status === "marked")) return "marked";
+  if (attempts.length) return "attempted";
+  return paper.processingStatus;
+}
+
+function paperPrimaryActionLabel(paper: PastPaper, attempts: PastPaperAttempt[]) {
+  if (paper.processingStatus === "unprocessed" || paper.processingStatus === "failed") return "Process";
+  if (paper.processingStatus === "processing") return "Processing";
+  if (attempts.some((attempt) => attempt.status === "in_progress")) return "Continue";
+  if (attempts.length) return "Retry";
+  return "Start";
+}
+
+function paperProgressPercent(data: AppData, paper: PastPaper) {
+  const attempts = attemptsForPaper(data, paper.id);
+  const marked = attempts.find((attempt) => attempt.status === "marked");
+  if (marked) {
+    const total = preferredAttemptTotal(paper, marked);
+    return total ? Math.round((displayAttemptScores(paper, marked).actualScore / total) * 100) : 0;
+  }
+  if (paper.processingStatus === "processing") return Math.max(6, Math.round(latestJob(paper, "processing")?.progressPercent ?? 12));
+  if (paper.processingStatus === "ready") return 100;
+  if (paper.questions.length) return Math.min(100, Math.max(12, Math.round((paper.questions.length / Math.max(1, paper.questions.length)) * 100)));
+  return 0;
+}
+
+function paperBestScoreLabel(data: AppData, paper: PastPaper) {
+  const best = bestScoreForPaper(data, paper.id);
+  return best ?? "-";
+}
+
+function attemptReviewStats(paper: PastPaper, attempt: PastPaperAttempt | null) {
+  if (!attempt) {
+    return {
+      answered: 0,
+      blank: paper.questions.length,
+      skipped: 0,
+      unsupported: paper.questions.filter((question) => questionSupportIssue(question)).length,
+      errors: 0,
+      mistakes: 0,
+    };
+  }
+  const answered = attempt.answers.filter(isAnswerAttempted).length;
+  const skipped = attempt.answers.filter((answer) => answer.skipped).length;
+  const unsupported = paper.questions.filter((question) => questionSupportIssue(question)).length;
+  const errors = attempt.marks.filter(isMarkingErrorMark).length;
+  const mistakes = paper.questions.filter((question) => {
+    const mark = latestAcceptedMark(attempt, question.id);
+    return mark && !isMarkingErrorMark(mark) && mark.awardedMarks < question.maxMarks;
+  }).length;
+  return {
+    answered,
+    skipped,
+    unsupported,
+    errors,
+    mistakes,
+    blank: Math.max(0, paper.questions.length - answered - skipped - unsupported),
+  };
+}
+
 function markSchemeDataText(question: PastPaperQuestion | null) {
   if (!question?.markSchemeData) return "No aligned mark-scheme row is stored for this question.";
   const data = question.markSchemeData;
@@ -265,6 +424,106 @@ function markSchemeDataText(question: PastPaperQuestion | null) {
   const evidence = typeof data.evidence === "string" ? data.evidence : "";
   const points = Array.isArray(data.points) ? data.points.join("\n") : "";
   return [rowText, evidence ? `Evidence:\n${evidence}` : null, points && !rowText ? `Points:\n${points}` : null].filter(Boolean).join("\n\n") || JSON.stringify(data, null, 2);
+}
+
+function MarkSchemeDataPanel({ question, onCopy }: { question: PastPaperQuestion | null; onCopy: () => void }) {
+  if (!question?.markSchemeData) {
+    return (
+      <div className="mark-scheme-row-panel mark-scheme-row-panel--structured">
+        <p>No aligned mark-scheme row is stored for this question.</p>
+      </div>
+    );
+  }
+  const data = question.markSchemeData;
+  const rows = Array.isArray(data.rows) ? data.rows : [];
+  const evidence = typeof data.evidence === "string" ? data.evidence.trim() : "";
+  const points = Array.isArray(data.points) ? data.points.filter((point): point is string => typeof point === "string" && point.trim().length > 0) : [];
+  return (
+    <div className="mark-scheme-row-panel mark-scheme-row-panel--structured">
+      <div className="mark-scheme-row-panel__header">
+        <div>
+          <span className="eyebrow">Aligned mark scheme</span>
+          <strong>{rows.length ? `${rows.length} source row${rows.length === 1 ? "" : "s"}` : "Source evidence"}</strong>
+        </div>
+        <button className="secondary-button" type="button" onClick={onCopy}>
+          <Copy size={16} /> Copy row
+        </button>
+      </div>
+      {rows.length ? (
+        <div className="mark-scheme-structured-list">
+          {rows.map((row, index) => {
+            const value = row && typeof row === "object" ? (row as Record<string, unknown>) : {};
+            const accept = Array.isArray(value.accept) ? value.accept.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+            const reject = Array.isArray(value.doNotAccept) ? value.doNotAccept.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+            const ignore = Array.isArray(value.ignore) ? value.ignore.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+            const markPoint = typeof value.markPoint === "string" ? value.markPoint.trim() : "";
+            const guidance = typeof value.guidance === "string" ? value.guidance.trim() : "";
+            return (
+              <article className="mark-scheme-structured-row" key={`${index}-${markPoint.slice(0, 16)}`}>
+                <span className="eyebrow">Row {index + 1}</span>
+                {markPoint ? (
+                  <section>
+                    <strong>Mark point</strong>
+                    <p>{markPoint}</p>
+                  </section>
+                ) : null}
+                {accept.length ? (
+                  <section>
+                    <strong>Accept</strong>
+                    <div className="chip-wrap">
+                      {accept.map((item) => (
+                        <span className="static-chip" key={item}>
+                          {item}
+                        </span>
+                      ))}
+                    </div>
+                  </section>
+                ) : null}
+                {reject.length ? (
+                  <section>
+                    <strong>Reject</strong>
+                    <div className="chip-wrap">
+                      {reject.map((item) => (
+                        <span className="static-chip static-chip--danger" key={item}>
+                          {item}
+                        </span>
+                      ))}
+                    </div>
+                  </section>
+                ) : null}
+                {ignore.length ? (
+                  <section>
+                    <strong>Ignore</strong>
+                    <p>{ignore.join("; ")}</p>
+                  </section>
+                ) : null}
+                {guidance ? (
+                  <section>
+                    <strong>Guidance</strong>
+                    <p>{guidance}</p>
+                  </section>
+                ) : null}
+              </article>
+            );
+          })}
+        </div>
+      ) : points.length ? (
+        <div className="chip-wrap">
+          {points.map((point) => (
+            <span className="static-chip" key={point}>
+              {point}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      {evidence ? (
+        <details className="raw-evidence-details">
+          <summary>Raw evidence</summary>
+          <p>{evidence}</p>
+        </details>
+      ) : null}
+    </div>
+  );
 }
 
 function textLengthForAsset(asset: PastPaperAsset) {
@@ -426,6 +685,60 @@ function InlineStatus({ pending, error, success }: { pending?: boolean; error?: 
     );
   }
   return null;
+}
+
+function toastIcon(kind: ToastKind) {
+  if (kind === "success") return <Check size={17} />;
+  if (kind === "error") return <AlertCircle size={17} />;
+  if (kind === "warning") return <Info size={17} />;
+  return <Sparkles size={17} />;
+}
+
+function ToastStack({ toasts, onDismiss }: { toasts: ToastItem[]; onDismiss: (id: string) => void }) {
+  return (
+    <div className="toast-stack" aria-live="polite" aria-relevant="additions removals">
+      <AnimatePresence initial={false}>
+        {toasts.map((toast) => (
+          <ToastNotice key={toast.id} toast={toast} onDismiss={onDismiss} />
+        ))}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+function ToastNotice({ toast, onDismiss }: { toast: ToastItem; onDismiss: (id: string) => void }) {
+  const [paused, setPaused] = useState(false);
+
+  useEffect(() => {
+    if (paused) return;
+    const timer = window.setTimeout(() => onDismiss(toast.id), toast.durationMs);
+    return () => window.clearTimeout(timer);
+  }, [onDismiss, paused, toast.durationMs, toast.id]);
+
+  return (
+    <motion.div
+      className={`toast-notice toast-notice--${toast.kind}${paused ? " toast-notice--paused" : ""}`}
+      initial={{ opacity: 0, y: -14, scale: 0.98 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0, y: -12, scale: 0.98 }}
+      onMouseEnter={() => setPaused(true)}
+      onMouseLeave={() => setPaused(false)}
+      onFocus={() => setPaused(true)}
+      onBlur={() => setPaused(false)}
+      role={toast.kind === "error" ? "alert" : "status"}
+      style={{ "--toast-duration": `${toast.durationMs}ms` } as React.CSSProperties}
+    >
+      <div className="toast-notice__icon">{toastIcon(toast.kind)}</div>
+      <div className="toast-notice__body">
+        <strong>{toast.kind === "success" ? "Done" : toast.kind === "error" ? "Needs attention" : toast.kind === "warning" ? "Check this" : "Update"}</strong>
+        <span>{toast.message}</span>
+      </div>
+      <button className="icon-button" type="button" aria-label="Dismiss notification" onClick={() => onDismiss(toast.id)}>
+        <X size={15} />
+      </button>
+      <span className="toast-notice__progress" />
+    </motion.div>
+  );
 }
 
 const stageProgressRanges: Record<ProcessingStage, [number, number]> = {
@@ -926,12 +1239,16 @@ function DashboardStatusPanels({
   smokeTest,
   analytics,
   onClearLocalData,
+  preferences,
+  onPreferencesChange,
 }: {
   aiModel: string;
   setAIModel: (value: string) => void;
   smokeTest: AISmokeTestResult | null;
   analytics: { completed: number; averagePercent: number | null; overtime: number; ready: boolean };
   onClearLocalData: () => void;
+  preferences: AppPreferences;
+  onPreferencesChange: (patch: Partial<AppPreferences>) => void;
 }) {
   return (
     <>
@@ -941,25 +1258,37 @@ function DashboardStatusPanels({
           <span>AI provider</span>
           <strong>Gemini</strong>
         </div>
-        <div className="metric-row">
-          <span>Model</span>
-          <strong>{aiModel}</strong>
-        </div>
-        <label className="field compact-field">
-          <span>Model switch</span>
-          <select aria-label="Model switch" value={aiModel} onChange={(event) => setAIModel(event.target.value)}>
-            {AI_MODEL_CHOICES.map((model) => (
-              <option key={model} value={model}>
-                {model}
-              </option>
-            ))}
-          </select>
-        </label>
+        {preferences.showTechnicalModel ? (
+          <>
+            <div className="metric-row">
+              <span>Model</span>
+              <strong>{aiModel}</strong>
+            </div>
+            <label className="field compact-field">
+              <span>Model switch</span>
+              <select aria-label="Model switch" value={aiModel} onChange={(event) => setAIModel(event.target.value)}>
+                {AI_MODEL_CHOICES.map((model) => (
+                  <option key={model} value={model}>
+                    {model}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </>
+        ) : null}
         <div className="metric-row">
           <span>API key</span>
           <strong>Server-side only</strong>
         </div>
-        <p className="muted-copy">The browser calls a secure Gemini proxy endpoint. The Gemini API key stays server-side, and fallback models are only used when the selected model fails or times out.</p>
+        <div className="metric-row">
+          <span>Data</span>
+          <strong>Local only</strong>
+        </div>
+        <div className="metric-row">
+          <span>Version</span>
+          <strong>{appMeta.version}</strong>
+        </div>
+        <p className="muted-copy">This device stores papers and attempts locally. AI calls go through the secure Worker proxy, so API keys stay server-side.</p>
         {smokeTest ? (
           <div className="smoke-summary">
             <span className="eyebrow">Last smoke test</span>
@@ -1012,6 +1341,80 @@ function DashboardStatusPanels({
           Clear local data
         </button>
       </div>
+      <div className="inspector-panel glass-chrome preferences-panel">
+        <span className="eyebrow">Customize</span>
+        <div className="preference-grid">
+          <label className="field compact-field">
+            <span>Theme mode</span>
+            <select aria-label="Theme mode" value={preferences.themeMode} onChange={(event) => onPreferencesChange({ themeMode: event.target.value as ThemeMode })}>
+              <option value="dark">Dark</option>
+              <option value="dim">Dim</option>
+              <option value="contrast">High contrast</option>
+            </select>
+          </label>
+          <label className="field compact-field">
+            <span>Accent colour</span>
+            <select aria-label="Accent colour" value={preferences.accentColour} onChange={(event) => onPreferencesChange({ accentColour: event.target.value as AccentColour })}>
+              {accentOptions.map((option) => (
+                <option value={option.value} key={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field compact-field">
+            <span>Dashboard density</span>
+            <select aria-label="Dashboard density" value={preferences.dashboardDensity} onChange={(event) => onPreferencesChange({ dashboardDensity: event.target.value as DashboardDensity })}>
+              <option value="comfortable">Comfortable</option>
+              <option value="compact">Compact</option>
+            </select>
+          </label>
+          <label className="field compact-field">
+            <span>Technical model info</span>
+            <select aria-label="Technical model info" value={preferences.showTechnicalModel ? "show" : "hide"} onChange={(event) => onPreferencesChange({ showTechnicalModel: event.target.value === "show" })}>
+              <option value="show">Show</option>
+              <option value="hide">Hide</option>
+            </select>
+          </label>
+          <label className="field compact-field">
+            <span>Source figures</span>
+            <select aria-label="Source figures" value={preferences.sourceFigures} onChange={(event) => onPreferencesChange({ sourceFigures: event.target.value as FigurePreference })}>
+              <option value="show">Show by default</option>
+              <option value="collapse">Collapse by default</option>
+            </select>
+          </label>
+          <label className="field compact-field">
+            <span>Question navigation</span>
+            <select aria-label="Question navigation" value={preferences.questionNavigation} onChange={(event) => onPreferencesChange({ questionNavigation: event.target.value as NavPreference })}>
+              <option value="grid">Grid</option>
+              <option value="list">Compact list</option>
+            </select>
+          </label>
+          <label className="field compact-field">
+            <span>Notifications</span>
+            <select aria-label="Notification duration" value={preferences.notificationDuration} onChange={(event) => onPreferencesChange({ notificationDuration: event.target.value as NotificationDuration })}>
+              <option value="normal">Normal</option>
+              <option value="longer">Longer</option>
+              <option value="reduced">Reduced</option>
+            </select>
+          </label>
+          <label className="field compact-field">
+            <span>Motion</span>
+            <select aria-label="Reduce motion" value={preferences.reduceMotion} onChange={(event) => onPreferencesChange({ reduceMotion: event.target.value as MotionPreference })}>
+              <option value="system">Follow system</option>
+              <option value="reduce">Always reduce</option>
+            </select>
+          </label>
+          <label className="field compact-field preference-grid__full">
+            <span>Default dashboard landing</span>
+            <select aria-label="Default dashboard landing" value={preferences.defaultLanding} onChange={(event) => onPreferencesChange({ defaultLanding: event.target.value as LandingPreference })}>
+              <option value="overview">Home overview</option>
+              <option value="catalogue">Catalogue</option>
+              <option value="last_paper">Last opened paper</option>
+            </select>
+          </label>
+        </div>
+      </div>
     </>
   );
 }
@@ -1023,6 +1426,8 @@ function DashboardStatusModal({
   smokeTest,
   analytics,
   onClearLocalData,
+  preferences,
+  onPreferencesChange,
   onClose,
 }: {
   open: boolean;
@@ -1031,6 +1436,8 @@ function DashboardStatusModal({
   smokeTest: AISmokeTestResult | null;
   analytics: { completed: number; averagePercent: number | null; overtime: number; ready: boolean };
   onClearLocalData: () => void;
+  preferences: AppPreferences;
+  onPreferencesChange: (patch: Partial<AppPreferences>) => void;
   onClose: () => void;
 }) {
   return (
@@ -1049,7 +1456,7 @@ function DashboardStatusModal({
               </button>
             </div>
             <div className="status-modal__content">
-              <DashboardStatusPanels aiModel={aiModel} setAIModel={setAIModel} smokeTest={smokeTest} analytics={analytics} onClearLocalData={onClearLocalData} />
+              <DashboardStatusPanels aiModel={aiModel} setAIModel={setAIModel} smokeTest={smokeTest} analytics={analytics} onClearLocalData={onClearLocalData} preferences={preferences} onPreferencesChange={onPreferencesChange} />
             </div>
           </motion.div>
         </motion.div>
@@ -1114,13 +1521,13 @@ function ConfidenceSkipModal({
   );
 }
 
-function QuestionSourceImages({ paper, question }: { paper: PastPaper; question: PastPaperQuestion }) {
+function QuestionSourceImages({ paper, question, defaultCollapsed = false }: { paper: PastPaper; question: PastPaperQuestion; defaultCollapsed?: boolean }) {
   const screenshots = questionSourceScreenshots(paper, question);
   const mediaRefs = relevantQuestionMediaRefs(question);
   if (!screenshots.length && !mediaRefs.length) return null;
 
-  return (
-    <div className="question-source-media" aria-label="Source figures and page images">
+  const content = (
+    <>
       <div className="question-source-media__header">
         <span className="eyebrow">Source figures</span>
         {screenshots.length ? <span>{screenshots.map((shot) => `Page ${shot.pageNumber}`).join(", ")}</span> : null}
@@ -1145,6 +1552,20 @@ function QuestionSourceImages({ paper, question }: { paper: PastPaper; question:
           ))}
         </div>
       ) : null}
+    </>
+  );
+
+  return defaultCollapsed ? (
+    <details className="question-source-media" aria-label="Source figures and page images">
+      <summary>
+        <span>Source figures</span>
+        <small>{screenshots.length ? screenshots.map((shot) => `Page ${shot.pageNumber}`).join(", ") : `${mediaRefs.length} refs`}</small>
+      </summary>
+      {content}
+    </details>
+  ) : (
+    <div className="question-source-media" aria-label="Source figures and page images">
+      {content}
     </div>
   );
 }
@@ -1283,8 +1704,49 @@ export function App() {
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
   const [feedbackError, setFeedbackError] = useState<string | null>(null);
   const [systemInfoOpen, setSystemInfoOpen] = useState(false);
+  const [preferences, setPreferences] = useState<AppPreferences>(() => loadPreferences());
+  const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const landingApplied = useRef(false);
 
   useEffect(() => saveData(data), [data]);
+  useEffect(() => savePreferences(preferences), [preferences]);
+
+  const pushToast = useCallback(
+    (kind: ToastKind, message: string) => {
+      const trimmed = message.trim();
+      if (!trimmed) return;
+      setToasts((current) => [
+        ...current.slice(-3),
+        {
+          id: createId("toast"),
+          kind,
+          message: trimmed,
+          durationMs: toastDuration(kind, preferences.notificationDuration),
+        },
+      ]);
+    },
+    [preferences.notificationDuration],
+  );
+
+  const dismissToast = useCallback((id: string) => {
+    setToasts((current) => current.filter((toast) => toast.id !== id));
+  }, []);
+
+  function patchPreferences(patch: Partial<AppPreferences>) {
+    setPreferences((current) => ({ ...current, ...patch }));
+  }
+
+  useEffect(() => {
+    if (!status) return;
+    pushToast("success", status);
+    setStatus(null);
+  }, [pushToast, status]);
+
+  useEffect(() => {
+    if (!error) return;
+    pushToast("error", error);
+    setError(null);
+  }, [error, pushToast]);
 
   useEffect(() => {
     if (selectedPaperId && !data.papers.some((paper) => paper.id === selectedPaperId)) setSelectedPaperId(null);
@@ -1323,6 +1785,14 @@ export function App() {
     }
     setReviewIndex((value) => Math.min(value, selectedPaper.questions.length - 1));
   }, [selectedPaper?.id, selectedPaper?.questions.length, selectedAttemptId]);
+
+  useEffect(() => {
+    if (landingApplied.current || selectedPaperId || !data.papers.length) return;
+    landingApplied.current = true;
+    if (preferences.defaultLanding === "last_paper") {
+      setSelectedPaperId(data.papers[0]?.id ?? null);
+    }
+  }, [data.papers, preferences.defaultLanding, selectedPaperId]);
 
   useEffect(() => {
     setQuestionsExpanded(false);
@@ -2045,6 +2515,11 @@ export function App() {
     !systemInfoOpen &&
     !busy &&
     !smokeBusy;
+  const activeAttemptStats = selectedPaper ? attemptReviewStats(selectedPaper, selectedAttempt) : null;
+  const paperAttempts = selectedPaper ? attemptsForPaper(data, selectedPaper.id) : [];
+  const answeredDuringAttempt = selectedAttempt?.answers.filter(isAnswerAttempted).length ?? 0;
+  const skippedDuringAttempt = selectedAttempt?.answers.filter((answer) => answer.skipped).length ?? 0;
+  const focusProgressPercent = selectedPaper?.questions.length ? Math.round(((activeQuestionIndex + 1) / selectedPaper.questions.length) * 100) : 0;
 
   function feedbackContextPath() {
     const page = window.location.pathname || "/";
@@ -2061,8 +2536,31 @@ export function App() {
     setSystemInfoOpen(false);
   }
 
+  async function copyMarkSchemeRow(question: PastPaperQuestion | null) {
+    const text = markSchemeDataText(question);
+    try {
+      await navigator.clipboard?.writeText(text);
+      setStatus("Mark scheme row copied.");
+    } catch {
+      setError("Could not copy the mark scheme row.");
+    }
+  }
+
+  const rootClassName = [
+    "app-shell",
+    `app-shell--${appMode}`,
+    `app-shell--theme-${preferences.themeMode}`,
+    `app-shell--accent-${preferences.accentColour}`,
+    `app-shell--density-${preferences.dashboardDensity}`,
+    preferences.reduceMotion === "reduce" ? "app-shell--reduce-motion" : "",
+    preferences.questionNavigation === "list" ? "app-shell--nav-list" : "",
+    isFocusMode ? "app-shell--focus" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   return (
-    <div className={`app-shell app-shell--${appMode}${isFocusMode ? " app-shell--focus" : ""}`}>
+    <div className={rootClassName}>
       {appMode !== "taking" && appMode !== "processing" && appMode !== "marking" && appMode !== "review" ? (
       <aside className="shell-sidebar">
         <button className="shell-brand shell-brand--button glass-chrome" onClick={() => { setSelectedPaperId(null); setSelectedAttemptId(null); }} aria-label="Open full dashboard">
@@ -2148,7 +2646,7 @@ export function App() {
           <header className="workspace-header glass-chrome">
             <div>
               <span className="eyebrow">{statusLabel(appMode)}</span>
-              <h1>{appMode === "empty" ? "Build a grounded paper from the real upload." : "Past papers, processed with source checks."}</h1>
+              <h1>{appMode === "empty" ? "Turn past papers into marked practice." : "Practise real past papers with source-checked marking."}</h1>
             </div>
             <div className="button-row">
               {dashboardStatusAccessible ? (
@@ -2194,14 +2692,82 @@ export function App() {
         ) : null}
 
         {appMode === "empty" ? (
-          <section className="empty-state glass-chrome">
-            <AppLogo size={44} />
-            <h2>Upload a past paper to begin</h2>
-            <p>Questions are only shown after extraction passes source-grounding and completeness checks.</p>
-            <button className="primary-button" onClick={() => setUploadOpen(true)}>
-              <UploadCloud size={16} /> Upload paper
-            </button>
-          </section>
+          <div className="dashboard-overview">
+            <section className="dashboard-hero glass-chrome">
+              <div className="dashboard-hero__copy">
+                <span className="eyebrow">Grounded GCSE practice</span>
+                <h2>Turn past papers into marked practice.</h2>
+                <p>Upload a question paper and mark scheme. The app extracts questions, lets you answer them in focus mode, then marks your work with source checks.</p>
+                <div className="button-row">
+                  <button className="primary-button" onClick={() => setUploadOpen(true)}>
+                    <UploadCloud size={16} /> Upload paper
+                  </button>
+                  <button className="secondary-button" onClick={() => setSystemInfoOpen(true)}>
+                    <Settings2 size={16} /> Customize
+                  </button>
+                </div>
+              </div>
+              <div className="dashboard-hero__status">
+                <div className="metric-row">
+                  <span>AI provider</span>
+                  <strong>Gemini</strong>
+                </div>
+                <div className="metric-row">
+                  <span>Storage</span>
+                  <strong>Local only</strong>
+                </div>
+                <div className="metric-row">
+                  <span>Version</span>
+                  <strong>{appMeta.version}</strong>
+                </div>
+              </div>
+            </section>
+
+            <section className="starter-grid" aria-label="How it works">
+              {[
+                ["1", "Upload paper", "Add the question paper and mark scheme."],
+                ["2", "Extract questions", "Build a structured practice session."],
+                ["3", "Practise in focus mode", "Answer one question at a time."],
+                ["4", "Mark and review", "Compare against source-checked rows."],
+              ].map(([step, title, copy]) => (
+                <article className="starter-card glass-chrome" key={step}>
+                  <span>{step}</span>
+                  <strong>{title}</strong>
+                  <p>{copy}</p>
+                </article>
+              ))}
+            </section>
+
+            <div className="dashboard-lower-grid">
+              <section className="quick-actions-card glass-chrome">
+                <div className="section-frame__header">
+                  <div>
+                    <span className="eyebrow">Quick actions</span>
+                    <h2>Start from here</h2>
+                  </div>
+                </div>
+                <div className="quick-action-grid">
+                  <button className="secondary-button" onClick={() => setUploadOpen(true)}>
+                    <UploadCloud size={16} /> Add paper
+                  </button>
+                  <button className="secondary-button" onClick={() => void runSmokeTest()} disabled={smokeBusy}>
+                    <FlaskConical size={16} /> Smoke test
+                  </button>
+                  <button className="secondary-button" onClick={askForSuggestions} disabled={busy}>
+                    <BrainCircuit size={16} /> AI suggestions
+                  </button>
+                  <button className="secondary-button" onClick={openFeedback}>
+                    <MessageSquare size={16} /> Share feedback
+                  </button>
+                </div>
+              </section>
+              <section className="recent-activity-card glass-chrome">
+                <span className="eyebrow">Recent activity</span>
+                <h2>No papers yet</h2>
+                <p>Once you upload a paper, recent processing, attempts, and marking updates will collect here.</p>
+              </section>
+            </div>
+          </div>
         ) : null}
 
         {appMode === "catalogue" ? (
@@ -2214,7 +2780,11 @@ export function App() {
                   <strong>{group.papers.length} paper{group.papers.length === 1 ? "" : "s"}</strong>
                 </div>
                 <div className="paper-catalogue-strip">
-                  {group.papers.map((paper) => (
+                  {group.papers.map((paper) => {
+                    const attempts = attemptsForPaper(data, paper.id);
+                    const tone = paperStatusTone(paper, attempts);
+                    const progress = paperProgressPercent(data, paper);
+                    return (
               <article key={paper.id} className={paper.id === selectedPaperId ? "paper-card paper-card--active" : "paper-card"}>
                 <button
                   className="paper-card__main"
@@ -2223,20 +2793,36 @@ export function App() {
                     setSelectedAttemptId(null);
                   }}
                 >
-                  <span className="eyebrow">{paper.subject}</span>
+                  <div className="paper-card__chips">
+                    <span className="static-chip">{paper.subject}</span>
+                    {paper.year ? <span className="static-chip">{paper.year}</span> : null}
+                    {paper.series ? <span className="static-chip">{paper.series}</span> : null}
+                    <span className={`status-chip status-chip--${tone}`}>{statusLabel(tone)}</span>
+                  </div>
                   <strong>{paper.title}</strong>
                   <span>{displayMeta(paper)}</span>
+                  <div className="paper-card__progress" aria-label={`Paper progress ${progress}%`}>
+                    <span style={{ width: `${progress}%` }} />
+                  </div>
                 </button>
                 <div className="paper-card__metrics">
-                  <span>{paper.hasMarkScheme ? "Mark scheme" : "No mark scheme"}</span>
+                  <span>{paper.questions.length} questions</span>
                   <span>{paper.totalMarks ?? "?"} marks</span>
                   <span>{paper.durationMinutes ? `${paper.durationMinutes} min` : "No timer"}</span>
-                  <span>{statusLabel(paper.processingStatus)}</span>
-                  <span>{data.attempts.filter((attempt) => attempt.paperId === paper.id).length} attempts</span>
-                  <span>Best {bestScoreForPaper(data, paper.id) ?? "-"}</span>
+                  <span>{attempts.length} attempts</span>
+                  <span>{paper.hasMarkScheme ? "Mark scheme" : "No mark scheme"}</span>
+                  <span>Best {paperBestScoreLabel(data, paper)}</span>
                 </div>
                 {paper.processingStatus === "processing" ? <ProcessingPanel paper={paper} job={latestJob(paper, "processing")} variant="compact" /> : null}
                 <div className="paper-card__actions">
+                  <button
+                    className={paper.processingStatus === "ready" ? "primary-button paper-card__primary-action" : "secondary-button paper-card__primary-action"}
+                    onClick={() => (paper.processingStatus === "ready" ? beginAttempt(paper) : void runProcessing(paper))}
+                    disabled={paper.processingStatus === "processing"}
+                  >
+                    {paper.processingStatus === "ready" ? <Play size={16} /> : <ScanLine size={16} />}
+                    {paperPrimaryActionLabel(paper, attempts)}
+                  </button>
                   <button
                     className="icon-button"
                     aria-label="Open paper"
@@ -2247,18 +2833,13 @@ export function App() {
                   >
                     <Eye size={16} />
                   </button>
-                  <button className="icon-button" aria-label="Process paper" onClick={() => void runProcessing(paper)} disabled={paper.processingStatus === "processing"}>
-                    <ScanLine size={16} />
-                  </button>
-                  <button className="icon-button" aria-label={startAttemptLabel(paper)} onClick={() => beginAttempt(paper)} disabled={paper.processingStatus !== "ready"}>
-                    <Play size={16} />
-                  </button>
                   <button className="icon-button" aria-label="Delete paper" onClick={() => deletePaper(paper.id)}>
                     <Trash2 size={16} />
                   </button>
                 </div>
               </article>
-                  ))}
+                    );
+                  })}
                 </div>
               </section>
             ))}
@@ -2326,6 +2907,33 @@ export function App() {
             >
               {selectedPaper.processingStatus === "processing" || selectedPaper.processingStatus === "failed" ? <ProcessingPanel paper={selectedPaper} job={latestJob(selectedPaper, "processing")} /> : null}
 
+              <div className="paper-summary-grid">
+                <div className="paper-summary-tile">
+                  <span>Questions</span>
+                  <strong>{selectedPaper.questions.length || "-"}</strong>
+                </div>
+                <div className="paper-summary-tile">
+                  <span>Total marks</span>
+                  <strong>{selectedPaper.totalMarks ?? "?"}</strong>
+                </div>
+                <div className="paper-summary-tile">
+                  <span>Duration</span>
+                  <strong>{selectedPaper.durationMinutes ? `${selectedPaper.durationMinutes}m` : "-"}</strong>
+                </div>
+                <div className="paper-summary-tile">
+                  <span>Attempts</span>
+                  <strong>{paperAttempts.length}</strong>
+                </div>
+                <div className="paper-summary-tile">
+                  <span>Best</span>
+                  <strong>{paperBestScoreLabel(data, selectedPaper)}</strong>
+                </div>
+                <div className="paper-summary-tile paper-summary-tile--warning">
+                  <span>Unsupported</span>
+                  <strong>{unsupportedMarksForPaper(selectedPaper) || 0}</strong>
+                </div>
+              </div>
+
               {!selectedAttempt ? (
                 <div className="question-disclosure">
                   <button className="question-disclosure__toggle" onClick={() => setQuestionsExpanded((value) => !value)} aria-expanded={questionsExpanded}>
@@ -2333,6 +2941,12 @@ export function App() {
                     <small>{selectedPaper.questions.length} extracted</small>
                     <ChevronDown size={16} className={questionsExpanded ? "question-disclosure__icon question-disclosure__icon--open" : "question-disclosure__icon"} />
                   </button>
+                  <div className="question-legend" aria-label="Question state legend">
+                    <span><i className="legend-dot legend-dot--blank" /> Blank</span>
+                    <span><i className="legend-dot legend-dot--answered" /> Answered</span>
+                    <span><i className="legend-dot legend-dot--marked" /> Marked</span>
+                    <span><i className="legend-dot legend-dot--unsupported" /> Unsupported</span>
+                  </div>
                   <AnimatePresence initial={false}>
                     {questionsExpanded ? (
                       <motion.div className="paper-question-overview" initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }}>
@@ -2367,6 +2981,30 @@ export function App() {
                       <Clock3 size={16} /> {durationLimit ? formatClock(secondsRemaining) : formatClock(elapsedSeconds)}
                     </span>
                   </div>
+                  <div className="focus-progress-card">
+                    <div className="focus-progress-card__bar" aria-label={`Attempt progress ${focusProgressPercent}%`}>
+                      <span style={{ width: `${focusProgressPercent}%` }} />
+                    </div>
+                    <div className="focus-progress-card__stats">
+                      <span>{answeredDuringAttempt} answered</span>
+                      <span>{skippedDuringAttempt} skipped</span>
+                      <span>{Math.max(0, selectedPaper.questions.length - answeredDuringAttempt - skippedDuringAttempt)} left</span>
+                    </div>
+                    <div className="focus-question-map" aria-label="Question progress map">
+                      {selectedPaper.questions.map((question, index) => {
+                        const answer = selectedAttempt.answers.find((item) => item.questionId === question.id);
+                        const state = answer?.skipped ? "skipped" : answer && isAnswerAttempted(answer) ? "answered" : "blank";
+                        return (
+                          <button
+                            key={question.id}
+                            className={`focus-question-dot focus-question-dot--${state}${index === activeQuestionIndex ? " focus-question-dot--active" : ""}`}
+                            aria-label={`Go to question ${displayQuestionLabel(selectedPaper, question)}`}
+                            onClick={() => setActiveQuestionIndex(index)}
+                          />
+                        );
+                      })}
+                    </div>
+                  </div>
                   <article className="question-card question-card--focused">
                     <div className="question-card__header">
                       <strong>Question {displayQuestionLabel(selectedPaper, activeQuestion)}</strong>
@@ -2376,7 +3014,7 @@ export function App() {
                       <span className="static-chip">{sourcePagesLabel(activeQuestion)}</span>
                       {activeQuestion.extractionWarnings?.length ? <span className="static-chip">Has extraction warnings</span> : null}
                     </div>
-                    <QuestionSourceImages paper={selectedPaper} question={activeQuestion} />
+                    <QuestionSourceImages paper={selectedPaper} question={activeQuestion} defaultCollapsed={preferences.sourceFigures === "collapse"} />
                     <p className="question-prompt">{cleanVisiblePrompt(activeQuestion.promptText)}</p>
                     <div className={activeAnswer.skipped ? "answer-workspace answer-workspace--skipped" : "answer-workspace"}>
                       {activeSupportIssue ? (
@@ -2441,7 +3079,7 @@ export function App() {
                         <SkipForward size={16} /> Skip
                       </button>
                       <button
-                        className={activeQuestionIndex >= selectedPaper.questions.length - 1 ? "primary-button" : "secondary-button"}
+                        className="primary-button"
                         onClick={() => (activeQuestionIndex >= selectedPaper.questions.length - 1 ? submitAttempt() : activeSupportIssue ? setActiveQuestionIndex((value) => Math.min(selectedPaper.questions.length - 1, value + 1)) : submitCurrentAnswer(true))}
                       >
                         {activeQuestionIndex >= selectedPaper.questions.length - 1 ? <Check size={16} /> : <Save size={16} />}
@@ -2506,6 +3144,59 @@ export function App() {
                     </div>
                   </div>
 
+                  {activeAttemptStats ? (
+                    <div className="review-summary-grid">
+                      <div className="review-summary-card">
+                        <span>Actual score</span>
+                        <strong>{scoreSummary(displayScores?.actualScore ?? selectedAttempt.actualScore, preferredAttemptTotal(selectedPaper, selectedAttempt))}</strong>
+                      </div>
+                      <div className="review-summary-card">
+                        <span>Answered</span>
+                        <strong>{activeAttemptStats.answered}</strong>
+                      </div>
+                      <div className="review-summary-card">
+                        <span>Blank</span>
+                        <strong>{activeAttemptStats.blank}</strong>
+                      </div>
+                      <div className="review-summary-card">
+                        <span>Unsupported</span>
+                        <strong>{activeAttemptStats.unsupported}</strong>
+                      </div>
+                      <div className="review-summary-card">
+                        <span>Mistakes</span>
+                        <strong>{activeAttemptStats.mistakes}</strong>
+                      </div>
+                    </div>
+                  ) : null}
+                  <div className="button-row review-smart-actions">
+                    <button
+                      className="secondary-button"
+                      onClick={() => {
+                        const nextMistake = selectedPaper.questions.findIndex((question) => {
+                          const mark = latestAcceptedMark(selectedAttempt, question.id);
+                          return mark && !isMarkingErrorMark(mark) && mark.awardedMarks < question.maxMarks;
+                        });
+                        if (nextMistake >= 0) setReviewIndex(nextMistake);
+                      }}
+                      disabled={!activeAttemptStats?.mistakes}
+                    >
+                      <Target size={16} /> Review next mistake
+                    </button>
+                    <button
+                      className="secondary-button"
+                      onClick={() => {
+                        const nextBlank = selectedPaper.questions.findIndex((question) => {
+                          const answer = selectedAttempt.answers.find((item) => item.questionId === question.id);
+                          return !answer || (!answer.skipped && !isAnswerAttempted(answer));
+                        });
+                        if (nextBlank >= 0) setReviewIndex(nextBlank);
+                      }}
+                      disabled={!activeAttemptStats?.blank}
+                    >
+                      <ListChecks size={16} /> Next blank
+                    </button>
+                  </div>
+
                   <div className="review-question-nav" aria-label="Review question navigation">
                     {reviewQuestionGroups(selectedPaper).map(({ group, questions }) => (
                       <div className="review-question-row" key={group}>
@@ -2548,7 +3239,7 @@ export function App() {
                       <span>{marksLabel(reviewQuestion.maxMarks)}</span>
                     </div>
                     <p className="question-prompt">{cleanVisiblePrompt(reviewQuestion.promptText)}</p>
-                    <QuestionSourceImages paper={selectedPaper} question={reviewQuestion} />
+                    <QuestionSourceImages paper={selectedPaper} question={reviewQuestion} defaultCollapsed={preferences.sourceFigures === "collapse"} />
                     <div className="paper-answer-box">
                       <span className="eyebrow">Your answer</span>
                       <p>{answerText(reviewAnswer, reviewQuestion)}</p>
@@ -2604,7 +3295,7 @@ export function App() {
                         </button>
                       ) : null}
                     </div>
-                    {markSchemeDetailsOpen ? <pre className="mark-scheme-row-panel">{markSchemeDataText(reviewQuestion)}</pre> : null}
+                    {markSchemeDetailsOpen ? <MarkSchemeDataPanel question={reviewQuestion} onCopy={() => void copyMarkSchemeRow(reviewQuestion)} /> : null}
                     {selectedAttempt.remarks.filter((remark) => remark.questionId === reviewQuestion.id).length ? (
                       <div className="paper-history-list">
                         {selectedAttempt.remarks
@@ -2667,6 +3358,16 @@ export function App() {
                     </div>
                   ))}
               </div>
+              {!paperAttempts.length ? (
+                <div className="polished-empty-card">
+                  <Target size={20} />
+                  <strong>No attempts yet</strong>
+                  <p>Start the paper to generate review data, confidence scores, and marking history.</p>
+                  <button className="primary-button" onClick={() => beginAttempt(selectedPaper)} disabled={selectedPaper.processingStatus !== "ready"}>
+                    <Play size={16} /> Start first attempt
+                  </button>
+                </div>
+              ) : null}
 
               {selectedAttempt && reviewQuestion && reviewAnswer ? (
                 <article className="paper-review-card">
@@ -2675,7 +3376,7 @@ export function App() {
                     <span>{marksLabel(reviewQuestion.maxMarks)}</span>
                   </div>
                   <p>{cleanVisiblePrompt(reviewQuestion.promptText)}</p>
-                  <QuestionSourceImages paper={selectedPaper} question={reviewQuestion} />
+                  <QuestionSourceImages paper={selectedPaper} question={reviewQuestion} defaultCollapsed={preferences.sourceFigures === "collapse"} />
                   <div className="paper-answer-box">
                     <span className="eyebrow">Your answer</span>
                     <p>{answerText(reviewAnswer, reviewQuestion)}</p>
@@ -2728,7 +3429,7 @@ export function App() {
                       </button>
                     ) : null}
                   </div>
-                  {markSchemeDetailsOpen ? <pre className="mark-scheme-row-panel">{markSchemeDataText(reviewQuestion)}</pre> : null}
+                  {markSchemeDetailsOpen ? <MarkSchemeDataPanel question={reviewQuestion} onCopy={() => void copyMarkSchemeRow(reviewQuestion)} /> : null}
                   {selectedAttempt.remarks.filter((remark) => remark.questionId === reviewQuestion.id).length ? (
                     <div className="paper-history-list">
                       {selectedAttempt.remarks
@@ -2763,7 +3464,7 @@ export function App() {
 
       {appMode === "catalogue" || appMode === "ready" || appMode === "empty" ? (
       <aside className="shell-inspector">
-        <DashboardStatusPanels aiModel={aiModel} setAIModel={setAIModel} smokeTest={smokeTest} analytics={analytics} onClearLocalData={clearLocalDashboardData} />
+        <DashboardStatusPanels aiModel={aiModel} setAIModel={setAIModel} smokeTest={smokeTest} analytics={analytics} onClearLocalData={clearLocalDashboardData} preferences={preferences} onPreferencesChange={patchPreferences} />
       </aside>
       ) : null}
 
@@ -2791,6 +3492,8 @@ export function App() {
         smokeTest={smokeTest}
         analytics={analytics}
         onClearLocalData={clearLocalDashboardData}
+        preferences={preferences}
+        onPreferencesChange={patchPreferences}
         onClose={() => setSystemInfoOpen(false)}
       />
       <ConfidenceSkipModal
@@ -2806,6 +3509,7 @@ export function App() {
           <MessageSquare size={20} />
         </button>
       ) : null}
+      <ToastStack toasts={toasts} onDismiss={dismissToast} />
     </div>
   );
 }
