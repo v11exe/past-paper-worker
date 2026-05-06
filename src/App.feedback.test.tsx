@@ -150,6 +150,74 @@ describe("feedback flow", () => {
     );
   });
 
+  it("shows attachment controls only for bug reports and includes files in the payload", async () => {
+    const user = userEvent.setup();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }) as never,
+    );
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Send feedback" }));
+    expect(screen.queryByLabelText("Bug report attachments")).not.toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText("Feedback type"), "bug_report");
+    const attachmentInput = await screen.findByLabelText("Bug report attachments");
+    const file = new File(['{"ok":true}'], "diagnostics.json", { type: "application/json" });
+    await user.upload(attachmentInput, file);
+
+    expect(await screen.findByText("diagnostics.json")).toBeInTheDocument();
+    await user.type(screen.getByLabelText("Email"), "student@example.com");
+    await user.type(screen.getByLabelText("Title"), "Bug report with file");
+    await user.type(screen.getByLabelText("Description"), "Please look at the attached diagnostics file.");
+    await user.click(screen.getByRole("button", { name: "Send feedback" }));
+
+    const payload = JSON.parse(String(fetchSpy.mock.calls[0]?.[1]?.body)) as Record<string, unknown>;
+    expect(payload.type).toBe("bug_report");
+    expect(payload.attachments).toEqual([
+      expect.objectContaining({
+        filename: "diagnostics.json",
+        contentType: "application/json",
+      }),
+    ]);
+  });
+
+  it("rejects unsupported attachment types before submission", async () => {
+    const user = userEvent.setup({ applyAccept: false });
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Send feedback" }));
+    await user.selectOptions(screen.getByLabelText("Feedback type"), "bug_report");
+    const attachmentInput = await screen.findByLabelText("Bug report attachments");
+    const file = new File(["unsafe"], "payload.exe", { type: "application/octet-stream" });
+    await user.upload(attachmentInput, file);
+
+    expect(await screen.findByText("Only PDF, PNG, JPG, JSON, TXT, and LOG files are supported.")).toBeInTheDocument();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("enforces the maximum attachment count in the UI", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Send feedback" }));
+    await user.selectOptions(screen.getByLabelText("Feedback type"), "bug_report");
+    const attachmentInput = await screen.findByLabelText("Bug report attachments");
+    const files = [
+      new File(["a"], "one.txt", { type: "text/plain" }),
+      new File(["b"], "two.txt", { type: "text/plain" }),
+      new File(["c"], "three.txt", { type: "text/plain" }),
+      new File(["d"], "four.txt", { type: "text/plain" }),
+    ];
+    await user.upload(attachmentInput, files);
+
+    expect(await screen.findByText("Attach up to 3 files.")).toBeInTheDocument();
+  });
+
   it("keeps the user's input when feedback submission fails", async () => {
     const user = userEvent.setup();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
@@ -189,5 +257,24 @@ describe("feedback flow", () => {
 
     expect(await screen.findByRole("button", { name: /end attempt/i })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Send feedback" })).not.toBeInTheDocument();
+  });
+
+  it("opens system info from the dashboard and hides it during the active exam flow", async () => {
+    const user = userEvent.setup();
+    seedData({ papers: [buildReadyPaper()], attempts: [] });
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: /system info/i }));
+    expect(await screen.findByRole("heading", { name: "System info" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Close system info" }));
+    await waitFor(() => expect(screen.queryByRole("heading", { name: "System info" })).not.toBeInTheDocument());
+
+    const openPaperButton = screen.getAllByText("Test paper")[0].closest("button");
+    expect(openPaperButton).not.toBeNull();
+    await user.click(openPaperButton!);
+    await user.click(await screen.findByRole("button", { name: /start paper/i }));
+    expect(await screen.findByRole("button", { name: /end attempt/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /system info/i })).not.toBeInTheDocument();
   });
 });

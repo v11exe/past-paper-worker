@@ -13,6 +13,7 @@ import {
   Eye,
   FileText,
   FlaskConical,
+  Info,
   Loader2,
   Maximize2,
   MessageSquare,
@@ -36,11 +37,14 @@ import {
   FEEDBACK_TYPE_OPTIONS,
   clearFeedbackDraft,
   emptyFeedbackDraft,
+  filesToFeedbackAttachments,
   feedbackDraftIsValid,
+  formatFileSize,
   loadFeedbackDraft,
   saveFeedbackDraft,
   submitFeedback,
   validateFeedbackDraft,
+  type FeedbackAttachment,
   type FeedbackDraft,
   type FeedbackValidationErrors,
 } from "./lib/feedback";
@@ -768,23 +772,29 @@ function MetadataModal({
 function FeedbackModal({
   open,
   draft,
+  attachments,
   errors,
   pending,
   submitEnabled,
   serverError,
   onChange,
   onBlur,
+  onAddFiles,
+  onRemoveAttachment,
   onClose,
   onSubmit,
 }: {
   open: boolean;
   draft: FeedbackDraft;
+  attachments: FeedbackAttachment[];
   errors: FeedbackValidationErrors;
   pending: boolean;
   submitEnabled: boolean;
   serverError: string | null;
   onChange: (patch: Partial<FeedbackDraft>) => void;
   onBlur: (field: keyof FeedbackDraft) => void;
+  onAddFiles: (files: FileList | null) => void;
+  onRemoveAttachment: (attachmentId: string) => void;
   onClose: () => void;
   onSubmit: () => void;
 }) {
@@ -844,6 +854,44 @@ function FeedbackModal({
                 {errors.description ? <small className="field__error">{errors.description}</small> : null}
               </label>
 
+              {draft.type === "bug_report" ? (
+                <div className={errors.attachments ? "field field--invalid feedback-form-grid__full" : "field feedback-form-grid__full"}>
+                  <span>Attach paper files, if relevant</span>
+                  <p className="muted-copy feedback-attachments__hint">
+                    Optional. PDF, PNG, JPG, JSON diagnostics, TXT, or LOG files. Up to 3 files, 8MB each, 25MB total before upload.
+                  </p>
+                  <input
+                    aria-label="Bug report attachments"
+                    className="feedback-file-input"
+                    type="file"
+                    accept=".pdf,.png,.jpg,.jpeg,.json,.txt,.log,application/pdf,image/png,image/jpeg,application/json,text/plain"
+                    multiple
+                    onChange={(event) => {
+                      onAddFiles(event.target.files);
+                      event.currentTarget.value = "";
+                    }}
+                  />
+                  {attachments.length ? (
+                    <div className="feedback-attachment-list">
+                      {attachments.map((attachment) => (
+                        <div key={attachment.id} className="feedback-attachment-row">
+                          <div>
+                            <strong>{attachment.filename}</strong>
+                            <span>
+                              {attachment.contentType} / {formatFileSize(attachment.sizeBytes)}
+                            </span>
+                          </div>
+                          <button className="icon-button" type="button" aria-label={`Remove ${attachment.filename}`} onClick={() => onRemoveAttachment(attachment.id)}>
+                            <Trash2 size={16} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                  {errors.attachments ? <small className="field__error">{errors.attachments}</small> : null}
+                </div>
+              ) : null}
+
               <label className="feedback-honeypot" aria-hidden="true" tabIndex={-1}>
                 <span>Leave blank</span>
                 <input aria-label="Leave blank" value={draft.website} onChange={(event) => onChange({ website: event.target.value })} onBlur={() => onBlur("website")} autoComplete="off" />
@@ -864,6 +912,144 @@ function FeedbackModal({
                 {pending ? <Loader2 size={16} className="processing-spinner" /> : <MessageSquare size={16} />}
                 {pending ? "Sending..." : "Send feedback"}
               </button>
+            </div>
+          </motion.div>
+        </motion.div>
+      ) : null}
+    </AnimatePresence>
+  );
+}
+
+function DashboardStatusPanels({
+  aiModel,
+  setAIModel,
+  smokeTest,
+  analytics,
+  onClearLocalData,
+}: {
+  aiModel: string;
+  setAIModel: (value: string) => void;
+  smokeTest: AISmokeTestResult | null;
+  analytics: { completed: number; averagePercent: number | null; overtime: number; ready: boolean };
+  onClearLocalData: () => void;
+}) {
+  return (
+    <>
+      <div className="inspector-panel glass-chrome">
+        <span className="eyebrow">System</span>
+        <div className="metric-row">
+          <span>AI provider</span>
+          <strong>Gemini</strong>
+        </div>
+        <div className="metric-row">
+          <span>Model</span>
+          <strong>{aiModel}</strong>
+        </div>
+        <label className="field compact-field">
+          <span>Model switch</span>
+          <select aria-label="Model switch" value={aiModel} onChange={(event) => setAIModel(event.target.value)}>
+            {AI_MODEL_CHOICES.map((model) => (
+              <option key={model} value={model}>
+                {model}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="metric-row">
+          <span>API key</span>
+          <strong>Server-side only</strong>
+        </div>
+        <p className="muted-copy">The browser calls a secure Gemini proxy endpoint. The Gemini API key stays server-side, and fallback models are only used when the selected model fails or times out.</p>
+        {smokeTest ? (
+          <div className="smoke-summary">
+            <span className="eyebrow">Last smoke test</span>
+            <div className="metric-row">
+              <span>Proxy</span>
+              <strong>{smokeTest.proxyCheck.success ? "ok" : "failed"}</strong>
+            </div>
+            <div className="metric-row">
+              <span>Text call</span>
+              <strong>{smokeTest.textCall.success ? "ok" : "failed"}</strong>
+            </div>
+            <div className="metric-row">
+              <span>Extraction</span>
+              <strong>{smokeTest.extractionCall.success ? "ok" : "failed"}</strong>
+            </div>
+            <div className="metric-row">
+              <span>Marking</span>
+              <strong>{smokeTest.markingCall.success ? "ok" : "failed"}</strong>
+            </div>
+            <div className="metric-row">
+              <span>Diagnostics redaction</span>
+              <strong>{smokeTest.diagnosticsRedactionCheck.redacted === null ? "unknown" : smokeTest.diagnosticsRedactionCheck.redacted ? "ok" : "failed"}</strong>
+            </div>
+          </div>
+        ) : null}
+      </div>
+      <div className="inspector-panel glass-chrome">
+        <span className="eyebrow">Analytics</span>
+        {analytics.ready ? (
+          <div className="chart-frame">
+            <BarChart3 size={18} />
+            <div className="metric-row">
+              <span>Marked attempts</span>
+              <strong>{analytics.completed}</strong>
+            </div>
+            <div className="metric-row">
+              <span>Average</span>
+              <strong>{analytics.averagePercent?.toFixed(1)}%</strong>
+            </div>
+            <p>Scores use the adjusted total after unsupported questions are removed.</p>
+          </div>
+        ) : (
+          <div className="analytics-placeholder">
+            <BarChart3 size={20} />
+            <strong>Analytics is being worked on</strong>
+            <p>More useful trends will appear here once there are enough marked attempts to compare.</p>
+          </div>
+        )}
+        <button className="secondary-button danger-button primary-button--wide" onClick={onClearLocalData}>
+          Clear local data
+        </button>
+      </div>
+    </>
+  );
+}
+
+function DashboardStatusModal({
+  open,
+  aiModel,
+  setAIModel,
+  smokeTest,
+  analytics,
+  onClearLocalData,
+  onClose,
+}: {
+  open: boolean;
+  aiModel: string;
+  setAIModel: (value: string) => void;
+  smokeTest: AISmokeTestResult | null;
+  analytics: { completed: number; averagePercent: number | null; overtime: number; ready: boolean };
+  onClearLocalData: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <AnimatePresence>
+      {open ? (
+        <motion.div className="paper-modal" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+          <motion.div className="paper-modal__panel paper-modal__panel--mini status-modal__panel" initial={{ y: 18, scale: 0.98 }} animate={{ y: 0, scale: 1 }} exit={{ y: 18, scale: 0.98 }}>
+            <div className="section-frame__header">
+              <div>
+                <span className="eyebrow">Status</span>
+                <h2>System info</h2>
+                <p>Model, proxy, and analytics details for this device.</p>
+              </div>
+              <button className="icon-button" onClick={onClose} aria-label="Close system info">
+                <X size={16} />
+              </button>
+            </div>
+            <div className="status-modal__content">
+              <DashboardStatusPanels aiModel={aiModel} setAIModel={setAIModel} smokeTest={smokeTest} analytics={analytics} onClearLocalData={onClearLocalData} />
             </div>
           </motion.div>
         </motion.div>
@@ -1092,9 +1278,11 @@ export function App() {
   const [markSchemeDetailsOpen, setMarkSchemeDetailsOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [feedbackDraft, setFeedbackDraft] = useState<FeedbackDraft>(() => emptyFeedbackDraft());
+  const [feedbackAttachments, setFeedbackAttachments] = useState<FeedbackAttachment[]>([]);
   const [feedbackTouched, setFeedbackTouched] = useState<Partial<Record<keyof FeedbackDraft, boolean>>>({});
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
   const [feedbackError, setFeedbackError] = useState<string | null>(null);
+  const [systemInfoOpen, setSystemInfoOpen] = useState(false);
 
   useEffect(() => saveData(data), [data]);
 
@@ -1180,7 +1368,9 @@ export function App() {
   }, [selectedPaper]);
 
   function openFeedback() {
+    setSystemInfoOpen(false);
     setFeedbackDraft(loadFeedbackDraft());
+    setFeedbackAttachments([]);
     setFeedbackTouched({});
     setFeedbackError(null);
     setFeedbackOpen(true);
@@ -1192,7 +1382,14 @@ export function App() {
   }
 
   function patchFeedbackDraft(patch: Partial<FeedbackDraft>) {
-    setFeedbackDraft((current) => ({ ...current, ...patch }));
+    setFeedbackDraft((current) => {
+      const next = { ...current, ...patch };
+      if (patch.type && patch.type !== "bug_report") {
+        setFeedbackAttachments([]);
+        next.attachments = [];
+      }
+      return next;
+    });
     setFeedbackError(null);
   }
 
@@ -1216,9 +1413,10 @@ export function App() {
     setFeedbackSubmitting(true);
     setFeedbackError(null);
     try {
-      await submitFeedback(feedbackDraft, { path: feedbackContextPath(), appVersion: appMeta.version });
+      await submitFeedback(feedbackDraft, feedbackAttachments, { path: feedbackContextPath(), appVersion: appMeta.version });
       clearFeedbackDraft();
       setFeedbackDraft(emptyFeedbackDraft());
+      setFeedbackAttachments([]);
       setFeedbackTouched({});
       setFeedbackOpen(false);
       setStatus("Feedback sent. Thank you.");
@@ -1228,6 +1426,41 @@ export function App() {
     } finally {
       setFeedbackSubmitting(false);
     }
+  }
+
+  async function addFeedbackFiles(files: FileList | null) {
+    if (!files?.length) return;
+    setFeedbackError(null);
+    const attachments = await filesToFeedbackAttachments(files);
+    const merged = [...feedbackAttachments];
+    for (const attachment of attachments) {
+      if (!merged.some((item) => item.id === attachment.id)) merged.push(attachment);
+    }
+    const nextMeta = merged.map(({ id, filename, contentType, sizeBytes, encodedSizeEstimate }) => ({
+      id,
+      filename,
+      contentType,
+      sizeBytes,
+      encodedSizeEstimate,
+    }));
+    setFeedbackAttachments(merged);
+    setFeedbackDraft((draft) => ({ ...draft, attachments: nextMeta }));
+    setFeedbackTouched((touches) => ({ ...touches, attachments: true }));
+  }
+
+  function removeFeedbackAttachment(attachmentId: string) {
+    const next = feedbackAttachments.filter((attachment) => attachment.id !== attachmentId);
+    const nextMeta = next.map(({ id, filename, contentType, sizeBytes, encodedSizeEstimate }) => ({
+      id,
+      filename,
+      contentType,
+      sizeBytes,
+      encodedSizeEstimate,
+    }));
+    setFeedbackAttachments(next);
+    setFeedbackDraft((draft) => ({ ...draft, attachments: nextMeta }));
+    setFeedbackTouched((touches) => ({ ...touches, attachments: true }));
+    setFeedbackError(null);
   }
 
   function patchPaper(paperId: string, updater: (paper: PastPaper) => PastPaper) {
@@ -1794,12 +2027,22 @@ export function App() {
     return visible;
   }, [feedbackDraft, feedbackTouched]);
   const feedbackCanSubmit = feedbackDraftIsValid(validateFeedbackDraft(feedbackDraft)) && !feedbackSubmitting;
+  const dashboardStatusAccessible =
+    (appMode === "empty" || appMode === "catalogue" || appMode === "ready") &&
+    !uploadOpen &&
+    !editingMetadata &&
+    !confidenceSkipOpen &&
+    !feedbackOpen &&
+    !systemInfoOpen &&
+    !busy &&
+    !smokeBusy;
   const showFeedbackButton =
     (appMode === "empty" || appMode === "catalogue" || appMode === "ready") &&
     !uploadOpen &&
     !editingMetadata &&
     !confidenceSkipOpen &&
     !feedbackOpen &&
+    !systemInfoOpen &&
     !busy &&
     !smokeBusy;
 
@@ -1808,6 +2051,14 @@ export function App() {
     if (selectedPaper && selectedAttempt?.status === "submitted") return `${page}#submitted/${selectedPaper.id}`;
     if (selectedPaper) return `${page}#paper/${selectedPaper.id}`;
     return `${page}#${appMode}`;
+  }
+
+  function clearLocalDashboardData() {
+    clearData();
+    setData({ papers: [], attempts: [] });
+    setSelectedPaperId(null);
+    setSelectedAttemptId(null);
+    setSystemInfoOpen(false);
   }
 
   return (
@@ -1900,6 +2151,11 @@ export function App() {
               <h1>{appMode === "empty" ? "Build a grounded paper from the real upload." : "Past papers, processed with source checks."}</h1>
             </div>
             <div className="button-row">
+              {dashboardStatusAccessible ? (
+                <button className="secondary-button status-toggle-button" onClick={() => setSystemInfoOpen(true)}>
+                  <Info size={16} /> System info
+                </button>
+              ) : null}
               <button className="secondary-button" onClick={() => void runSmokeTest()} disabled={smokeBusy}>
                 <FlaskConical size={16} /> Smoke test
               </button>
@@ -2507,91 +2763,7 @@ export function App() {
 
       {appMode === "catalogue" || appMode === "ready" || appMode === "empty" ? (
       <aside className="shell-inspector">
-        <div className="inspector-panel glass-chrome">
-          <span className="eyebrow">System</span>
-          <div className="metric-row">
-            <span>AI provider</span>
-            <strong>Gemini</strong>
-          </div>
-          <div className="metric-row">
-            <span>Model</span>
-            <strong>{aiModel}</strong>
-          </div>
-          <label className="field compact-field">
-            <span>Model switch</span>
-            <select value={aiModel} onChange={(event) => setAIModel(event.target.value)}>
-              {AI_MODEL_CHOICES.map((model) => (
-                <option key={model} value={model}>
-                  {model}
-                </option>
-              ))}
-            </select>
-          </label>
-          <div className="metric-row">
-            <span>API key</span>
-            <strong>Server-side only</strong>
-          </div>
-          <p className="muted-copy">The browser calls a secure Gemini proxy endpoint. The Gemini API key stays server-side, and fallback models are only used when the selected model fails or times out.</p>
-          {smokeTest ? (
-            <div className="smoke-summary">
-              <span className="eyebrow">Last smoke test</span>
-              <div className="metric-row">
-                <span>Proxy</span>
-                <strong>{smokeTest.proxyCheck.success ? "ok" : "failed"}</strong>
-              </div>
-              <div className="metric-row">
-                <span>Text call</span>
-                <strong>{smokeTest.textCall.success ? "ok" : "failed"}</strong>
-              </div>
-              <div className="metric-row">
-                <span>Extraction</span>
-                <strong>{smokeTest.extractionCall.success ? "ok" : "failed"}</strong>
-              </div>
-              <div className="metric-row">
-                <span>Marking</span>
-                <strong>{smokeTest.markingCall.success ? "ok" : "failed"}</strong>
-              </div>
-              <div className="metric-row">
-                <span>Diagnostics redaction</span>
-                <strong>{smokeTest.diagnosticsRedactionCheck.redacted === null ? "unknown" : smokeTest.diagnosticsRedactionCheck.redacted ? "ok" : "failed"}</strong>
-              </div>
-            </div>
-          ) : null}
-        </div>
-        <div className="inspector-panel glass-chrome">
-          <span className="eyebrow">Analytics</span>
-          {analytics.ready ? (
-            <div className="chart-frame">
-              <BarChart3 size={18} />
-              <div className="metric-row">
-                <span>Marked attempts</span>
-                <strong>{analytics.completed}</strong>
-              </div>
-              <div className="metric-row">
-                <span>Average</span>
-                <strong>{analytics.averagePercent?.toFixed(1)}%</strong>
-              </div>
-              <p>Scores use the adjusted total after unsupported questions are removed.</p>
-            </div>
-          ) : (
-            <div className="analytics-placeholder">
-              <BarChart3 size={20} />
-              <strong>Analytics is being worked on</strong>
-              <p>More useful trends will appear here once there are enough marked attempts to compare.</p>
-            </div>
-          )}
-          <button
-            className="secondary-button danger-button primary-button--wide"
-            onClick={() => {
-              clearData();
-              setData({ papers: [], attempts: [] });
-              setSelectedPaperId(null);
-              setSelectedAttemptId(null);
-            }}
-          >
-            Clear local data
-          </button>
-        </div>
+        <DashboardStatusPanels aiModel={aiModel} setAIModel={setAIModel} smokeTest={smokeTest} analytics={analytics} onClearLocalData={clearLocalDashboardData} />
       </aside>
       ) : null}
 
@@ -2600,14 +2772,26 @@ export function App() {
       <FeedbackModal
         open={feedbackOpen}
         draft={feedbackDraft}
+        attachments={feedbackAttachments}
         errors={feedbackErrors}
         pending={feedbackSubmitting}
         submitEnabled={feedbackCanSubmit}
         serverError={feedbackError}
         onChange={patchFeedbackDraft}
         onBlur={touchFeedbackField}
+        onAddFiles={(files) => void addFeedbackFiles(files)}
+        onRemoveAttachment={removeFeedbackAttachment}
         onClose={closeFeedback}
         onSubmit={() => void submitFeedbackForm()}
+      />
+      <DashboardStatusModal
+        open={systemInfoOpen}
+        aiModel={aiModel}
+        setAIModel={setAIModel}
+        smokeTest={smokeTest}
+        analytics={analytics}
+        onClearLocalData={clearLocalDashboardData}
+        onClose={() => setSystemInfoOpen(false)}
       />
       <ConfidenceSkipModal
         open={confidenceSkipOpen}
