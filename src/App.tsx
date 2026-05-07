@@ -104,7 +104,7 @@ const emptyDraft: PaperDraftInput = {
 };
 
 type ThemeMode = "dark" | "dim" | "contrast";
-type AccentColour = "mint" | "blue" | "purple" | "amber" | "rose";
+type AccentColour = "mint" | "blue" | "purple" | "amber" | "rose" | "cyan" | "indigo" | "peach" | "graphite" | "custom";
 type DashboardDensity = "comfortable" | "compact";
 type NotificationDuration = "normal" | "longer" | "reduced";
 type MotionPreference = "system" | "reduce";
@@ -117,11 +117,22 @@ type AppPreferences = {
   accentColour: AccentColour;
   dashboardDensity: DashboardDensity;
   showTechnicalModel: boolean;
+  showAnalyticsPanel: boolean;
+  showHeaderSystemInfo: boolean;
+  showRecentUpdate: boolean;
+  showHeroStatus: boolean;
+  showQuestionLegend: boolean;
+  showPaperSummary: boolean;
+  showFocusProgress: boolean;
+  showConfidenceSkip: boolean;
+  showFloatingFeedback: boolean;
   sourceFigures: FigurePreference;
   questionNavigation: NavPreference;
   notificationDuration: NotificationDuration;
   reduceMotion: MotionPreference;
   defaultLanding: LandingPreference;
+  customAccent: string;
+  customAccent2: string;
 };
 
 type ToastKind = "success" | "error" | "warning" | "info";
@@ -140,11 +151,22 @@ const defaultPreferences: AppPreferences = {
   accentColour: "mint",
   dashboardDensity: "comfortable",
   showTechnicalModel: true,
+  showAnalyticsPanel: true,
+  showHeaderSystemInfo: true,
+  showRecentUpdate: true,
+  showHeroStatus: true,
+  showQuestionLegend: true,
+  showPaperSummary: true,
+  showFocusProgress: true,
+  showConfidenceSkip: true,
+  showFloatingFeedback: true,
   sourceFigures: "show",
   questionNavigation: "grid",
   notificationDuration: "normal",
   reduceMotion: "system",
   defaultLanding: "overview",
+  customAccent: "#8fe6c0",
+  customAccent2: "#e6c36f",
 };
 
 const accentOptions: Array<{ value: AccentColour; label: string }> = [
@@ -153,7 +175,16 @@ const accentOptions: Array<{ value: AccentColour; label: string }> = [
   { value: "purple", label: "Purple" },
   { value: "amber", label: "Amber" },
   { value: "rose", label: "Rose" },
+  { value: "cyan", label: "Cyan" },
+  { value: "indigo", label: "Indigo" },
+  { value: "peach", label: "Peach" },
+  { value: "graphite", label: "Graphite" },
+  { value: "custom", label: "Custom" },
 ];
+
+function validHexColour(value: unknown, fallback: string) {
+  return typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value) ? value : fallback;
+}
 
 function loadPreferences(): AppPreferences {
   try {
@@ -166,11 +197,23 @@ function loadPreferences(): AppPreferences {
       themeMode: ["dark", "dim", "contrast"].includes(String(parsed.themeMode)) ? (parsed.themeMode as ThemeMode) : defaultPreferences.themeMode,
       accentColour: accentOptions.some((option) => option.value === parsed.accentColour) ? (parsed.accentColour as AccentColour) : defaultPreferences.accentColour,
       dashboardDensity: parsed.dashboardDensity === "compact" ? "compact" : "comfortable",
+      showTechnicalModel: typeof parsed.showTechnicalModel === "boolean" ? parsed.showTechnicalModel : defaultPreferences.showTechnicalModel,
+      showAnalyticsPanel: typeof parsed.showAnalyticsPanel === "boolean" ? parsed.showAnalyticsPanel : defaultPreferences.showAnalyticsPanel,
+      showHeaderSystemInfo: typeof parsed.showHeaderSystemInfo === "boolean" ? parsed.showHeaderSystemInfo : defaultPreferences.showHeaderSystemInfo,
+      showRecentUpdate: typeof parsed.showRecentUpdate === "boolean" ? parsed.showRecentUpdate : defaultPreferences.showRecentUpdate,
+      showHeroStatus: typeof parsed.showHeroStatus === "boolean" ? parsed.showHeroStatus : defaultPreferences.showHeroStatus,
+      showQuestionLegend: typeof parsed.showQuestionLegend === "boolean" ? parsed.showQuestionLegend : defaultPreferences.showQuestionLegend,
+      showPaperSummary: typeof parsed.showPaperSummary === "boolean" ? parsed.showPaperSummary : defaultPreferences.showPaperSummary,
+      showFocusProgress: typeof parsed.showFocusProgress === "boolean" ? parsed.showFocusProgress : defaultPreferences.showFocusProgress,
+      showConfidenceSkip: typeof parsed.showConfidenceSkip === "boolean" ? parsed.showConfidenceSkip : defaultPreferences.showConfidenceSkip,
+      showFloatingFeedback: typeof parsed.showFloatingFeedback === "boolean" ? parsed.showFloatingFeedback : defaultPreferences.showFloatingFeedback,
       notificationDuration: parsed.notificationDuration === "longer" || parsed.notificationDuration === "reduced" ? parsed.notificationDuration : "normal",
       reduceMotion: parsed.reduceMotion === "reduce" ? "reduce" : "system",
       sourceFigures: parsed.sourceFigures === "collapse" ? "collapse" : "show",
       questionNavigation: parsed.questionNavigation === "list" ? "list" : "grid",
       defaultLanding: parsed.defaultLanding === "catalogue" || parsed.defaultLanding === "last_paper" ? parsed.defaultLanding : "overview",
+      customAccent: validHexColour(parsed.customAccent, defaultPreferences.customAccent),
+      customAccent2: validHexColour(parsed.customAccent2, defaultPreferences.customAccent2),
     };
   } catch {
     return defaultPreferences;
@@ -1240,7 +1283,6 @@ function DashboardStatusPanels({
   analytics,
   onClearLocalData,
   preferences,
-  onPreferencesChange,
 }: {
   aiModel: string;
   setAIModel: (value: string) => void;
@@ -1248,7 +1290,6 @@ function DashboardStatusPanels({
   analytics: { completed: number; averagePercent: number | null; overtime: number; ready: boolean };
   onClearLocalData: () => void;
   preferences: AppPreferences;
-  onPreferencesChange: (patch: Partial<AppPreferences>) => void;
 }) {
   return (
     <>
@@ -1315,6 +1356,7 @@ function DashboardStatusPanels({
           </div>
         ) : null}
       </div>
+      {preferences.showAnalyticsPanel ? (
       <div className="inspector-panel glass-chrome">
         <span className="eyebrow">Analytics</span>
         {analytics.ready ? (
@@ -1341,80 +1383,7 @@ function DashboardStatusPanels({
           Clear local data
         </button>
       </div>
-      <div className="inspector-panel glass-chrome preferences-panel">
-        <span className="eyebrow">Customize</span>
-        <div className="preference-grid">
-          <label className="field compact-field">
-            <span>Theme mode</span>
-            <select aria-label="Theme mode" value={preferences.themeMode} onChange={(event) => onPreferencesChange({ themeMode: event.target.value as ThemeMode })}>
-              <option value="dark">Dark</option>
-              <option value="dim">Dim</option>
-              <option value="contrast">High contrast</option>
-            </select>
-          </label>
-          <label className="field compact-field">
-            <span>Accent colour</span>
-            <select aria-label="Accent colour" value={preferences.accentColour} onChange={(event) => onPreferencesChange({ accentColour: event.target.value as AccentColour })}>
-              {accentOptions.map((option) => (
-                <option value={option.value} key={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="field compact-field">
-            <span>Dashboard density</span>
-            <select aria-label="Dashboard density" value={preferences.dashboardDensity} onChange={(event) => onPreferencesChange({ dashboardDensity: event.target.value as DashboardDensity })}>
-              <option value="comfortable">Comfortable</option>
-              <option value="compact">Compact</option>
-            </select>
-          </label>
-          <label className="field compact-field">
-            <span>Technical model info</span>
-            <select aria-label="Technical model info" value={preferences.showTechnicalModel ? "show" : "hide"} onChange={(event) => onPreferencesChange({ showTechnicalModel: event.target.value === "show" })}>
-              <option value="show">Show</option>
-              <option value="hide">Hide</option>
-            </select>
-          </label>
-          <label className="field compact-field">
-            <span>Source figures</span>
-            <select aria-label="Source figures" value={preferences.sourceFigures} onChange={(event) => onPreferencesChange({ sourceFigures: event.target.value as FigurePreference })}>
-              <option value="show">Show by default</option>
-              <option value="collapse">Collapse by default</option>
-            </select>
-          </label>
-          <label className="field compact-field">
-            <span>Question navigation</span>
-            <select aria-label="Question navigation" value={preferences.questionNavigation} onChange={(event) => onPreferencesChange({ questionNavigation: event.target.value as NavPreference })}>
-              <option value="grid">Grid</option>
-              <option value="list">Compact list</option>
-            </select>
-          </label>
-          <label className="field compact-field">
-            <span>Notifications</span>
-            <select aria-label="Notification duration" value={preferences.notificationDuration} onChange={(event) => onPreferencesChange({ notificationDuration: event.target.value as NotificationDuration })}>
-              <option value="normal">Normal</option>
-              <option value="longer">Longer</option>
-              <option value="reduced">Reduced</option>
-            </select>
-          </label>
-          <label className="field compact-field">
-            <span>Motion</span>
-            <select aria-label="Reduce motion" value={preferences.reduceMotion} onChange={(event) => onPreferencesChange({ reduceMotion: event.target.value as MotionPreference })}>
-              <option value="system">Follow system</option>
-              <option value="reduce">Always reduce</option>
-            </select>
-          </label>
-          <label className="field compact-field preference-grid__full">
-            <span>Default dashboard landing</span>
-            <select aria-label="Default dashboard landing" value={preferences.defaultLanding} onChange={(event) => onPreferencesChange({ defaultLanding: event.target.value as LandingPreference })}>
-              <option value="overview">Home overview</option>
-              <option value="catalogue">Catalogue</option>
-              <option value="last_paper">Last opened paper</option>
-            </select>
-          </label>
-        </div>
-      </div>
+      ) : null}
     </>
   );
 }
@@ -1427,7 +1396,6 @@ function DashboardStatusModal({
   analytics,
   onClearLocalData,
   preferences,
-  onPreferencesChange,
   onClose,
 }: {
   open: boolean;
@@ -1437,7 +1405,6 @@ function DashboardStatusModal({
   analytics: { completed: number; averagePercent: number | null; overtime: number; ready: boolean };
   onClearLocalData: () => void;
   preferences: AppPreferences;
-  onPreferencesChange: (patch: Partial<AppPreferences>) => void;
   onClose: () => void;
 }) {
   return (
@@ -1456,7 +1423,220 @@ function DashboardStatusModal({
               </button>
             </div>
             <div className="status-modal__content">
-              <DashboardStatusPanels aiModel={aiModel} setAIModel={setAIModel} smokeTest={smokeTest} analytics={analytics} onClearLocalData={onClearLocalData} preferences={preferences} onPreferencesChange={onPreferencesChange} />
+              <DashboardStatusPanels aiModel={aiModel} setAIModel={setAIModel} smokeTest={smokeTest} analytics={analytics} onClearLocalData={onClearLocalData} preferences={preferences} />
+            </div>
+          </motion.div>
+        </motion.div>
+      ) : null}
+    </AnimatePresence>
+  );
+}
+
+function PreferenceSelect<T extends string>({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: T;
+  options: Array<{ value: T; label: string }>;
+  onChange: (value: T) => void;
+}) {
+  return (
+    <label className="field compact-field">
+      <span>{label}</span>
+      <select aria-label={label} value={value} onChange={(event) => onChange(event.target.value as T)}>
+        {options.map((option) => (
+          <option value={option.value} key={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function PreferenceToggle({ label, description, checked, onChange }: { label: string; description: string; checked: boolean; onChange: (checked: boolean) => void }) {
+  return (
+    <label className="preference-toggle">
+      <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
+      <span className="preference-toggle__control" />
+      <span>
+        <strong>{label}</strong>
+        <small>{description}</small>
+      </span>
+    </label>
+  );
+}
+
+function SettingsModal({
+  open,
+  preferences,
+  onChange,
+  onReset,
+  onClose,
+}: {
+  open: boolean;
+  preferences: AppPreferences;
+  onChange: (patch: Partial<AppPreferences>) => void;
+  onReset: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <AnimatePresence>
+      {open ? (
+        <motion.div className="paper-modal" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+          <motion.div className="paper-modal__panel settings-modal__panel" initial={{ y: 18, scale: 0.98 }} animate={{ y: 0, scale: 1 }} exit={{ y: 18, scale: 0.98 }}>
+            <div className="section-frame__header settings-modal__header">
+              <div>
+                <span className="eyebrow">Settings</span>
+                <h2>Customize your workspace</h2>
+                <p>These settings stay on this device and only change how the app feels.</p>
+              </div>
+              <button className="icon-button" onClick={onClose} aria-label="Close settings">
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="settings-modal__grid">
+              <section className="settings-section">
+                <div>
+                  <span className="eyebrow">Look and feel</span>
+                  <h3>Theme</h3>
+                </div>
+                <div className="preference-grid">
+                  <PreferenceSelect
+                    label="Theme mode"
+                    value={preferences.themeMode}
+                    options={[
+                      { value: "dark", label: "Dark" },
+                      { value: "dim", label: "Dim" },
+                      { value: "contrast", label: "High contrast" },
+                    ]}
+                    onChange={(themeMode) => onChange({ themeMode })}
+                  />
+                  <PreferenceSelect label="Accent scheme" value={preferences.accentColour} options={accentOptions} onChange={(accentColour) => onChange({ accentColour })} />
+                  <PreferenceSelect
+                    label="Dashboard density"
+                    value={preferences.dashboardDensity}
+                    options={[
+                      { value: "comfortable", label: "Comfortable" },
+                      { value: "compact", label: "Compact" },
+                    ]}
+                    onChange={(dashboardDensity) => onChange({ dashboardDensity })}
+                  />
+                  <PreferenceSelect
+                    label="Motion"
+                    value={preferences.reduceMotion}
+                    options={[
+                      { value: "system", label: "Follow system" },
+                      { value: "reduce", label: "Always reduce" },
+                    ]}
+                    onChange={(reduceMotion) => onChange({ reduceMotion })}
+                  />
+                </div>
+                <div className="colour-picker-panel">
+                  <div>
+                    <strong>Custom gradient</strong>
+                    <p>Choose "Custom" above, then pick both ends of the app accent gradient.</p>
+                  </div>
+                  <label>
+                    <span>Start</span>
+                    <input type="color" aria-label="Custom accent start" value={preferences.customAccent} onChange={(event) => onChange({ accentColour: "custom", customAccent: event.target.value })} />
+                  </label>
+                  <label>
+                    <span>End</span>
+                    <input type="color" aria-label="Custom accent end" value={preferences.customAccent2} onChange={(event) => onChange({ accentColour: "custom", customAccent2: event.target.value })} />
+                  </label>
+                  <div className="colour-picker-panel__preview" style={{ background: `linear-gradient(135deg, ${preferences.customAccent}, ${preferences.customAccent2})` }} />
+                </div>
+              </section>
+
+              <section className="settings-section">
+                <div>
+                  <span className="eyebrow">Dashboard customization</span>
+                  <h3>Dashboard features</h3>
+                </div>
+                <div className="preference-toggle-grid">
+                  <PreferenceToggle label="Analytics panel" description="Show the right-side analytics card." checked={preferences.showAnalyticsPanel} onChange={(showAnalyticsPanel) => onChange({ showAnalyticsPanel })} />
+                  <PreferenceToggle label="System info button" description="Show the top-right dashboard system button on smaller screens." checked={preferences.showHeaderSystemInfo} onChange={(showHeaderSystemInfo) => onChange({ showHeaderSystemInfo })} />
+                  <PreferenceToggle label="Recent update box" description="Show version and commit information in the sidebar." checked={preferences.showRecentUpdate} onChange={(showRecentUpdate) => onChange({ showRecentUpdate })} />
+                  <PreferenceToggle label="Hero status panel" description="Show AI, storage, and version inside the empty dashboard hero." checked={preferences.showHeroStatus} onChange={(showHeroStatus) => onChange({ showHeroStatus })} />
+                  <PreferenceToggle label="Question legend" description="Show the blank/answered/marked/unsupported legend." checked={preferences.showQuestionLegend} onChange={(showQuestionLegend) => onChange({ showQuestionLegend })} />
+                  <PreferenceToggle label="Paper summary tiles" description="Show total marks, duration, attempts, and best score tiles." checked={preferences.showPaperSummary} onChange={(showPaperSummary) => onChange({ showPaperSummary })} />
+                  <PreferenceToggle label="Floating feedback button" description="Keep the round feedback shortcut on dashboard pages." checked={preferences.showFloatingFeedback} onChange={(showFloatingFeedback) => onChange({ showFloatingFeedback })} />
+                </div>
+                <PreferenceSelect
+                  label="Default dashboard landing"
+                  value={preferences.defaultLanding}
+                  options={[
+                    { value: "overview", label: "Home overview" },
+                    { value: "catalogue", label: "Catalogue" },
+                    { value: "last_paper", label: "Last opened paper" },
+                  ]}
+                  onChange={(defaultLanding) => onChange({ defaultLanding })}
+                />
+              </section>
+
+              <section className="settings-section">
+                <div>
+                  <span className="eyebrow">Focus customization</span>
+                  <h3>Answering flow</h3>
+                </div>
+                <div className="preference-grid">
+                  <PreferenceSelect
+                    label="Source figures"
+                    value={preferences.sourceFigures}
+                    options={[
+                      { value: "show", label: "Show by default" },
+                      { value: "collapse", label: "Collapse by default" },
+                    ]}
+                    onChange={(sourceFigures) => onChange({ sourceFigures })}
+                  />
+                  <PreferenceSelect
+                    label="Question navigation"
+                    value={preferences.questionNavigation}
+                    options={[
+                      { value: "grid", label: "Grid" },
+                      { value: "list", label: "Compact list" },
+                    ]}
+                    onChange={(questionNavigation) => onChange({ questionNavigation })}
+                  />
+                  <PreferenceSelect
+                    label="Notification duration"
+                    value={preferences.notificationDuration}
+                    options={[
+                      { value: "normal", label: "Normal" },
+                      { value: "longer", label: "Longer" },
+                      { value: "reduced", label: "Reduced" },
+                    ]}
+                    onChange={(notificationDuration) => onChange({ notificationDuration })}
+                  />
+                  <PreferenceSelect
+                    label="Technical model info"
+                    value={preferences.showTechnicalModel ? "show" : "hide"}
+                    options={[
+                      { value: "show", label: "Show" },
+                      { value: "hide", label: "Hide" },
+                    ]}
+                    onChange={(value) => onChange({ showTechnicalModel: value === "show" })}
+                  />
+                </div>
+                <div className="preference-toggle-grid">
+                  <PreferenceToggle label="Focus progress card" description="Show answered/skipped counts and question dots while answering." checked={preferences.showFocusProgress} onChange={(showFocusProgress) => onChange({ showFocusProgress })} />
+                  <PreferenceToggle label="Skip with confidence panel" description="Show the confidence skip shortcut below supported questions." checked={preferences.showConfidenceSkip} onChange={(showConfidenceSkip) => onChange({ showConfidenceSkip })} />
+                </div>
+              </section>
+            </div>
+
+            <div className="button-row">
+              <button className="secondary-button" onClick={onReset}>
+                <RotateCcw size={16} /> Reset defaults
+              </button>
+              <button className="primary-button" onClick={onClose}>
+                <Check size={16} /> Done
+              </button>
             </div>
           </motion.div>
         </motion.div>
@@ -1704,6 +1884,7 @@ export function App() {
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
   const [feedbackError, setFeedbackError] = useState<string | null>(null);
   const [systemInfoOpen, setSystemInfoOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [preferences, setPreferences] = useState<AppPreferences>(() => loadPreferences());
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const landingApplied = useRef(false);
@@ -1734,6 +1915,11 @@ export function App() {
 
   function patchPreferences(patch: Partial<AppPreferences>) {
     setPreferences((current) => ({ ...current, ...patch }));
+  }
+
+  function resetPreferences() {
+    setPreferences(defaultPreferences);
+    setStatus("Settings reset to defaults.");
   }
 
   useEffect(() => {
@@ -2499,20 +2685,24 @@ export function App() {
   const feedbackCanSubmit = feedbackDraftIsValid(validateFeedbackDraft(feedbackDraft)) && !feedbackSubmitting;
   const dashboardStatusAccessible =
     (appMode === "empty" || appMode === "catalogue" || appMode === "ready") &&
+    preferences.showHeaderSystemInfo &&
     !uploadOpen &&
     !editingMetadata &&
     !confidenceSkipOpen &&
     !feedbackOpen &&
     !systemInfoOpen &&
+    !settingsOpen &&
     !busy &&
     !smokeBusy;
   const showFeedbackButton =
     (appMode === "empty" || appMode === "catalogue" || appMode === "ready") &&
+    preferences.showFloatingFeedback &&
     !uploadOpen &&
     !editingMetadata &&
     !confidenceSkipOpen &&
     !feedbackOpen &&
     !systemInfoOpen &&
+    !settingsOpen &&
     !busy &&
     !smokeBusy;
   const activeAttemptStats = selectedPaper ? attemptReviewStats(selectedPaper, selectedAttempt) : null;
@@ -2558,9 +2748,16 @@ export function App() {
   ]
     .filter(Boolean)
     .join(" ");
+  const rootStyle =
+    preferences.accentColour === "custom"
+      ? ({
+          "--accent": preferences.customAccent,
+          "--accent-2": preferences.customAccent2,
+        } as React.CSSProperties)
+      : undefined;
 
   return (
-    <div className={rootClassName}>
+    <div className={rootClassName} style={rootStyle}>
       {appMode !== "taking" && appMode !== "processing" && appMode !== "marking" && appMode !== "review" ? (
       <aside className="shell-sidebar">
         <button className="shell-brand shell-brand--button glass-chrome" onClick={() => { setSelectedPaperId(null); setSelectedAttemptId(null); }} aria-label="Open full dashboard">
@@ -2582,6 +2779,29 @@ export function App() {
           </button>
         </div>
 
+        {preferences.showRecentUpdate ? (
+        <div className="shell-sidebar__block glass-chrome update-card">
+          <span className="eyebrow">Recent update</span>
+          <div className="update-card__body">
+            <strong>{appMeta.version}</strong>
+            <p>{appMeta.commitMessage}</p>
+            <div className="update-card__meta">
+              {appMeta.commitHash ? <span>Commit {appMeta.commitHash}</span> : null}
+              <span>{formatUpdateTimestamp(appMeta.updatedAt)}</span>
+            </div>
+          </div>
+        </div>
+        ) : null}
+
+        <button className="settings-launch-button glass-chrome" onClick={() => setSettingsOpen(true)}>
+          <Settings2 size={18} />
+          <span>
+            <strong>Settings</strong>
+            <small>Customize dashboard, focus mode, colours, and panels</small>
+          </span>
+          <ChevronRight size={16} />
+        </button>
+
         <div className="shell-sidebar__block shell-sidebar__block--grow glass-chrome">
           <span className="eyebrow">Catalogue</span>
           <div className="paper-mini-list">
@@ -2602,18 +2822,6 @@ export function App() {
               </button>
             ))}
             {!data.papers.length ? <p className="muted-copy">No papers yet.</p> : null}
-          </div>
-        </div>
-
-        <div className="shell-sidebar__block glass-chrome update-card">
-          <span className="eyebrow">Recent update</span>
-          <div className="update-card__body">
-            <strong>{appMeta.version}</strong>
-            <p>{appMeta.commitMessage}</p>
-            <div className="update-card__meta">
-              {appMeta.commitHash ? <span>Commit {appMeta.commitHash}</span> : null}
-              <span>{formatUpdateTimestamp(appMeta.updatedAt)}</span>
-            </div>
           </div>
         </div>
       </aside>
@@ -2707,6 +2915,7 @@ export function App() {
                   </button>
                 </div>
               </div>
+              {preferences.showHeroStatus ? (
               <div className="dashboard-hero__status">
                 <div className="metric-row">
                   <span>AI provider</span>
@@ -2721,6 +2930,7 @@ export function App() {
                   <strong>{appMeta.version}</strong>
                 </div>
               </div>
+              ) : null}
             </section>
 
             <section className="starter-grid" aria-label="How it works">
@@ -2907,6 +3117,7 @@ export function App() {
             >
               {selectedPaper.processingStatus === "processing" || selectedPaper.processingStatus === "failed" ? <ProcessingPanel paper={selectedPaper} job={latestJob(selectedPaper, "processing")} /> : null}
 
+              {preferences.showPaperSummary ? (
               <div className="paper-summary-grid">
                 <div className="paper-summary-tile">
                   <span>Questions</span>
@@ -2933,6 +3144,7 @@ export function App() {
                   <strong>{unsupportedMarksForPaper(selectedPaper) || 0}</strong>
                 </div>
               </div>
+              ) : null}
 
               {!selectedAttempt ? (
                 <div className="question-disclosure">
@@ -2941,12 +3153,14 @@ export function App() {
                     <small>{selectedPaper.questions.length} extracted</small>
                     <ChevronDown size={16} className={questionsExpanded ? "question-disclosure__icon question-disclosure__icon--open" : "question-disclosure__icon"} />
                   </button>
+                  {preferences.showQuestionLegend ? (
                   <div className="question-legend" aria-label="Question state legend">
                     <span><i className="legend-dot legend-dot--blank" /> Blank</span>
                     <span><i className="legend-dot legend-dot--answered" /> Answered</span>
                     <span><i className="legend-dot legend-dot--marked" /> Marked</span>
                     <span><i className="legend-dot legend-dot--unsupported" /> Unsupported</span>
                   </div>
+                  ) : null}
                   <AnimatePresence initial={false}>
                     {questionsExpanded ? (
                       <motion.div className="paper-question-overview" initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }}>
@@ -2981,6 +3195,7 @@ export function App() {
                       <Clock3 size={16} /> {durationLimit ? formatClock(secondsRemaining) : formatClock(elapsedSeconds)}
                     </span>
                   </div>
+                  {preferences.showFocusProgress ? (
                   <div className="focus-progress-card">
                     <div className="focus-progress-card__bar" aria-label={`Attempt progress ${focusProgressPercent}%`}>
                       <span style={{ width: `${focusProgressPercent}%` }} />
@@ -3005,6 +3220,7 @@ export function App() {
                       })}
                     </div>
                   </div>
+                  ) : null}
                   <article className="question-card question-card--focused">
                     <div className="question-card__header">
                       <strong>Question {displayQuestionLabel(selectedPaper, activeQuestion)}</strong>
@@ -3062,7 +3278,7 @@ export function App() {
                             <Edit3 size={16} /> Do question
                           </button>
                         </div>
-                      ) : !activeSupportIssue ? (
+                      ) : !activeSupportIssue && preferences.showConfidenceSkip ? (
                         <div className="paper-confidence-row">
                           <span>Not answering this one?</span>
                           <button className="secondary-button" onClick={openConfidenceSkip}>
@@ -3464,7 +3680,7 @@ export function App() {
 
       {appMode === "catalogue" || appMode === "ready" || appMode === "empty" ? (
       <aside className="shell-inspector">
-        <DashboardStatusPanels aiModel={aiModel} setAIModel={setAIModel} smokeTest={smokeTest} analytics={analytics} onClearLocalData={clearLocalDashboardData} preferences={preferences} onPreferencesChange={patchPreferences} />
+        <DashboardStatusPanels aiModel={aiModel} setAIModel={setAIModel} smokeTest={smokeTest} analytics={analytics} onClearLocalData={clearLocalDashboardData} preferences={preferences} />
       </aside>
       ) : null}
 
@@ -3493,9 +3709,9 @@ export function App() {
         analytics={analytics}
         onClearLocalData={clearLocalDashboardData}
         preferences={preferences}
-        onPreferencesChange={patchPreferences}
         onClose={() => setSystemInfoOpen(false)}
       />
+      <SettingsModal open={settingsOpen} preferences={preferences} onChange={patchPreferences} onReset={resetPreferences} onClose={() => setSettingsOpen(false)} />
       <ConfidenceSkipModal
         open={confidenceSkipOpen}
         question={activeQuestion}
