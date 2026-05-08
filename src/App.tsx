@@ -104,7 +104,7 @@ const emptyDraft: PaperDraftInput = {
 };
 
 type ThemeMode = "dark" | "dim" | "contrast";
-type AccentColour = "mint" | "blue" | "purple" | "amber" | "rose" | "cyan" | "indigo" | "peach" | "graphite" | "custom";
+type AccentColour = "elliots" | "blue" | "purple" | "amber" | "rose" | "cyan" | "indigo" | "peach" | "graphite" | "custom";
 type DashboardDensity = "comfortable" | "compact";
 type NotificationDuration = "normal" | "longer" | "reduced";
 type MotionPreference = "system" | "reduce";
@@ -148,7 +148,7 @@ const PREFERENCES_STORAGE_KEY = "past-paper-worker:preferences:v1";
 
 const defaultPreferences: AppPreferences = {
   themeMode: "dark",
-  accentColour: "mint",
+  accentColour: "elliots",
   dashboardDensity: "comfortable",
   showTechnicalModel: true,
   showAnalyticsPanel: true,
@@ -165,12 +165,12 @@ const defaultPreferences: AppPreferences = {
   notificationDuration: "normal",
   reduceMotion: "system",
   defaultLanding: "overview",
-  customAccent: "#8fe6c0",
-  customAccent2: "#e6c36f",
+  customAccent: "#0038c0",
+  customAccent2: "#7800d0",
 };
 
 const accentOptions: Array<{ value: AccentColour; label: string }> = [
-  { value: "mint", label: "Mint" },
+  { value: "elliots", label: "Elliots" },
   { value: "blue", label: "Blue" },
   { value: "purple", label: "Purple" },
   { value: "amber", label: "Amber" },
