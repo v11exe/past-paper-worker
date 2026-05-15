@@ -7,6 +7,17 @@ export type VersionHistoryEntry = {
 
 export const versionHistory: VersionHistoryEntry[] = [
   {
+    version: "v1.3.3",
+    title: "Marking workspace and quota fixes",
+    date: "2026-05-15",
+    changes: [
+      "Moved submitted, marking, and review screens into the v1.3 product shell.",
+      "Stopped quota and rate-limit failures being saved as accepted zero marks.",
+      "Added retry/backoff handling for Gemini rate limits during marking.",
+      "Improved marking progress states and partial-mark handling.",
+    ],
+  },
+  {
     version: "v1.3.2",
     title: "Sidebar and typewriter fixes",
     date: "2026-05-15",

@@ -6,15 +6,18 @@ import {
   applyDeterministicMarkSchemeFallback,
   buildDeterministicProcessedPaperOutput,
   computeAttemptScores,
+  createMarkingIssue,
   formatPercent,
   formatClock,
   isAnswerAttempted,
+  isTransientMarkingError,
   mapProcessedOutput,
   displayQuestionNumberForPaper,
   markAnswerWithAI,
   pageContextsForAsset,
   processPaperWithAI,
   questionSupportIssue,
+  retryAfterMsFromError,
   startAttempt,
   supportedTotalMarksForPaper,
   unsupportedMarksForPaper,
@@ -100,6 +103,28 @@ describe("computeAttemptScores", () => {
     expect(result.actualScore).toBe(2);
     expect(result.confidenceAdjustedScore).toBe(3);
     expect(formatPercent(result.actualScore, result.totalMarks)).toBe("66.7%");
+  });
+
+  it("ignores pending provider issues when calculating the actual score", () => {
+    const attempt = {
+      marks: [{ questionId: "q1", awardedMarks: 2, maxMarks: 3, accepted: true }],
+      answers: [],
+      markingIssues: [createMarkingIssue("q2", "transient_provider_error", "Retry later", { retryAfterMs: 47000 })],
+    } as unknown as PastPaperAttempt;
+
+    const result = computeAttemptScores(attempt, paper);
+
+    expect(result.actualScore).toBe(2);
+    expect(result.totalMarks).toBe(5);
+  });
+});
+
+describe("transient marking helpers", () => {
+  it("detects provider quota errors and parses retry delays", () => {
+    const error = new Error("Quota exceeded for metric. Please retry in 47.128148733s");
+
+    expect(isTransientMarkingError(error)).toBe(true);
+    expect(retryAfterMsFromError(error)).toBe(47129);
   });
 });
 
@@ -953,6 +978,61 @@ describe("markAnswerWithAI", () => {
     expect(wrongHex.rationale).toContain("Expected B0");
     expect(wrongCount.awardedMarks).toBe(0);
     expect(wrongCount.rationale).toContain("Expected 16");
+  });
+
+  it("marks simple single-choice questions deterministically without calling Gemini", async () => {
+    let calls = 0;
+    window.__AI_TEST_MOCK__ = {
+      ai: {
+        chat: async () => {
+          calls += 1;
+          return "{}";
+        },
+      },
+    };
+
+    const deterministicQuestion = {
+      ...question,
+      responseType: "single_choice",
+      maxMarks: 1,
+      options: ["A. nucleus", "B. ribosome", "C. cell wall", "D. cytoplasm"],
+      markSchemeData: { rows: [{ markPoint: "C", marks: 1 }], evidence: "The correct answer is C" },
+    } as PastPaperQuestion;
+
+    const correct = await markAnswerWithAI(basePaper, deterministicQuestion, { ...answer, selectedOptions: ["C. cell wall"] } as PastPaperAnswer, 1);
+    const wrong = await markAnswerWithAI(basePaper, deterministicQuestion, { ...answer, selectedOptions: ["D. cytoplasm"] } as PastPaperAnswer, 1);
+
+    expect(correct.awardedMarks).toBe(1);
+    expect(correct.markSchemeReference.source).toBe("deterministic_single_choice");
+    expect(wrong.awardedMarks).toBe(0);
+    expect(calls).toBe(0);
+  });
+
+  it("marks acceptable numeric answers deterministically without calling Gemini", async () => {
+    let calls = 0;
+    window.__AI_TEST_MOCK__ = {
+      ai: {
+        chat: async () => {
+          calls += 1;
+          return "{}";
+        },
+      },
+    };
+
+    const numericQuestion = {
+      ...question,
+      responseType: "numeric",
+      maxMarks: 2,
+      markSchemeData: { rows: [{ markPoint: "6.25", marks: 2 }], evidence: "acceptable values are 6 / 6.25 / 6.3" },
+    } as PastPaperQuestion;
+
+    const wrong = await markAnswerWithAI(basePaper, numericQuestion, { ...answer, responseText: "10, maybe 3" } as PastPaperAnswer, 1);
+    const correct = await markAnswerWithAI(basePaper, numericQuestion, { ...answer, responseText: "6.25" } as PastPaperAnswer, 1);
+
+    expect(wrong.awardedMarks).toBe(0);
+    expect(correct.awardedMarks).toBe(2);
+    expect(correct.markSchemeReference.source).toBe("deterministic_numeric");
+    expect(calls).toBe(0);
   });
 
   it("rejects malformed Gemini marking JSON with a clear parser error", async () => {

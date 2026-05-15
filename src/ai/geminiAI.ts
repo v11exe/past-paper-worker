@@ -53,14 +53,34 @@ export class AIProviderError extends Error {
   readonly rawError: unknown;
   readonly timedOut: boolean;
   readonly errorType: string | null;
+  readonly retryAfterMs: number | null;
+  readonly httpStatus: number | null;
+  readonly model: string | null;
+  readonly operation: string | null;
 
-  constructor(message: string, input: { diagnostic?: AIRequestDiagnostic | null; rawError?: unknown; timedOut?: boolean; errorType?: string | null } = {}) {
+  constructor(
+    message: string,
+    input: {
+      diagnostic?: AIRequestDiagnostic | null;
+      rawError?: unknown;
+      timedOut?: boolean;
+      errorType?: string | null;
+      retryAfterMs?: number | null;
+      httpStatus?: number | null;
+      model?: string | null;
+      operation?: string | null;
+    } = {},
+  ) {
     super(message);
     this.name = "AIProviderError";
     this.diagnostic = input.diagnostic ?? null;
     this.rawError = input.rawError;
     this.timedOut = Boolean(input.timedOut);
     this.errorType = input.errorType ?? null;
+    this.retryAfterMs = input.retryAfterMs ?? null;
+    this.httpStatus = input.httpStatus ?? null;
+    this.model = input.model ?? null;
+    this.operation = input.operation ?? null;
   }
 }
 
@@ -103,6 +123,10 @@ function serializeError(error: unknown): unknown {
             diagnostic: error.diagnostic,
             rawError: error.rawError,
             errorType: error.errorType,
+            retryAfterMs: error.retryAfterMs,
+            httpStatus: error.httpStatus,
+            model: error.model,
+            operation: error.operation,
           }
         : {}),
     });
@@ -172,6 +196,11 @@ function resolveProxyUrl() {
   return (import.meta.env.VITE_GEMINI_PROXY_URL?.trim() ?? defaultProxyUrl()).trim();
 }
 
+export function parseRetryAfterMs(message: string): number | null {
+  const match = message.match(/retry in\s+(\d+(?:\.\d+)?)s/i);
+  return match ? Math.ceil(Number(match[1]) * 1000) : null;
+}
+
 async function ensureProxyConfigured() {
   if (window.__AI_TEST_MOCK__) return "__AI_TEST_MOCK__";
   const proxyUrl = resolveProxyUrl();
@@ -239,6 +268,10 @@ function failureToError(response: AIProxyFailureResponse, diagnostic: AIRequestD
     rawError: redactSensitiveValue(response.error),
     timedOut: response.error.type === "timeout",
     errorType: response.error.type,
+    retryAfterMs: parseRetryAfterMs(response.error.message),
+    httpStatus: response.error.statusCode ?? null,
+    model: response.model,
+    operation: response.operation,
   });
 }
 
@@ -323,6 +356,10 @@ export async function aiChat(prompt: string, options: AIChatOptions) {
     rawError: serializeError(lastError),
     timedOut: lastError instanceof AIRequestTimeoutError || lastDiagnostic?.status === "timeout",
     errorType: lastError instanceof AIProviderError ? lastError.errorType : null,
+    retryAfterMs: lastError instanceof AIProviderError ? lastError.retryAfterMs : parseRetryAfterMs(message),
+    httpStatus: lastError instanceof AIProviderError ? lastError.httpStatus : null,
+    model: lastError instanceof AIProviderError ? lastError.model : lastDiagnostic?.model ?? null,
+    operation: lastError instanceof AIProviderError ? lastError.operation : options.operation,
   });
 }
 

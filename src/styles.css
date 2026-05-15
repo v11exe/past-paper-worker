@@ -3081,14 +3081,36 @@ p {
   color: #7dc7ff;
 }
 
+.review-question-nav__button--pending {
+  border-color: rgba(245, 196, 83, 0.42);
+  background: rgba(245, 196, 83, 0.08);
+}
+
+.review-question-nav__button--pending small {
+  color: #f6c453;
+}
+
 .review-question-nav__button--unanswered {
   opacity: 0.68;
+}
+
+.paper-workspace-v133 {
+  display: grid;
+  gap: 18px;
+}
+
+.paper-workspace-v133__header,
+.paper-workspace-v133__panel {
+  width: min(1180px, 100%);
+  margin: 0 auto;
 }
 
 .paper-review-card--focus {
   display: grid;
   gap: 14px;
   padding: 24px;
+  width: min(1180px, 100%);
+  margin: 0 auto;
 }
 
 .mark-scheme-row-panel {

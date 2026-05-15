@@ -69,17 +69,19 @@ import {
   bestScoreForPaper,
   buildProcessingJob,
   computeAttemptScores,
-  createMarkingErrorMark,
+  createMarkingIssue,
   createRemark,
   formatClock,
   formatPercent,
   isAnswerAttempted,
   isMarkingErrorMark,
+  isTransientMarkingError,
   displayQuestionNumberForPaper,
   markAnswerWithAI,
   nowIso,
   processPaperWithAI,
   questionSupportIssue,
+  retryAfterMsFromError,
   processingStages,
   startAttempt,
   supportedTotalMarksForPaper,
@@ -93,6 +95,7 @@ import type {
   PastPaperAnswer,
   PastPaperAsset,
   PastPaperAttempt,
+  PastPaperMarkingIssue,
   PastPaperProcessingJob,
   PastPaperQuestion,
   PastPaperQuestionMark,
@@ -162,10 +165,10 @@ type ToastItem = {
 type AppView = "landing" | "onboarding" | "app";
 
 const PREFERENCES_STORAGE_KEY = "past-paper-worker:preferences:v1";
-const SELECTED_SUBJECTS_STORAGE_KEY = "past-paper-worker:selected-subjects:v1.3.2";
-const ONBOARDING_COMPLETE_STORAGE_KEY = "past-paper-worker:onboarding-completed:v1.3.2";
-const ACTIVE_SUBJECT_STORAGE_KEY = "past-paper-worker:active-subject:v1.3.2";
-const SIDEBAR_COLLAPSED_STORAGE_KEY = "past-paper-worker:sidebar-collapsed:v1.3.2";
+const SELECTED_SUBJECTS_STORAGE_KEY = "past-paper-worker:selected-subjects:v1.3.3";
+const ONBOARDING_COMPLETE_STORAGE_KEY = "past-paper-worker:onboarding-completed:v1.3.3";
+const ACTIVE_SUBJECT_STORAGE_KEY = "past-paper-worker:active-subject:v1.3.3";
+const SIDEBAR_COLLAPSED_STORAGE_KEY = "past-paper-worker:sidebar-collapsed:v1.3.3";
 const LANDING_PHRASES = [
   "Upload a paper. Get marks back.",
   "Answer questions online.",
@@ -445,6 +448,30 @@ function latestAcceptedMark(attempt: PastPaperAttempt | null, questionId: string
   return [...acceptedMarks(attempt, questionId)].sort((a, b) => b.reviewVersion - a.reviewVersion)[0] ?? null;
 }
 
+function latestMarkingIssue(attempt: PastPaperAttempt | null, questionId: string) {
+  if (!attempt?.markingIssues?.length) return null;
+  return [...attempt.markingIssues]
+    .filter((issue) => issue.questionId === questionId)
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0] ?? null;
+}
+
+function isRealAcceptedMark(mark: PastPaperQuestionMark | null | undefined) {
+  return Boolean(mark?.accepted && !isMarkingErrorMark(mark));
+}
+
+function pendingMarkingIssues(attempt: PastPaperAttempt | null) {
+  return attempt?.markingIssues?.filter((issue) => issue.type === "transient_provider_error") ?? [];
+}
+
+function markingIssueLabel(issue: PastPaperMarkingIssue | null | undefined) {
+  if (!issue) return null;
+  if (issue.type === "transient_provider_error") {
+    const seconds = issue.retryAfterMs ? Math.max(1, Math.round(issue.retryAfterMs / 1000)) : null;
+    return seconds ? `Gemini quota limit reached. This answer was not marked. Retry in about ${seconds} seconds.` : "Gemini quota limit reached. This answer was not marked yet.";
+  }
+  return issue.message;
+}
+
 function displayQuestionLabel(paper: PastPaper, question: PastPaperQuestion) {
   return displayQuestionNumberForPaper(paper, question);
 }
@@ -538,25 +565,36 @@ function attemptReviewStats(paper: PastPaper, attempt: PastPaperAttempt | null) 
       blank: paper.questions.length,
       skipped: 0,
       unsupported: paper.questions.filter((question) => questionSupportIssue(question)).length,
-      errors: 0,
+      pending: 0,
+      issues: 0,
       mistakes: 0,
     };
   }
+  const supportedQuestions = paper.questions.filter((question) => !questionSupportIssue(question));
   const answered = attempt.answers.filter(isAnswerAttempted).length;
   const skipped = attempt.answers.filter((answer) => answer.skipped).length;
   const unsupported = paper.questions.filter((question) => questionSupportIssue(question)).length;
-  const errors = attempt.marks.filter(isMarkingErrorMark).length;
-  const mistakes = paper.questions.filter((question) => {
+  const pending = pendingMarkingIssues(attempt).length;
+  const issues = attempt.markingIssues?.filter((issue) => issue.type === "mark_scheme_alignment_error").length ?? 0;
+  const mistakes = supportedQuestions.filter((question) => {
     const mark = latestAcceptedMark(attempt, question.id);
-    return mark && !isMarkingErrorMark(mark) && mark.awardedMarks < question.maxMarks;
+    return Boolean(mark && isRealAcceptedMark(mark) && mark.awardedMarks < question.maxMarks);
+  }).length;
+  const blank = supportedQuestions.filter((question) => {
+    const answer = attempt.answers.find((item) => item.questionId === question.id);
+    if (!answer || answer.skipped || !isAnswerAttempted(answer)) return true;
+    if (latestMarkingIssue(attempt, question.id)?.type === "transient_provider_error") return false;
+    if (latestMarkingIssue(attempt, question.id)?.type === "mark_scheme_alignment_error") return false;
+    return !isRealAcceptedMark(latestAcceptedMark(attempt, question.id));
   }).length;
   return {
     answered,
     skipped,
     unsupported,
-    errors,
+    pending,
+    issues,
     mistakes,
-    blank: Math.max(0, paper.questions.length - answered - skipped - unsupported),
+    blank: Math.max(0, blank),
   };
 }
 
@@ -679,6 +717,322 @@ function MarkSchemeDataPanel({ question, onCopy }: { question: PastPaperQuestion
           <summary>Raw evidence</summary>
           <p>{evidence}</p>
         </details>
+      ) : null}
+    </div>
+  );
+}
+
+function PaperWorkspaceV133({
+  paper,
+  attempt,
+  appMode,
+  reviewQuestion,
+  reviewAnswer,
+  reviewMark,
+  reviewIndex,
+  reviewSupportIssue,
+  markingJob,
+  reviewStats,
+  displayScores,
+  preferredTotal,
+  busy,
+  markSchemeDetailsOpen,
+  onBackToPaper,
+  onMarkAttempt,
+  onRetryPending,
+  onRetryQuestion,
+  onExportDiagnostics,
+  onToggleMarkScheme,
+  onCopyMarkScheme,
+  onRequestRemark,
+  onAcceptRemark,
+  onPreviousReview,
+  onNextReview,
+  onSetReviewIndex,
+}: {
+  paper: PastPaper;
+  attempt: PastPaperAttempt | null;
+  appMode: string;
+  reviewQuestion: PastPaperQuestion | null;
+  reviewAnswer: PastPaperAnswer | null;
+  reviewMark: PastPaperQuestionMark | null;
+  reviewIndex: number;
+  reviewSupportIssue: ReturnType<typeof questionSupportIssue>;
+  markingJob: PastPaperProcessingJob | null;
+  reviewStats: ReturnType<typeof attemptReviewStats> | null;
+  displayScores: ReturnType<typeof displayAttemptScores> | null;
+  preferredTotal: number;
+  busy: boolean;
+  markSchemeDetailsOpen: boolean;
+  onBackToPaper: () => void;
+  onMarkAttempt: () => void;
+  onRetryPending: () => void;
+  onRetryQuestion: (questionId: string) => void;
+  onExportDiagnostics: () => void;
+  onToggleMarkScheme: () => void;
+  onCopyMarkScheme: () => void;
+  onRequestRemark: (answer: PastPaperAnswer) => void;
+  onAcceptRemark: (remarkId: string) => void;
+  onPreviousReview: () => void;
+  onNextReview: () => void;
+  onSetReviewIndex: (index: number) => void;
+}) {
+  const pendingIssues = pendingMarkingIssues(attempt);
+  const issueCount = attempt?.markingIssues?.filter((issue) => issue.type === "mark_scheme_alignment_error").length ?? 0;
+  const answeredCount = attempt?.answers.filter(isAnswerAttempted).length ?? 0;
+  const skippedCount = attempt?.answers.filter((answer) => answer.skipped).length ?? 0;
+  const blankCount = reviewStats?.blank ?? Math.max(0, paper.questions.length - answeredCount - skippedCount);
+  const latestIssue = reviewQuestion ? latestMarkingIssue(attempt, reviewQuestion.id) : null;
+
+  return (
+    <div className="paper-workspace-v133">
+      <section className="section-frame paper-workspace-v133__header">
+        <div className="section-frame__header">
+          <div>
+            <span className="eyebrow">Paper workspace</span>
+            <h2>{paper.title}</h2>
+            <p>
+              {[paper.year ?? "Year ?", paper.paperCode ?? "Paper code pending", `${preferredTotal} supported marks`, paper.durationMinutes ? `${paper.durationMinutes} min` : "Duration pending"]
+                .filter(Boolean)
+                .join(" / ")}
+            </p>
+          </div>
+          <div className="button-row">
+            <button className="secondary-button" onClick={onBackToPaper}>
+              <ChevronLeft size={16} /> Dashboard
+            </button>
+            {appMode === "submitted" && paper.hasMarkScheme ? (
+              <button className="primary-button" onClick={onMarkAttempt} disabled={busy}>
+                <BrainCircuit size={16} /> Mark answered questions
+              </button>
+            ) : null}
+            {pendingIssues.length ? (
+              <button className="secondary-button" onClick={onRetryPending} disabled={busy}>
+                <RotateCcw size={16} /> Retry pending marks
+              </button>
+            ) : null}
+            <button className="secondary-button" onClick={onExportDiagnostics}>
+              <Download size={16} /> Export diagnostics
+            </button>
+          </div>
+        </div>
+        <div className="review-summary-grid">
+          <div className="review-summary-card">
+            <span>Status</span>
+            <strong>{statusLabel(appMode === "review" ? "marked" : appMode === "marking" ? "running" : appMode)}</strong>
+          </div>
+          <div className="review-summary-card">
+            <span>Questions</span>
+            <strong>{paper.questions.length}</strong>
+          </div>
+          <div className="review-summary-card">
+            <span>Total marks</span>
+            <strong>{preferredTotal}</strong>
+          </div>
+          <div className="review-summary-card">
+            <span>Attempts</span>
+            <strong>{attempt ? 1 : 0}</strong>
+          </div>
+          <div className="review-summary-card">
+            <span>Unsupported</span>
+            <strong>{unsupportedMarksForPaper(paper) ? `${unsupportedMarksForPaper(paper)} marks` : "0"}</strong>
+          </div>
+        </div>
+      </section>
+
+      {appMode === "submitted" && attempt ? (
+        <section className="section-frame paper-workspace-v133__panel">
+          <div className="section-frame__header">
+            <div>
+              <span className="eyebrow">Ready to mark</span>
+              <h2>Submitted answers</h2>
+              <p>Only answered, supported questions will be marked. Unsupported questions are excluded from the supported total.</p>
+            </div>
+          </div>
+          <div className="review-summary-grid">
+            <div className="review-summary-card"><span>Answered</span><strong>{answeredCount}</strong></div>
+            <div className="review-summary-card"><span>Skipped</span><strong>{skippedCount}</strong></div>
+            <div className="review-summary-card"><span>Blank</span><strong>{blankCount}</strong></div>
+            <div className="review-summary-card"><span>Unsupported</span><strong>{reviewStats?.unsupported ?? 0}</strong></div>
+            <div className="review-summary-card"><span>Confidence</span><strong>{scoreSummary(displayScores?.confidenceAdjustedScore ?? attempt.confidenceAdjustedScore, preferredTotal)}</strong></div>
+          </div>
+        </section>
+      ) : null}
+
+      {appMode === "marking" ? (
+        <section className="section-frame paper-workspace-v133__panel">
+          <div className="section-frame__header">
+            <div>
+              <span className="eyebrow">Marking</span>
+              <h2>Marking answered questions</h2>
+              <p>{markingJob?.errorMessage ?? "Applying the aligned mark scheme to each answered supported question."}</p>
+            </div>
+          </div>
+          <ProcessingPanel paper={paper} job={markingJob} />
+          {pendingIssues.length || issueCount ? (
+            <div className="paper-history-list">
+              {[...(attempt?.markingIssues ?? [])].slice(-5).reverse().map((issue) => (
+                <div className="remark-card" key={`${issue.questionId}-${issue.createdAt}`}>
+                  <div>
+                    <strong>Question {displayQuestionLabel(paper, paper.questions.find((item) => item.id === issue.questionId) ?? paper.questions[0])}</strong>
+                    <p>{markingIssueLabel(issue) ?? issue.message}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+
+      {appMode === "review" && attempt && reviewQuestion && reviewAnswer ? (
+        <>
+          <section className="section-frame paper-workspace-v133__panel">
+            <div className="section-frame__header">
+              <div>
+                <span className="eyebrow">Review</span>
+                <h2>Marked review</h2>
+                <p>{scoreSummary(displayScores?.actualScore ?? attempt.actualScore, preferredTotal)} actual</p>
+              </div>
+              <div className="button-row">
+                <button className="secondary-button" onClick={onPreviousReview} disabled={reviewIndex === 0}>
+                  <ChevronLeft size={16} /> Previous
+                </button>
+                <button className="secondary-button" onClick={onNextReview} disabled={reviewIndex >= paper.questions.length - 1}>
+                  Next <ChevronRight size={16} />
+                </button>
+              </div>
+            </div>
+            <div className="review-summary-grid">
+              <div className="review-summary-card"><span>Actual score</span><strong>{scoreSummary(displayScores?.actualScore ?? attempt.actualScore, preferredTotal)}</strong></div>
+              <div className="review-summary-card"><span>Answered</span><strong>{reviewStats?.answered ?? 0}</strong></div>
+              <div className="review-summary-card"><span>Blank</span><strong>{reviewStats?.blank ?? 0}</strong></div>
+              <div className="review-summary-card"><span>Unsupported</span><strong>{reviewStats?.unsupported ?? 0}</strong></div>
+              <div className="review-summary-card"><span>Mistakes</span><strong>{reviewStats?.mistakes ?? 0}</strong></div>
+              <div className="review-summary-card"><span>Pending</span><strong>{reviewStats?.pending ?? 0}</strong></div>
+              <div className="review-summary-card"><span>Issues</span><strong>{reviewStats?.issues ?? 0}</strong></div>
+            </div>
+          </section>
+
+          <section className="section-frame paper-workspace-v133__panel">
+            <div className="review-question-nav" aria-label="Review question navigation">
+              {reviewQuestionGroups(paper).map(({ group, questions }) => (
+                <div className="review-question-row" key={group}>
+                  <span className="review-question-row__label">Q{group}</span>
+                  <div className="review-question-row__items">
+                    {questions.map(({ question, index, label }) => {
+                      const mark = latestAcceptedMark(attempt, question.id);
+                      const answer = attempt.answers.find((item) => item.questionId === question.id);
+                      const supportIssue = questionSupportIssue(question);
+                      const issue = latestMarkingIssue(attempt, question.id);
+                      const attempted = Boolean(answer && isAnswerAttempted(answer));
+                      const buttonClass = [
+                        "review-question-nav__button",
+                        index === reviewIndex ? "review-question-nav__button--active" : "",
+                        supportIssue ? "review-question-nav__button--unsupported" : "",
+                        issue?.type === "transient_provider_error" ? "review-question-nav__button--pending" : "",
+                        issue?.type === "mark_scheme_alignment_error" ? "review-question-nav__button--error" : "",
+                        isRealAcceptedMark(mark) ? "review-question-nav__button--marked" : "",
+                        !attempted ? "review-question-nav__button--unanswered" : "",
+                      ].filter(Boolean).join(" ");
+                      const stateLabel = supportIssue
+                        ? "Excluded"
+                        : issue?.type === "transient_provider_error"
+                          ? "Pending"
+                          : issue?.type === "mark_scheme_alignment_error"
+                            ? "Issue"
+                            : mark
+                              ? `${mark.awardedMarks}/${question.maxMarks}`
+                              : attempted
+                                ? "Unmarked"
+                                : "Blank";
+                      return (
+                        <button key={question.id} className={buttonClass} onClick={() => onSetReviewIndex(index)} aria-label={`Review question ${label}`}>
+                          <span>{label}</span>
+                          <small style={mark ? scoreStyle(mark, question.maxMarks) : undefined}>{stateLabel}</small>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <article className="paper-review-card paper-review-card--focus">
+            <div className="question-card__header">
+              <strong>Question {displayQuestionLabel(paper, reviewQuestion)}</strong>
+              <span>{marksLabel(reviewQuestion.maxMarks)}</span>
+            </div>
+            <p className="question-prompt">{cleanVisiblePrompt(reviewQuestion.promptText)}</p>
+            <QuestionSourceImages paper={paper} question={reviewQuestion} defaultCollapsed={false} />
+            <div className="paper-answer-box">
+              <span className="eyebrow">Your answer</span>
+              <p>{answerText(reviewAnswer, reviewQuestion)}</p>
+            </div>
+            <div className="paper-mark-box">
+              <div>
+                <span className="eyebrow">Marks</span>
+                <strong style={reviewMark ? scoreStyle(reviewMark, reviewQuestion.maxMarks) : undefined}>
+                  {reviewSupportIssue ? "Excluded" : latestIssue?.type === "transient_provider_error" ? "Pending" : latestIssue?.type === "mark_scheme_alignment_error" ? "Issue" : reviewMark ? `${reviewMark.awardedMarks}/${reviewQuestion.maxMarks}` : "Unmarked"}
+                </strong>
+              </div>
+              <p>
+                {reviewSupportIssue
+                  ? `Unsupported question format. ${marksLabel(reviewQuestion.maxMarks)} excluded from the supported total.`
+                  : latestIssue
+                    ? markingIssueLabel(latestIssue)
+                    : reviewMark?.rationale ?? "Not marked yet."}
+              </p>
+              {reviewMark?.missingPoints.length ? (
+                <div className="chip-wrap">
+                  {reviewMark.missingPoints.map((point) => (
+                    <span className="static-chip" key={point}>{point}</span>
+                  ))}
+                </div>
+              ) : null}
+              {reviewMark?.markSchemeEvidence ? <p className="muted-copy">{reviewMark.markSchemeEvidence}</p> : null}
+            </div>
+            <div className="button-row">
+              {latestIssue?.type === "transient_provider_error" ? (
+                <button className="primary-button" onClick={() => onRetryQuestion(reviewQuestion.id)} disabled={busy}>
+                  <RotateCcw size={16} /> Retry this question
+                </button>
+              ) : null}
+              {reviewMark ? (
+                <button className="secondary-button" onClick={() => onRequestRemark(reviewAnswer)} disabled={busy}>
+                  <RotateCcw size={16} /> Remark
+                </button>
+              ) : null}
+              <button className="secondary-button" onClick={onExportDiagnostics}>
+                <Download size={16} /> Export diagnostics
+              </button>
+              {reviewQuestion.markSchemeData ? (
+                <button className="secondary-button" onClick={onToggleMarkScheme}>
+                  <ListChecks size={16} /> {markSchemeDetailsOpen ? "Hide mark scheme row" : "Show mark scheme row"}
+                </button>
+              ) : null}
+            </div>
+            {markSchemeDetailsOpen ? <MarkSchemeDataPanel question={reviewQuestion} onCopy={onCopyMarkScheme} /> : null}
+            {attempt.remarks.filter((remark) => remark.questionId === reviewQuestion.id).length ? (
+              <div className="paper-history-list">
+                {attempt.remarks.filter((remark) => remark.questionId === reviewQuestion.id).map((remark) => {
+                  const proposed = attempt.marks.find((mark) => mark.id === remark.proposedMarkId);
+                  return (
+                    <div className="remark-card" key={remark.id}>
+                      <div>
+                        <strong>Remark {statusLabel(remark.status)}</strong>
+                        <p>{proposed ? `Proposed ${proposed.awardedMarks}/${reviewQuestion.maxMarks}` : remark.notes ?? "Pending"}</p>
+                      </div>
+                      {proposed && !remark.acceptedAt ? (
+                        <button className="chip-button" onClick={() => onAcceptRemark(remark.id)}>Accept</button>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null}
+          </article>
+        </>
       ) : null}
     </div>
   );
@@ -1328,7 +1682,7 @@ function UnsupportedSubjectDashboard({
           </article>
           <article className="feature-card">
             <strong>Legacy papers</strong>
-            <p>{legacyPapers.length ? `${legacyPapers.length} existing paper${legacyPapers.length === 1 ? "" : "s"} are stored for this subject, but v1.3.2 does not treat it as supported.` : "No papers stored for this subject yet."}</p>
+            <p>{legacyPapers.length ? `${legacyPapers.length} existing paper${legacyPapers.length === 1 ? "" : "s"} are stored for this subject, but v1.3.3 does not treat it as supported.` : "No papers stored for this subject yet."}</p>
           </article>
         </div>
       </section>
@@ -1680,6 +2034,7 @@ function processingStatusMessages(paper: PastPaper, job: PastPaperProcessingJob 
   };
 
   return [
+    job?.status === "running" && job.errorMessage ? job.errorMessage : null,
     ...(byStage[stage] ?? ["Working through the paper"]),
     latestRequest?.status === "running" ? `Waiting for ${latestRequest.label}` : null,
     latestRequest?.status === "success" ? `Completed ${latestRequest.label}` : null,
@@ -1732,7 +2087,7 @@ function ProcessingPanel({ paper, job, variant = "full" }: { paper: PastPaper; j
       <div className="paper-processing-panel__body">
         <div className="loading-stage__header">
           <div>
-            <span className="eyebrow">Processing</span>
+            <span className="eyebrow">{job?.kind === "marking" ? "Marking" : job?.kind === "remarking" ? "Remarking" : "Processing"}</span>
             <strong>{paper.title}</strong>
           </div>
           <motion.div className="processing-live-status" role="status" aria-live="polite" layout transition={{ layout: { duration: 0.24, ease: "easeOut" } }}>
@@ -3524,6 +3879,75 @@ export function App() {
     void exitFocusMode();
   }
 
+  function mergeAttemptMarkingState(
+    attempt: PastPaperAttempt,
+    updates: { marks?: PastPaperQuestionMark[]; issues?: PastPaperMarkingIssue[]; completedAt?: string | null; submittedAt?: string | null },
+    paper: PastPaper,
+  ) {
+    const nextMarks = updates.marks ?? [];
+    const nextIssues = updates.issues ?? [];
+    const replacedQuestionIds = new Set([...nextMarks.map((mark) => mark.questionId), ...nextIssues.map((issue) => issue.questionId)]);
+    const retainedMarks = attempt.marks.filter((mark) => !replacedQuestionIds.has(mark.questionId));
+    const retainedIssues = (attempt.markingIssues ?? []).filter((issue) => !replacedQuestionIds.has(issue.questionId));
+    const merged: PastPaperAttempt = {
+      ...attempt,
+      status: "marked",
+      completedAt: updates.completedAt ?? attempt.completedAt ?? nowIso(),
+      submittedAt: updates.submittedAt ?? attempt.submittedAt,
+      marks: [
+        ...retainedMarks.map((mark) => (replacedQuestionIds.has(mark.questionId) ? { ...mark, accepted: false } : mark)),
+        ...nextMarks,
+      ],
+      markingIssues: [...retainedIssues, ...nextIssues],
+    };
+    return computeAttemptScores(merged, paper);
+  }
+
+  async function waitForRetryDelay(ms: number) {
+    await new Promise((resolve) => window.setTimeout(resolve, ms));
+  }
+
+  async function retryMarkQuestion(questionId: string) {
+    if (!selectedPaper || !selectedAttempt) return;
+    const question = selectedPaper.questions.find((item) => item.id === questionId);
+    const answer = selectedAttempt.answers.find((item) => item.questionId === questionId);
+    if (!question || !answer || !isAnswerAttempted(answer)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await ensureAIReadyForUserAction();
+      const version = selectedAttempt.marks.filter((mark) => mark.questionId === question.id).length + 1;
+      const mark = await markAnswerWithAI(selectedPaper, question, answer, version, "ai", { model: aiModel, fallbackModels: FALLBACK_AI_MODELS.filter((model) => model !== aiModel) });
+      patchAttempt(selectedAttempt.id, (attempt) => mergeAttemptMarkingState(attempt, { marks: [mark] }, selectedPaper));
+      setStatus(`Marked question ${displayQuestionLabel(selectedPaper, question)}.`);
+    } catch (reason) {
+      const retryAfterMs = retryAfterMsFromError(reason);
+      const rawMessage = reason instanceof Error ? reason.message : String(reason);
+      const issue = createMarkingIssue(
+        question.id,
+        isTransientMarkingError(reason) ? "transient_provider_error" : "mark_scheme_alignment_error",
+        isTransientMarkingError(reason)
+          ? retryAfterMs
+            ? `Gemini quota limit reached. Retry in about ${Math.max(1, Math.round(retryAfterMs / 1000))} seconds.`
+            : "Gemini quota limit reached. This answer was not marked yet."
+          : rawMessage,
+        { rawMessage, retryAfterMs },
+      );
+      patchAttempt(selectedAttempt.id, (attempt) => mergeAttemptMarkingState(attempt, { issues: [issue] }, selectedPaper));
+      setError(markingIssueLabel(issue) ?? rawMessage);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function retryPendingMarks() {
+    const pending = pendingMarkingIssues(selectedAttempt);
+    if (!pending.length) return;
+    for (const issue of pending) {
+      await retryMarkQuestion(issue.questionId);
+    }
+  }
+
   async function markAttempt() {
     if (!selectedAttempt || !selectedPaper) return;
     if (!selectedPaper.hasMarkScheme) {
@@ -3549,48 +3973,76 @@ export function App() {
 
     try {
       const marks: PastPaperQuestionMark[] = [];
+      const issues: PastPaperMarkingIssue[] = [];
       const answeredQuestions = selectedPaper.questions
         .map((question) => ({ question, answer: selectedAttempt.answers.find((item) => item.questionId === question.id) ?? null }))
         .filter((item) => !questionSupportIssue(item.question))
         .filter((item): item is { question: PastPaperQuestion; answer: PastPaperAnswer } => Boolean(item.answer && isAnswerAttempted(item.answer)));
-      const failures: string[] = [];
       if (!answeredQuestions.length) throw new Error("No answered questions to mark. Skipped and unanswered questions are ignored.");
       for (const [index, { question, answer }] of answeredQuestions.entries()) {
-        updateJob(selectedPaper.id, job.id, { progressPercent: 8 + Math.round((index / Math.max(answeredQuestions.length, 1)) * 82), currentStage: "marking answers" });
-        try {
-          const version = selectedAttempt.marks.filter((mark) => mark.questionId === question.id).length + 1;
-          marks.push(await markAnswerWithAI(selectedPaper, question, answer, version, "ai", { model: aiModel, fallbackModels: FALLBACK_AI_MODELS.filter((model) => model !== aiModel) }));
-        } catch (reason) {
-          const message = reason instanceof Error ? reason.message : String(reason);
-          failures.push(`Question ${question.questionNumber}: ${message}`);
-          marks.push(createMarkingErrorMark(answer.id, question.id, question.maxMarks, message, "ai", selectedAttempt.marks.filter((mark) => mark.questionId === question.id).length + 1));
+        updateJob(selectedPaper.id, job.id, {
+          progressPercent: 8 + Math.round((index / Math.max(answeredQuestions.length, 1)) * 82),
+          currentStage: "marking answers",
+          errorMessage: `Marking question ${displayQuestionLabel(selectedPaper, question)} of ${answeredQuestions.length}.`,
+        });
+        let attemptNumber = 0;
+        let marked = false;
+        while (!marked && attemptNumber < 3) {
+          try {
+            const version = selectedAttempt.marks.filter((mark) => mark.questionId === question.id).length + 1;
+            marks.push(await markAnswerWithAI(selectedPaper, question, answer, version, "ai", { model: aiModel, fallbackModels: FALLBACK_AI_MODELS.filter((model) => model !== aiModel) }));
+            marked = true;
+          } catch (reason) {
+            attemptNumber += 1;
+            const rawMessage = reason instanceof Error ? reason.message : String(reason);
+            if (isTransientMarkingError(reason) && attemptNumber < 3) {
+              const retryAfterMs = retryAfterMsFromError(reason) ?? 60_000;
+              updateJob(selectedPaper.id, job.id, {
+                currentStage: "marking answers",
+                errorMessage: `Gemini quota reached. Waiting ${Math.max(1, Math.round(retryAfterMs / 1000))}s before retrying question ${displayQuestionLabel(selectedPaper, question)}.`,
+              });
+              await waitForRetryDelay(retryAfterMs);
+              continue;
+            }
+            issues.push(
+              createMarkingIssue(
+                question.id,
+                isTransientMarkingError(reason) ? "transient_provider_error" : "mark_scheme_alignment_error",
+                isTransientMarkingError(reason)
+                  ? retryAfterMsFromError(reason)
+                    ? `Gemini quota limit reached. This answer was not marked. Retry in about ${Math.max(1, Math.round((retryAfterMsFromError(reason) ?? 0) / 1000))} seconds.`
+                    : "Gemini quota limit reached. This answer was not marked yet."
+                  : rawMessage,
+                { rawMessage, retryAfterMs: retryAfterMsFromError(reason) },
+              ),
+            );
+            marked = true;
+          }
         }
       }
-      if (!marks.length) {
+      if (!marks.length && !issues.length) {
         throw new Error(
           [
             "No answered questions had aligned mark-scheme data, so AI marking was not run.",
-            failures.length ? `Marking diagnostics: ${failures.slice(0, 5).join(" / ")}` : "Marking diagnostics: no per-question error was returned.",
+            "Marking diagnostics: no per-question error was returned.",
             "Export diagnostics for the paper to inspect mark-scheme alignment and answered-question state.",
           ].join("\n"),
         );
       }
       patchAttempt(selectedAttempt.id, (attempt) =>
-        computeAttemptScores(
-          {
-            ...attempt,
-            status: "marked",
-            completedAt: nowIso(),
-            marks: [...attempt.marks.map((mark) => (marks.some((newMark) => newMark.questionId === mark.questionId) ? { ...mark, accepted: false } : mark)), ...marks],
-          },
-          selectedPaper,
-        ),
+        mergeAttemptMarkingState(attempt, { marks, issues, completedAt: nowIso() }, selectedPaper),
       );
-      updateJob(selectedPaper.id, job.id, { status: "completed", progressPercent: 100 });
-      const errorCount = marks.filter((mark) => isMarkingErrorMark(mark)).length;
-      const scoredCount = marks.length - errorCount;
+      updateJob(selectedPaper.id, job.id, {
+        status: "completed",
+        progressPercent: 100,
+        errorMessage: issues.length
+          ? `${marks.length} marked, ${issues.filter((issue) => issue.type === "transient_provider_error").length} waiting for retry, ${issues.filter((issue) => issue.type === "mark_scheme_alignment_error").length} marking issue${issues.length === 1 ? "" : "s"}.`
+          : null,
+      });
       setStatus(
-        `Attempt marked with Gemini AI. ${scoredCount} answered question${scoredCount === 1 ? "" : "s"} scored${errorCount ? `, ${errorCount} flagged as mark-scheme errors` : ""}.`,
+        issues.length
+          ? `Attempt marked with issues. ${marks.length} answered question${marks.length === 1 ? "" : "s"} scored, ${issues.filter((issue) => issue.type === "transient_provider_error").length} waiting for retry.`
+          : `Attempt marked with Gemini AI. ${marks.length} answered question${marks.length === 1 ? "" : "s"} scored.`,
       );
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : "Marking failed";
@@ -3753,7 +4205,7 @@ export function App() {
   const focusProgressPercent = selectedPaper?.questions.length ? Math.round(((activeQuestionIndex + 1) / selectedPaper.questions.length) * 100) : 0;
   const unsupportedSelectedSubjects = selectedSubjects.filter((subject) => !isSupportedSubject(subject));
   const supportedActiveSubject = activeSubject && isSupportedSubject(activeSubject) ? activeSubject : null;
-  const canShowProductShell = appMode !== "taking" && appMode !== "processing" && appMode !== "marking" && appMode !== "review";
+  const canShowProductShell = appMode !== "taking";
   const needsOnboarding = currentView === "onboarding" && canShowProductShell;
   const showLanding = currentView === "landing" && canShowProductShell;
   const activeSubjectPapers = activeSubject ? data.papers.filter((paper) => paper.subject === activeSubject) : [];
@@ -3827,7 +4279,7 @@ export function App() {
 
   const rootClassName = [
     "app-shell",
-    appMode !== "taking" && appMode !== "processing" && appMode !== "marking" && appMode !== "review" ? "app-shell--subject-product" : "",
+    canShowProductShell ? "app-shell--subject-product" : "",
     `app-shell--${appMode}`,
     `app-shell--theme-${preferences.themeMode}`,
     `app-shell--accent-${preferences.accentColour}`,
@@ -3896,7 +4348,7 @@ export function App() {
 
   return (
     <div className={rootClassName} style={rootStyle}>
-      {appMode !== "taking" && appMode !== "processing" && appMode !== "marking" && appMode !== "review" ? (
+      {canShowProductShell ? (
         <SubjectSidebarV131
           collapsed={sidebarCollapsed}
           selectedSubjects={selectedSubjects}
@@ -3953,7 +4405,7 @@ export function App() {
               <X size={16} /> Exit focus
             </button>
           </header>
-        ) : appMode === "catalogue" || appMode === "empty" ? null : (
+        ) : appMode === "catalogue" || appMode === "empty" || appMode === "submitted" || appMode === "marking" || appMode === "review" ? null : (
           <header className="workspace-header glass-chrome">
             <div>
               <span className="eyebrow">{statusLabel(appMode)}</span>
@@ -4212,8 +4664,39 @@ export function App() {
           </div>
         ) : null}
 
-        {selectedPaper && appMode !== "processing" ? (
-          <div className={appMode === "taking" ? "workspace-grid workspace-grid--taking" : appMode === "review" ? "workspace-grid workspace-grid--review" : "workspace-grid workspace-grid--split"}>
+        {selectedPaper && (appMode === "submitted" || appMode === "marking" || appMode === "review") ? (
+          <PaperWorkspaceV133
+            paper={selectedPaper}
+            attempt={selectedAttempt}
+            appMode={appMode}
+            reviewQuestion={reviewQuestion}
+            reviewAnswer={reviewAnswer}
+            reviewMark={reviewMark}
+            reviewIndex={reviewIndex}
+            reviewSupportIssue={reviewSupportIssue}
+            markingJob={markingJob}
+            reviewStats={activeAttemptStats}
+            displayScores={selectedPaper && selectedAttempt ? displayAttemptScores(selectedPaper, selectedAttempt) : null}
+            preferredTotal={selectedAttempt ? preferredAttemptTotal(selectedPaper, selectedAttempt) : supportedTotalMarksForPaper(selectedPaper)}
+            busy={busy}
+            markSchemeDetailsOpen={markSchemeDetailsOpen}
+            onBackToPaper={() => setSelectedAttemptId(null)}
+            onMarkAttempt={() => void markAttempt()}
+            onRetryPending={() => void retryPendingMarks()}
+            onRetryQuestion={(questionId) => void retryMarkQuestion(questionId)}
+            onExportDiagnostics={() => downloadDiagnosticBundle(selectedPaper, data.attempts)}
+            onToggleMarkScheme={() => setMarkSchemeDetailsOpen((value) => !value)}
+            onCopyMarkScheme={() => void copyMarkSchemeRow(reviewQuestion)}
+            onRequestRemark={(answer) => void requestRemark(answer)}
+            onAcceptRemark={acceptRemark}
+            onPreviousReview={() => setReviewIndex((value) => Math.max(0, value - 1))}
+            onNextReview={() => setReviewIndex((value) => Math.min(selectedPaper.questions.length - 1, value + 1))}
+            onSetReviewIndex={setReviewIndex}
+          />
+        ) : null}
+
+        {selectedPaper && appMode !== "processing" && appMode !== "submitted" && appMode !== "marking" && appMode !== "review" ? (
+          <div className={appMode === "taking" ? "workspace-grid workspace-grid--taking" : "workspace-grid workspace-grid--split"}>
             <SectionFrame
               title={selectedPaper.title}
               subtitle={
@@ -4666,7 +5149,7 @@ export function App() {
               ) : null}
             </SectionFrame>
 
-            {appMode !== "taking" && appMode !== "marking" && appMode !== "review" ? (
+            {appMode !== "taking" ? (
             <SectionFrame
               title="Attempts"
               subtitle={selectedAttempt && displayScores ? `${scoreSummary(displayScores.actualScore, preferredAttemptTotal(selectedPaper, selectedAttempt))} actual / ${scoreSummary(displayScores.confidenceAdjustedScore, preferredAttemptTotal(selectedPaper, selectedAttempt))} confidence-adjusted` : "Attempts and marking history appear here."}

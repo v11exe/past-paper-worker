@@ -279,6 +279,15 @@ export type PastPaperRemark = {
   createdAt: string;
 };
 
+export type PastPaperMarkingIssue = {
+  questionId: string;
+  type: "transient_provider_error" | "mark_scheme_alignment_error";
+  message: string;
+  rawMessage?: string | null;
+  retryAfterMs?: number | null;
+  createdAt: string;
+};
+
 export type PastPaperAttempt = {
   id: string;
   paperId: string;
@@ -294,6 +303,7 @@ export type PastPaperAttempt = {
   answers: PastPaperAnswer[];
   marks: PastPaperQuestionMark[];
   remarks: PastPaperRemark[];
+  markingIssues?: PastPaperMarkingIssue[];
 };
 
 export type PaperDraftInput = {

@@ -32,6 +32,7 @@ import type {
   PastPaperAnswer,
   PastPaperAttempt,
   PastPaperAsset,
+  PastPaperMarkingIssue,
   PastPaperProcessingJob,
   PastPaperQuestion,
   PastPaperQuestionMark,
@@ -51,6 +52,8 @@ export const processingStages = [
   "extracting question details",
   "aligning mark scheme",
   "finalising",
+  "marking answers",
+  "remarking question",
 ] as const;
 
 type ProcessingProgressUpdate = {
@@ -481,6 +484,36 @@ function detectLeadingAqaMainIntro(text: string) {
   return {
     mainQuestionNumber: Number(normalizeAqaMainQuestionToken(match[1])),
     prefix,
+  };
+}
+
+export function isTransientMarkingError(reason: unknown): boolean {
+  const message = reason instanceof Error ? reason.message : String(reason);
+  return /\b(quota|rate limit|rate-limit|too many requests|429|temporarily unavailable|timeout|timed out|network|fetch failed|proxy)\b/i.test(message);
+}
+
+export function retryAfterMsFromError(reason: unknown): number | null {
+  if (reason instanceof AIProviderError && typeof reason.retryAfterMs === "number") return reason.retryAfterMs;
+  const message = reason instanceof Error ? reason.message : String(reason);
+  const secondsMatch = message.match(/retry in\s+(\d+(?:\.\d+)?)s/i);
+  if (secondsMatch) return Math.ceil(Number(secondsMatch[1]) * 1000);
+  if (/\b(quota|rate limit|429)\b/i.test(message)) return 60_000;
+  return null;
+}
+
+export function createMarkingIssue(
+  questionId: string,
+  type: PastPaperMarkingIssue["type"],
+  message: string,
+  options: { rawMessage?: string | null; retryAfterMs?: number | null } = {},
+): PastPaperMarkingIssue {
+  return {
+    questionId,
+    type,
+    message,
+    rawMessage: options.rawMessage ?? null,
+    retryAfterMs: options.retryAfterMs ?? null,
+    createdAt: nowIso(),
   };
 }
 
@@ -2648,6 +2681,43 @@ function numbersOverlap(answerValues: number[], acceptableValues: number[]) {
   return answerValues.some((answerValue) => acceptableValues.some((acceptableValue) => Math.abs(answerValue - acceptableValue) < 0.0001));
 }
 
+function deterministicSingleChoiceOutput(question: PastPaperQuestion, answer: PastPaperAnswer, markSchemeText: string): PaperMarkOutput | null {
+  if (question.responseType !== "single_choice") return null;
+  const selectedLetter = extractChoiceLetter(answer.selectedOptions[0] ?? answer.responseText ?? "");
+  const correctLetter = extractCorrectChoiceLetter(markSchemeText);
+  if (!selectedLetter || !correctLetter) return null;
+  const matched = selectedLetter === correctLetter;
+  return {
+    awardedMarks: matched ? question.maxMarks : 0,
+    maxMarks: question.maxMarks,
+    rationale: matched
+      ? `Selected option ${selectedLetter} matches the correct answer ${correctLetter}.`
+      : `Selected option ${selectedLetter} does not match the correct answer ${correctLetter}.`,
+    missingPoints: matched ? [] : [`Correct answer: ${correctLetter}`],
+    markSchemeEvidence: `Correct answer ${correctLetter}`,
+    markSchemeReference: { source: "deterministic_single_choice" },
+    confidence: 99,
+  };
+}
+
+function deterministicNumericOutput(question: PastPaperQuestion, answer: PastPaperAnswer, markSchemeText: string): PaperMarkOutput | null {
+  const acceptableValues = extractExplicitAcceptableValues(markSchemeText);
+  const answerValues = extractAnswerNumericValues(answerText(answer, question));
+  if (!acceptableValues.length || !answerValues.length) return null;
+  const matched = numbersOverlap(answerValues, acceptableValues);
+  return {
+    awardedMarks: matched ? question.maxMarks : 0,
+    maxMarks: question.maxMarks,
+    rationale: matched
+      ? `The student's answer includes an acceptable value (${acceptableValues.join(", ")}).`
+      : `The student's answer does not include any acceptable value (${acceptableValues.join(", ")}).`,
+    missingPoints: matched ? [] : [`Acceptable values: ${acceptableValues.join(" / ")}`],
+    markSchemeEvidence: acceptableValues.join(" / "),
+    markSchemeReference: { source: "deterministic_numeric" },
+    confidence: 99,
+  };
+}
+
 export function applyMarkingGuardrails(
   output: PaperMarkOutput,
   question: PastPaperQuestion,
@@ -2826,6 +2896,14 @@ export async function markAnswerWithAI(
   const exactAnswerOutput = deterministicExactAnswerOutput(markSchemeData, answerText(answer, question), maxMarks);
   if (exactAnswerOutput) {
     return mapMarkOutput(answer.id, question.id, maxMarks, exactAnswerOutput, source, version);
+  }
+  const deterministicSingleChoice = deterministicSingleChoiceOutput({ ...question, maxMarks }, answer, markSchemeText);
+  if (deterministicSingleChoice) {
+    return mapMarkOutput(answer.id, question.id, maxMarks, deterministicSingleChoice, source, version);
+  }
+  const deterministicNumeric = deterministicNumericOutput({ ...question, maxMarks }, answer, markSchemeText);
+  if (deterministicNumeric) {
+    return mapMarkOutput(answer.id, question.id, maxMarks, deterministicNumeric, source, version);
   }
   const primaryModel = options.model ?? DEFAULT_AI_MODEL;
   const fallbackModels = options.fallbackModels ?? [...FALLBACK_AI_MODELS];

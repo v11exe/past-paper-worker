@@ -4,15 +4,15 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { App } from "./App";
 import { clearData, saveData } from "./lib/storage";
-import type { AppData, PastPaper, PastPaperQuestion } from "./types";
+import type { AppData, PastPaper, PastPaperAttempt, PastPaperQuestion } from "./types";
 
 function clearUiStorage() {
   [
     "past-paper-worker:feedback-draft:v1",
-    "past-paper-worker:selected-subjects:v1.3.2",
-    "past-paper-worker:onboarding-completed:v1.3.2",
-    "past-paper-worker:active-subject:v1.3.2",
-    "past-paper-worker:sidebar-collapsed:v1.3.2",
+    "past-paper-worker:selected-subjects:v1.3.3",
+    "past-paper-worker:onboarding-completed:v1.3.3",
+    "past-paper-worker:active-subject:v1.3.3",
+    "past-paper-worker:sidebar-collapsed:v1.3.3",
   ].forEach((key) => window.localStorage.removeItem(key));
 }
 
@@ -83,6 +83,26 @@ function seedData(data: AppData) {
   saveData(data);
 }
 
+function buildAttempt(paper: PastPaper, patch: Partial<PastPaperAttempt>): PastPaperAttempt {
+  return {
+    id: patch.id ?? "attempt-1",
+    paperId: paper.id,
+    status: patch.status ?? "submitted",
+    startedAt: "2026-05-15T12:00:00.000Z",
+    submittedAt: "2026-05-15T12:10:00.000Z",
+    completedAt: patch.completedAt ?? null,
+    durationSeconds: 600,
+    overtimeSeconds: 0,
+    actualScore: 0,
+    confidenceAdjustedScore: 0,
+    totalMarks: paper.totalMarks ?? 0,
+    answers: patch.answers ?? [],
+    marks: patch.marks ?? [],
+    remarks: patch.remarks ?? [],
+    markingIssues: patch.markingIssues ?? [],
+  };
+}
+
 describe("v1.3 product shell", () => {
   beforeEach(() => {
     clearData();
@@ -110,8 +130,8 @@ describe("v1.3 product shell", () => {
   });
 
   it("shows the landing page again on reload even when subjects are already saved", async () => {
-    window.localStorage.setItem("past-paper-worker:selected-subjects:v1.3.2", JSON.stringify(["AQA GCSE Biology"]));
-    window.localStorage.setItem("past-paper-worker:onboarding-completed:v1.3.2", "true");
+    window.localStorage.setItem("past-paper-worker:selected-subjects:v1.3.3", JSON.stringify(["AQA GCSE Biology"]));
+    window.localStorage.setItem("past-paper-worker:onboarding-completed:v1.3.3", "true");
     render(<App />);
 
     expect(screen.getByRole("heading", { name: /past papers, marked in minutes/i })).toBeInTheDocument();
@@ -126,7 +146,7 @@ describe("v1.3 product shell", () => {
     await user.click(screen.getByRole("button", { name: /collapse sidebar/i }));
     expect(screen.queryByText("Chemistry")).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /v1.3.2 sidebar and typewriter fixes/i }));
+    await user.click(screen.getByRole("button", { name: /v1.3.3 marking workspace and quota fixes/i }));
     expect(await screen.findByRole("heading", { name: "Version history" })).toBeInTheDocument();
     expect(screen.getByText("Tightened supported-subject handling.")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Close version history" }));
@@ -234,5 +254,84 @@ describe("v1.3 product shell", () => {
 
     expect((await screen.findAllByText("Unsupported question type")).length).toBeGreaterThan(0);
     expect(screen.queryByRole("textbox", { name: "Written answer" })).not.toBeInTheDocument();
+  });
+
+  it("keeps the product shell visible for submitted attempts", async () => {
+    const user = userEvent.setup();
+    const paper = buildPaper([question({ id: "q1", promptText: "State one thing." })]);
+    seedData({
+      papers: [paper],
+      attempts: [
+        buildAttempt(paper, {
+          status: "submitted",
+          answers: [{
+            id: "answer-1",
+            attemptId: "attempt-1",
+            questionId: "q1",
+            responseText: "A response",
+            numericResponse: null,
+            selectedOptions: [],
+            skipped: false,
+            skippedWithConfidence: false,
+            confidencePredictedMarks: null,
+            createdAt: "2026-05-15T12:01:00.000Z",
+            updatedAt: "2026-05-15T12:01:00.000Z",
+          }],
+        }),
+      ],
+    });
+
+    render(<App />);
+    await enterDashboard(user);
+    await user.click(screen.getByText("Question UI paper"));
+    await user.click(screen.getByRole("button", { name: /submitted/i }));
+
+    expect(await screen.findByText("Submitted answers")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /mark answered questions/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /settings/i })).toBeInTheDocument();
+  });
+
+  it("shows pending marking issues in the review shell instead of a zero mark", async () => {
+    const user = userEvent.setup();
+    const paper = buildPaper([question({ id: "q1", promptText: "State one thing." })]);
+    seedData({
+      papers: [paper],
+      attempts: [
+        buildAttempt(paper, {
+          status: "marked",
+          completedAt: "2026-05-15T12:11:00.000Z",
+          answers: [{
+            id: "answer-1",
+            attemptId: "attempt-1",
+            questionId: "q1",
+            responseText: "A response",
+            numericResponse: null,
+            selectedOptions: [],
+            skipped: false,
+            skippedWithConfidence: false,
+            confidencePredictedMarks: null,
+            createdAt: "2026-05-15T12:01:00.000Z",
+            updatedAt: "2026-05-15T12:01:00.000Z",
+          }],
+          markingIssues: [{
+            questionId: "q1",
+            type: "transient_provider_error",
+            message: "Gemini quota limit reached. Retry in about 47 seconds.",
+            retryAfterMs: 47000,
+            createdAt: "2026-05-15T12:11:00.000Z",
+          }],
+        }),
+      ],
+    });
+
+    render(<App />);
+    await enterDashboard(user);
+    await user.click(screen.getByText("Question UI paper"));
+    await user.click(screen.getAllByRole("button", { name: /marked/i })[1]);
+
+    expect(await screen.findByText("Marked review")).toBeInTheDocument();
+    expect(screen.getByText(/gemini quota limit reached/i)).toBeInTheDocument();
+    expect(screen.getAllByText("Pending").length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: /retry this question/i })).toBeInTheDocument();
   });
 });

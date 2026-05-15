@@ -1,10 +1,10 @@
 const { expect, test } = require("@playwright/test");
 
 const UI_KEYS = {
-  selectedSubjects: "past-paper-worker:selected-subjects:v1.3.2",
-  onboardingComplete: "past-paper-worker:onboarding-completed:v1.3.2",
-  activeSubject: "past-paper-worker:active-subject:v1.3.2",
-  sidebarCollapsed: "past-paper-worker:sidebar-collapsed:v1.3.2",
+  selectedSubjects: "past-paper-worker:selected-subjects:v1.3.3",
+  onboardingComplete: "past-paper-worker:onboarding-completed:v1.3.3",
+  activeSubject: "past-paper-worker:active-subject:v1.3.3",
+  sidebarCollapsed: "past-paper-worker:sidebar-collapsed:v1.3.3",
   preferences: "past-paper-worker:preferences:v1",
   data: "past-paper-worker:data:v1",
 };
@@ -301,10 +301,10 @@ test("landing, onboarding, upload, process, take, and AI mark a paper", async ({
   await page.screenshot({ path: "test-results/v1.3-taking-mode.png", fullPage: true });
   await page.getByRole("button", { name: "Submit paper" }).click();
 
-  await expect(page.getByText("Answered 1")).toBeVisible();
-  await page.getByRole("button", { name: "AI mark answered" }).click();
+  await expect(page.getByText("Submitted answers")).toBeVisible();
+  await page.getByRole("button", { name: "Mark answered questions" }).click();
   await expect(page.getByText("Attempt marked with Gemini AI.")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Review" })).toBeVisible();
+  await expect(page.getByText("Marked review")).toBeVisible();
   await expect(page.locator(".paper-mark-box strong", { hasText: "1/2" })).toBeVisible();
   await expect(page.getByText("The answer identifies one valid marking point.")).toBeVisible();
   await page.screenshot({ path: "test-results/v1.3-marked-review.png", fullPage: true });

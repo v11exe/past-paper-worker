@@ -1,10 +1,10 @@
 const { expect, test } = require("@playwright/test");
 
 const UI_KEYS = {
-  selectedSubjects: "past-paper-worker:selected-subjects:v1.3.2",
-  onboardingComplete: "past-paper-worker:onboarding-completed:v1.3.2",
-  activeSubject: "past-paper-worker:active-subject:v1.3.2",
-  sidebarCollapsed: "past-paper-worker:sidebar-collapsed:v1.3.2",
+  selectedSubjects: "past-paper-worker:selected-subjects:v1.3.3",
+  onboardingComplete: "past-paper-worker:onboarding-completed:v1.3.3",
+  activeSubject: "past-paper-worker:active-subject:v1.3.3",
+  sidebarCollapsed: "past-paper-worker:sidebar-collapsed:v1.3.3",
   preferences: "past-paper-worker:preferences:v1",
   data: "past-paper-worker:data:v1",
 };
