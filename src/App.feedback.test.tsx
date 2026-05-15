@@ -10,7 +10,7 @@ function buildReadyPaper(): PastPaper {
   return {
     id: "paper-1",
     title: "Test paper",
-    subject: "OCR Computer Science",
+    subject: "OCR GCSE Computer Science J277",
     topic: null,
     subtopic: null,
     year: 2024,
@@ -59,22 +59,39 @@ function seedData(data: AppData) {
   saveData(data);
 }
 
+function clearUiStorage() {
+  [
+    "past-paper-worker:feedback-draft:v1",
+    "past-paper-worker:selected-subjects:v1.3",
+    "past-paper-worker:onboarding-completed:v1.3",
+    "past-paper-worker:app-entered:v1.3",
+    "past-paper-worker:active-subject:v1.3",
+    "past-paper-worker:sidebar-collapsed:v1.3",
+  ].forEach((key) => window.localStorage.removeItem(key));
+}
+
+async function enterDashboard(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: /start practising/i }));
+  await user.click(await screen.findByRole("button", { name: /save subjects/i }));
+}
+
 describe("feedback flow", () => {
   beforeEach(() => {
     clearData();
-    window.localStorage.removeItem("past-paper-worker:feedback-draft:v1");
+    clearUiStorage();
     vi.restoreAllMocks();
   });
 
   afterEach(() => {
     clearData();
-    window.localStorage.removeItem("past-paper-worker:feedback-draft:v1");
+    clearUiStorage();
     vi.restoreAllMocks();
   });
 
   it("shows the floating feedback button on dashboard pages and opens/closes the modal", async () => {
     const user = userEvent.setup();
     render(<App />);
+    await enterDashboard(user);
 
     const button = screen.getByRole("button", { name: "Send feedback" });
     expect(button).toBeInTheDocument();
@@ -89,6 +106,7 @@ describe("feedback flow", () => {
   it("hides the feedback button when the upload modal is open", async () => {
     const user = userEvent.setup();
     render(<App />);
+    await enterDashboard(user);
 
     await user.click(screen.getAllByRole("button", { name: /upload paper/i })[0]);
 
@@ -98,6 +116,7 @@ describe("feedback flow", () => {
   it("keeps the submit button disabled until the form is valid and shows inline validation", async () => {
     const user = userEvent.setup();
     render(<App />);
+    await enterDashboard(user);
 
     await user.click(screen.getByRole("button", { name: "Send feedback" }));
 
@@ -132,6 +151,7 @@ describe("feedback flow", () => {
     );
 
     render(<App />);
+    await enterDashboard(user);
 
     await user.click(screen.getByRole("button", { name: "Send feedback" }));
     await user.type(screen.getByLabelText("Email"), "student@example.com");
@@ -160,6 +180,7 @@ describe("feedback flow", () => {
     );
 
     render(<App />);
+    await enterDashboard(user);
 
     await user.click(screen.getByRole("button", { name: "Send feedback" }));
     expect(screen.queryByLabelText("Bug report attachments")).not.toBeInTheDocument();
@@ -189,6 +210,7 @@ describe("feedback flow", () => {
     const user = userEvent.setup({ applyAccept: false });
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     render(<App />);
+    await enterDashboard(user);
 
     await user.click(screen.getByRole("button", { name: "Send feedback" }));
     await user.selectOptions(screen.getByLabelText("Feedback type"), "bug_report");
@@ -203,6 +225,7 @@ describe("feedback flow", () => {
   it("enforces the maximum attachment count in the UI", async () => {
     const user = userEvent.setup();
     render(<App />);
+    await enterDashboard(user);
 
     await user.click(screen.getByRole("button", { name: "Send feedback" }));
     await user.selectOptions(screen.getByLabelText("Feedback type"), "bug_report");
@@ -228,6 +251,7 @@ describe("feedback flow", () => {
     );
 
     render(<App />);
+    await enterDashboard(user);
 
     await user.click(screen.getByRole("button", { name: "Send feedback" }));
     await user.type(screen.getByLabelText("Email"), "student@example.com");
@@ -259,16 +283,20 @@ describe("feedback flow", () => {
     expect(screen.queryByRole("button", { name: "Send feedback" })).not.toBeInTheDocument();
   });
 
-  it("opens system info from the dashboard and hides it during the active exam flow", async () => {
+  it("keeps dev tools hidden until Dev mode is enabled and hides feedback during the active exam flow", async () => {
     const user = userEvent.setup();
     seedData({ papers: [buildReadyPaper()], attempts: [] });
 
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: /system info/i }));
-    expect(await screen.findByRole("heading", { name: "System info" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Close system info" }));
-    await waitFor(() => expect(screen.queryByRole("heading", { name: "System info" })).not.toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: /smoke test/i })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /settings/i }));
+    expect(await screen.findByRole("heading", { name: "Workspace settings" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("Model switch")).not.toBeInTheDocument();
+    await user.click(screen.getByLabelText("Enable Dev mode"));
+    expect(await screen.findByLabelText("Model switch")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /smoke test/i })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Close settings" }));
 
     const openPaperButton = screen.getAllByText("Test paper")[0].closest("button");
     expect(openPaperButton).not.toBeNull();
