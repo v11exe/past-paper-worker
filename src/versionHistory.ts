@@ -7,6 +7,17 @@ export type VersionHistoryEntry = {
 
 export const versionHistory: VersionHistoryEntry[] = [
   {
+    version: "v1.3.2",
+    title: "Sidebar and typewriter fixes",
+    date: "2026-05-15",
+    changes: [
+      "Fixed unreadable dropdown menus.",
+      "Tightened sidebar subject spacing.",
+      "Removed sidebar horizontal scrolling.",
+      "Fixed the landing-page typewriter rotation timing.",
+    ],
+  },
+  {
     version: "v1.3.1",
     title: "Polish and marking fixes",
     date: "2026-05-15",

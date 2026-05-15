@@ -162,10 +162,19 @@ type ToastItem = {
 type AppView = "landing" | "onboarding" | "app";
 
 const PREFERENCES_STORAGE_KEY = "past-paper-worker:preferences:v1";
-const SELECTED_SUBJECTS_STORAGE_KEY = "past-paper-worker:selected-subjects:v1.3.1";
-const ONBOARDING_COMPLETE_STORAGE_KEY = "past-paper-worker:onboarding-completed:v1.3.1";
-const ACTIVE_SUBJECT_STORAGE_KEY = "past-paper-worker:active-subject:v1.3.1";
-const SIDEBAR_COLLAPSED_STORAGE_KEY = "past-paper-worker:sidebar-collapsed:v1.3.1";
+const SELECTED_SUBJECTS_STORAGE_KEY = "past-paper-worker:selected-subjects:v1.3.2";
+const ONBOARDING_COMPLETE_STORAGE_KEY = "past-paper-worker:onboarding-completed:v1.3.2";
+const ACTIVE_SUBJECT_STORAGE_KEY = "past-paper-worker:active-subject:v1.3.2";
+const SIDEBAR_COLLAPSED_STORAGE_KEY = "past-paper-worker:sidebar-collapsed:v1.3.2";
+const LANDING_PHRASES = [
+  "Upload a paper. Get marks back.",
+  "Answer questions online.",
+  "See where marks were lost.",
+  "Built for GCSE revision.",
+  "Checked against the source.",
+  "Your papers stay local.",
+  "Developed by Rayaan Omair.",
+] as const;
 
 const defaultPreferences: AppPreferences = {
   themeMode: "dark",
@@ -808,20 +817,29 @@ function SectionFrame({ title, subtitle, actions, children }: { title: string; s
   );
 }
 
-function TypewriterText({ phrases, reduceMotion }: { phrases: string[]; reduceMotion: boolean }) {
+function TypewriterText({ phrases, reduceMotion }: { phrases: readonly string[]; reduceMotion: boolean }) {
+  const CYCLE_MS = 10000;
+  const TYPE_MS = 55;
+  const DELETE_MS = 32;
+  const EMPTY_PAUSE_MS = 300;
   const [phraseIndex, setPhraseIndex] = useState(0);
-  const [visibleCount, setVisibleCount] = useState(phrases[0]?.length ?? 0);
+  const [visibleCount, setVisibleCount] = useState(0);
   const [deleting, setDeleting] = useState(false);
+  const phrase = phrases[phraseIndex] ?? "";
 
   useEffect(() => {
     if (reduceMotion || !phrases.length) {
+      setPhraseIndex(0);
       setVisibleCount(phrases[0]?.length ?? 0);
+      setDeleting(false);
       return;
     }
-    const phrase = phrases[phraseIndex] ?? "";
+    const typeDuration = phrase.length * TYPE_MS;
+    const deleteDuration = phrase.length * DELETE_MS;
+    const fullPauseMs = Math.max(1800, CYCLE_MS - typeDuration - deleteDuration - EMPTY_PAUSE_MS);
     const atFullPhrase = !deleting && visibleCount >= phrase.length;
     const atEmptyPhrase = deleting && visibleCount <= 0;
-    const delay = atFullPhrase ? 5200 : atEmptyPhrase ? 420 : deleting ? 46 : 82;
+    const delay = atFullPhrase ? fullPauseMs : atEmptyPhrase ? EMPTY_PAUSE_MS : deleting ? DELETE_MS : TYPE_MS;
     const timer = window.setTimeout(() => {
       if (atFullPhrase) {
         setDeleting(true);
@@ -832,12 +850,14 @@ function TypewriterText({ phrases, reduceMotion }: { phrases: string[]; reduceMo
         setPhraseIndex((index) => (index + 1) % phrases.length);
         return;
       }
-      setVisibleCount((count) => count + (deleting ? -1 : 1));
+      setVisibleCount((count) => {
+        const next = count + (deleting ? -1 : 1);
+        return Math.max(0, Math.min(phrase.length, next));
+      });
     }, delay);
     return () => window.clearTimeout(timer);
-  }, [deleting, phraseIndex, phrases, reduceMotion, visibleCount]);
+  }, [deleting, phrase, phrases, reduceMotion, visibleCount]);
 
-  const phrase = phrases[phraseIndex] ?? "";
   return (
     <span className="typewriter" aria-hidden="true">
       {reduceMotion ? phrases[0] : phrase.slice(0, visibleCount)}
@@ -847,15 +867,6 @@ function TypewriterText({ phrases, reduceMotion }: { phrases: string[]; reduceMo
 }
 
 function LandingPage({ reduceMotion, onEnter, onUpload, onFeedback }: { reduceMotion: boolean; onEnter: () => void; onUpload: () => void; onFeedback: () => void }) {
-  const phrases = [
-    "Upload a paper. Get marks back.",
-    "Answer questions online.",
-    "See where marks were lost.",
-    "Built for GCSE revision.",
-    "Checked against the source.",
-    "Your papers stay local.",
-    "Developed by Rayaan Omair.",
-  ];
   const reveal = reduceMotion ? {} : { initial: { opacity: 0, y: 18 }, whileInView: { opacity: 1, y: 0 }, viewport: { once: true, margin: "-80px" }, transition: { duration: 0.42 } };
 
   function scrollToWorkflow() {
@@ -882,8 +893,8 @@ function LandingPage({ reduceMotion, onEnter, onUpload, onFeedback }: { reduceMo
           <span className="pixel-label">Developed by Rayaan Omair</span>
           <h1>Past papers, marked in minutes.</h1>
           <p className="landing-hero__typewriter">
-            <TypewriterText phrases={phrases} reduceMotion={reduceMotion} />
-            <span className="sr-only">{phrases.join(" ")}</span>
+            <TypewriterText phrases={LANDING_PHRASES} reduceMotion={reduceMotion} />
+            <span className="sr-only">{LANDING_PHRASES.join(" ")}</span>
           </p>
           <p>Upload a question paper and mark scheme. Answer questions online, then get examiner-style feedback against the source.</p>
           <div className="button-row">
@@ -1317,7 +1328,7 @@ function UnsupportedSubjectDashboard({
           </article>
           <article className="feature-card">
             <strong>Legacy papers</strong>
-            <p>{legacyPapers.length ? `${legacyPapers.length} existing paper${legacyPapers.length === 1 ? "" : "s"} are stored for this subject, but v1.3.1 does not treat it as supported.` : "No papers stored for this subject yet."}</p>
+            <p>{legacyPapers.length ? `${legacyPapers.length} existing paper${legacyPapers.length === 1 ? "" : "s"} are stored for this subject, but v1.3.2 does not treat it as supported.` : "No papers stored for this subject yet."}</p>
           </article>
         </div>
       </section>
@@ -1365,7 +1376,7 @@ function SubjectSidebarV131({
             {collapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
           </button>
           <button className="subject-sidebar__home-button" onClick={onHome} title="Home">
-            <AppLogo size={32} showText={!collapsed} />
+            <AppLogo size={32} showText={false} />
           </button>
         </div>
         {!collapsed ? (
