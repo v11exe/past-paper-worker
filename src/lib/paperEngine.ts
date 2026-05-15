@@ -24,6 +24,7 @@ import {
   type QuestionBoundaryPromptContext,
 } from "../ai/prompts";
 import { DEFAULT_AI_MODEL, FALLBACK_AI_MODELS, AIProviderError, aiStructuredJson } from "../ai/provider";
+import { extractInlineOptions } from "./choiceParsing";
 import type {
   AppData,
   PaperPageScreenshot,
@@ -70,7 +71,7 @@ const QUESTION_EXTRACTION_FAILURE =
 const NEUTRAL_PLACEHOLDER_PATTERN = /__(?:[A-Z0-9]+_?)+__/;
 const COPIED_SEMANTIC_EXAMPLE_PATTERN = /\b(?:state\s+one\s+purpose\s+of\s+secondary\s+storage|explain\s+(?:one\s+|two\s+|the\s+)?benefits?\s+of\s+secondary\s+storage)\b/i;
 const UNSUPPORTED_FORMAT_PATTERN =
-  /\b(?:tick\s*\(\s*3\s*\)\s*(?:one|one or more)\s+boxes?\s+on\s+each\s+row|tick\s+one\s+box\s+in\s+each\s+row|one\s+box\s+(?:in|on)\s+each\s+row|complete\s+the\s+table|table\s+by\s+writing|complete\s+the\s+description|given\s+list\s+of\s+terms|word\s+bank|matching\s+table|matrix|grid|draw|shade|label\s+the\s+diagram)\b/i;
+  /\b(?:tick\s*\(\s*3\s*\)\s*(?:one|one or more)\s+boxes?\s+(?:in|on)\s+each\s+row|tick\s+one\s+box\s+(?:in|on)\s+each\s+row|tick\s+one\s+box\s+for\s+each\s+row|one\s+box\s+(?:in|on)\s+each\s+row|row[-\s]?by[-\s]?row|each\s+row|complete\s+(?:the\s+)?(?:trace\s+|truth\s+|data\s+)?table|complete\s+table|complete\s+the\s+description\b.+\b(?:given\s+list|list\s+of\s+terms)|given\s+list\s+of\s+terms|not\s+all\s+terms\s+will\s+be\s+used|fill\s+in\s+(?:the\s+)?(?:trace\s+|truth\s+|data\s+)?table|table\s+by\s+writing|trace\s+table|truth\s+table|matching\s+table|matching\s+grid|matrix|grid|draw\s+(?:a\s+)?line\s+from|match\s+each|complete\s+the\s+diagram|label\s+the\s+diagram|label\s+the\s+image|fill\s+labels?|plot\s+(?:a\s+)?graph|draw|shade|sketch|annotate)\b/i;
 
 export const supportedQuestionTypeLabels = [
   "Short written answer",
@@ -125,7 +126,11 @@ export function questionSupportIssue(question: PastPaperQuestion) {
     typeof originalContent.unsupportedReason === "string" ? originalContent.unsupportedReason : "",
   ].join(" ");
   const responseTypeSupported = ["long_text", "short_text", "numeric", "single_choice", "multi_select"].includes(question.responseType);
-  const simpleChoiceMissingOptions = (question.responseType === "single_choice" || question.responseType === "multi_select") && !question.options.length;
+  const recoveredChoiceOptions =
+    question.responseType === "single_choice" || question.responseType === "multi_select"
+      ? extractInlineOptions(question.promptText).options
+      : [];
+  const simpleChoiceMissingOptions = (question.responseType === "single_choice" || question.responseType === "multi_select") && !question.options.length && recoveredChoiceOptions.length < 2;
   const unsupported =
     !responseTypeSupported ||
     UNSUPPORTED_FORMAT_PATTERN.test(source) ||
@@ -138,7 +143,7 @@ export function questionSupportIssue(question: PastPaperQuestion) {
     typeof originalContent.unsupportedReason === "string"
       ? originalContent.unsupportedReason
       : UNSUPPORTED_FORMAT_PATTERN.test(source)
-        ? "This looks like a table, grid, matrix, or row-by-row checkbox question. The current answer UI only supports simple choices, written answers, and calculations."
+      ? "This looks like a table, grid, matrix, or row-by-row checkbox question. The current answer UI only supports simple choices, written answers, and calculations."
         : simpleChoiceMissingOptions
           ? "This choice question did not extract into a simple option list."
           : "This question format is not currently supported by the answer UI.";

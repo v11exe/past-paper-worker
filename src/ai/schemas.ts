@@ -1,4 +1,10 @@
 import { z } from "zod";
+import {
+  cleanChoiceGlyphs,
+  extractInlineOptions as extractInlineChoiceOptions,
+  inferChoiceResponseType,
+} from "../lib/choiceParsing";
+import type { ResponseType } from "../types";
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -35,7 +41,10 @@ function normalizeRecord(value: unknown) {
 
 function normalizeStringArray(value: unknown) {
   if (!Array.isArray(value)) return [];
-  return value.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean);
+  return value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => cleanChoiceGlyphs(item.trim()))
+    .filter(Boolean);
 }
 
 function textFromUnknown(value: unknown): string {
@@ -101,42 +110,31 @@ function normalizeResponseType(value: unknown) {
   return "long_text";
 }
 
-export function extractInlineOptions(promptText: string) {
-  const normalized = promptText.replace(/\r/g, "").replace(/[ \t]+/g, " ").trim();
-  if (!normalized) return { promptText, options: [] as string[] };
+export const extractInlineOptions = extractInlineChoiceOptions;
 
-  const patterns = [
-    /(?:^|\s)(?:\(?([A-H])\)|([A-H])\.|([A-H])\s*[-:])\s+([\s\S]*?)(?=(?:\s+(?:\(?[A-H]\)|[A-H]\.|[A-H]\s*[-:])\s+)|$)/g,
-    /(?:^|\n)\s*([A-H])\s+([^\n]+?)(?=(?:\n\s*[A-H]\s+)|$)/g,
-    /(?:^|\s)([A-D])\s+([\s\S]*?)(?=(?:\s+[A-D]\s+)|$)/g,
-  ];
+function booleanFromUnknown(value: unknown) {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") return /^(?:true|yes|unsupported)$/i.test(value.trim());
+  return false;
+}
 
-  for (const pattern of patterns) {
-    const matches = [...normalized.matchAll(pattern)];
-    if (matches.length < 2) continue;
+function normalizeOriginalContent(value: unknown): Record<string, unknown> {
+  const record = normalizeRecord(value);
+  const unsupportedQuestionFormat =
+    booleanFromUnknown(record.unsupportedQuestionFormat) ||
+    booleanFromUnknown(record.unsupported) ||
+    booleanFromUnknown(record.isUnsupported) ||
+    booleanFromUnknown(record.requiresCustomUi);
+  const unsupportedReason =
+    nullableString(record.unsupportedReason) ??
+    nullableString(record.unsupportedFormatReason) ??
+    nullableString(record.reason);
 
-    const options = matches
-      .map((match) => {
-        const label = match[1] ?? match[2] ?? match[3] ?? "";
-        const value = (match[4] ?? match[2] ?? "").trim().replace(/\s+/g, " ");
-        return label && value ? `${label}. ${value}` : null;
-      })
-      .filter((item): item is string => Boolean(item));
-
-    const labels = options.map((option) => option.slice(0, 1));
-    const uniqueLabels = new Set(labels);
-    if (options.length < 2 || uniqueLabels.size !== options.length) continue;
-    if (!labels.every((label, index) => label.charCodeAt(0) === labels[0].charCodeAt(0) + index)) continue;
-
-    const firstMatchIndex = matches[0].index ?? -1;
-    const cleanedPrompt = firstMatchIndex > 20 ? normalized.slice(0, firstMatchIndex).trim().replace(/[,:;]\s*$/, "") : normalized;
-    return {
-      promptText: cleanedPrompt || normalized,
-      options,
-    };
-  }
-
-  return { promptText, options: [] as string[] };
+  return {
+    ...record,
+    ...(unsupportedQuestionFormat ? { unsupportedQuestionFormat: true } : {}),
+    ...(unsupportedReason ? { unsupportedReason } : {}),
+  };
 }
 
 function slugSegment(value: string) {
@@ -416,15 +414,21 @@ export function normalizeProcessedPaperOutput(input: unknown): unknown {
       if (!isPlainRecord(question)) return question;
       const questionNumber = normalizeQuestionNumberText(stringOrFallback(question.questionNumber, "question"));
       const originalResponseType = typeof question.responseType === "string" ? question.responseType.trim() : null;
-      const responseType = normalizeResponseType(question.responseType);
-      const originalContent = normalizeRecord(question.originalContent);
+      const baseResponseType = normalizeResponseType(question.responseType) as ResponseType;
+      const originalContent = normalizeOriginalContent(question.originalContent);
       const convertedContent = normalizeRecord(question.convertedContent);
       const normalizedOptions = normalizeStringArray(question.options);
-      const visibleMaxMarks = inferVisibleMaxMarks(question.promptText, originalContent.evidenceSnippet);
-      const inlineOptions =
-        (responseType === "single_choice" || responseType === "multi_select") && !normalizedOptions.length && typeof question.promptText === "string"
-          ? extractInlineOptions(question.promptText)
-          : null;
+      const rawPromptText = typeof question.promptText === "string" ? question.promptText : textFromUnknown(question.promptText);
+      const cleanedPromptText = cleanChoiceGlyphs(rawPromptText);
+      const inlineOptions = extractInlineOptions(cleanedPromptText);
+      const recoveredOptions = inlineOptions.options.length >= 2 ? inlineOptions.options : [];
+      const responseType = (recoveredOptions.length && !["numeric", "short_text", "long_text"].includes(baseResponseType)
+        ? inferChoiceResponseType(cleanedPromptText, baseResponseType)
+        : recoveredOptions.length && (/\b(?:tick|choose|select|shade|circle)\b/i.test(cleanedPromptText) || /\?[^\n]*\bA\b[\s\S]*\bB\b/i.test(cleanedPromptText))
+          ? inferChoiceResponseType(cleanedPromptText, baseResponseType)
+          : baseResponseType) as ResponseType;
+      const options = normalizedOptions.length ? normalizedOptions : recoveredOptions;
+      const visibleMaxMarks = inferVisibleMaxMarks(cleanedPromptText, originalContent.evidenceSnippet);
       return {
         ...question,
         questionNumber,
@@ -432,7 +436,7 @@ export function normalizeProcessedPaperOutput(input: unknown): unknown {
           ? normalizeQuestionNumberText(nullableString(question.parentQuestionNumber) ?? "")
           : question.parentQuestionNumber,
         numberingPath: normalizeStringArray(question.numberingPath).map(normalizeQuestionNumberText),
-        promptText: inlineOptions?.promptText ?? question.promptText,
+        promptText: options.length && recoveredOptions.length ? inlineOptions.promptText : cleanedPromptText,
         maxMarks: visibleMaxMarks ?? numberOrFallback(question.maxMarks, 0),
         responseType,
         originalFormat: stringOrFallback(question.originalFormat, originalResponseType ?? "text"),
@@ -440,14 +444,14 @@ export function normalizeProcessedPaperOutput(input: unknown): unknown {
           originalResponseType && originalResponseType.toLowerCase().replace(/[\s-]+/g, "_") !== responseType
             ? originalResponseType
             : nullableString(question.convertedFormat),
-        originalContent: inlineOptions?.options.length
-          ? { ...originalContent, inlineOptionsSource: question.promptText, extractionWarnings: [...normalizeStringArray(originalContent.extractionWarnings), "Multiple-choice options were recovered from inline question text."] }
+        originalContent: recoveredOptions.length
+          ? { ...originalContent, inlineOptionsSource: rawPromptText, extractionWarnings: [...normalizeStringArray(originalContent.extractionWarnings), "Multiple-choice options were recovered from inline question text."] }
           : originalContent,
         convertedContent:
           originalResponseType && originalResponseType.toLowerCase().replace(/[\s-]+/g, "_") !== responseType
             ? { ...convertedContent, normalizedResponseTypeFrom: originalResponseType, normalizedResponseTypeTo: responseType }
             : convertedContent,
-        options: normalizedOptions.length ? normalizedOptions : inlineOptions?.options ?? [],
+        options,
         pageReferences: normalizeIntegerArray(question.pageReferences),
         mediaRefs: normalizeMediaRefs(question.mediaRefs, questionNumber),
         evidenceSnippet:

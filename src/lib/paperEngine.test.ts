@@ -125,6 +125,40 @@ describe("isAnswerAttempted", () => {
   });
 });
 
+describe("questionSupportIssue", () => {
+  function question(promptText: string, responseType: PastPaperQuestion["responseType"] = "short_text", options: string[] = []) {
+    return {
+      id: promptText,
+      maxMarks: 1,
+      responseType,
+      originalContent: {},
+      originalFormat: "text",
+      convertedFormat: null,
+      evidenceSnippet: null,
+      extractionWarnings: [],
+      promptText,
+      options,
+    } as unknown as PastPaperQuestion;
+  }
+
+  it.each([
+    "Complete the table to show two advantages and two disadvantages.",
+    "Tick one box in each row.",
+    "Label the diagram of the heart.",
+    "Draw a line from each component to its function.",
+  ])("marks unsupported custom UI formats: %s", (promptText) => {
+    expect(questionSupportIssue(question(promptText))?.unsupported).toBe(true);
+  });
+
+  it("keeps ordinary short answers supported", () => {
+    expect(questionSupportIssue(question("State one reason why the CPU uses cache memory."))).toBeNull();
+  });
+
+  it("keeps simple recovered single-choice questions supported", () => {
+    expect(questionSupportIssue(question("Tick one box. A RAM B ROM C HDD D SSD", "single_choice"))).toBeNull();
+  });
+});
+
 const validQuestion: ProcessedPaperOutput["questions"][number] = {
   questionNumber: "1",
   parentQuestionNumber: null,

@@ -242,6 +242,82 @@ describe("normalizeProcessedPaperOutput", () => {
     expect(result.questions[0].promptText).toBe("Which structure controls cell activities?");
     expect(result.questions[0].options).toEqual(["A. nucleus", "B. ribosome", "C. cell wall", "D. cytoplasm"]);
   });
+
+  it("recovers AQA single-choice options and strips checkbox glyphs", () => {
+    const normalized = normalizeProcessedPaperOutput({
+      title: "Paper",
+      year: null,
+      series: null,
+      paperCode: null,
+      totalMarks: null,
+      durationMinutes: null,
+      questions: [
+        {
+          ...baseQuestion,
+          promptText: "Tick one box. \u2610 A nucleus \u2610 B ribosome \u2610 C cell wall \u2610 D cytoplasm",
+          responseType: "tick_box",
+          originalFormat: "multiple choice",
+          mediaRefs: [],
+        },
+      ],
+    });
+
+    const result = processedPaperOutputSchema.parse(normalized);
+
+    expect(result.questions[0].responseType).toBe("single_choice");
+    expect(result.questions[0].promptText).not.toContain("\u2610");
+    expect(result.questions[0].options).toEqual(["A. nucleus", "B. ribosome", "C. cell wall", "D. cytoplasm"]);
+  });
+
+  it("infers multi-select when a clean inline choice question asks for two answers", () => {
+    const normalized = normalizeProcessedPaperOutput({
+      title: "Paper",
+      year: null,
+      series: null,
+      paperCode: null,
+      totalMarks: null,
+      durationMinutes: null,
+      questions: [
+        {
+          ...baseQuestion,
+          promptText: "Choose two answers. A diffusion B osmosis C respiration D photosynthesis",
+          responseType: "long_text",
+          originalFormat: "multiple choice",
+          mediaRefs: [],
+        },
+      ],
+    });
+
+    const result = processedPaperOutputSchema.parse(normalized);
+
+    expect(result.questions[0].responseType).toBe("multi_select");
+    expect(result.questions[0].options).toEqual(["A. diffusion", "B. osmosis", "C. respiration", "D. photosynthesis"]);
+  });
+
+  it("preserves messy unsupported flags from model output", () => {
+    const normalized = normalizeProcessedPaperOutput({
+      title: "Paper",
+      year: null,
+      series: null,
+      paperCode: null,
+      totalMarks: null,
+      durationMinutes: null,
+      questions: [
+        {
+          ...baseQuestion,
+          promptText: "Complete the table.",
+          responseType: "short_text",
+          originalContent: { unsupported: "true", reason: "Needs a table UI." },
+          mediaRefs: [],
+        },
+      ],
+    });
+
+    const result = processedPaperOutputSchema.parse(normalized);
+
+    expect(result.questions[0].originalContent.unsupportedQuestionFormat).toBe(true);
+    expect(result.questions[0].originalContent.unsupportedReason).toBe("Needs a table UI.");
+  });
 });
 
 describe("normalizeMarkSchemeAlignmentOutput", () => {
