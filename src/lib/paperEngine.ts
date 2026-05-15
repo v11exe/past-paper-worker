@@ -2593,6 +2593,102 @@ function markOutputSignalsInsufficient(output: PaperMarkOutput) {
   );
 }
 
+function markOutputContradictionText(output: PaperMarkOutput, markSchemeText: string) {
+  return [output.rationale, output.markSchemeEvidence ?? "", ...output.missingPoints, markSchemeText].filter(Boolean).join(" ");
+}
+
+function hasExplicitCorrectnessSignal(text: string) {
+  return /\b(?:student(?:'s)? answer is correct|selected answer is correct|matches the correct answer|matches one of the acceptable values|correct and should be credited|award full marks|correct answer given)\b/i.test(text);
+}
+
+function hasExplicitMismatchSignal(text: string) {
+  return /\b(?:does not match(?: the correct answer)?|does not match any acceptable|doesn't match any acceptable|does not correspond|not one of|outside acceptable range|no credit|cannot be awarded|incorrect|wrong|not correct)\b/i.test(text);
+}
+
+function extractChoiceLetter(value: string) {
+  const compact = value.replace(/\s+/g, " ").trim();
+  const match = compact.match(/^\s*["'([]*([A-H])(?:[.)\]:-]|\s|$)/i) ?? compact.match(/\b([A-H])\b/i);
+  return match?.[1]?.toUpperCase() ?? null;
+}
+
+function extractCorrectChoiceLetter(text: string) {
+  const patterns = [
+    /\bcorrect answer(?: is|:)?\s*["'(\s]*([A-H])\b/i,
+    /\banswer(?: only)?(?: is|:)?\s*["'(\s]*([A-H])\b/i,
+    /\bmark scheme row(?: is|:)?\s*["'(\s]*([A-H])\b/i,
+  ];
+  for (const pattern of patterns) {
+    const match = pattern.exec(text);
+    if (match?.[1]) return match[1].toUpperCase();
+  }
+  return null;
+}
+
+function extractExplicitAcceptableValues(text: string) {
+  const prefixes = [
+    /\bacceptable values?(?: are| is)?\s*/gi,
+    /\bcorrect answer(?: is|:)?\s*/gi,
+    /\baward\s+\d+\s+mark(?:s)?\s+for answer\s*/gi,
+  ];
+  const values = prefixes.flatMap((pattern) =>
+    [...text.matchAll(pattern)].flatMap((match) => {
+      const start = (match.index ?? 0) + match[0].length;
+      const snippet = text.slice(start, start + 120);
+      return [...snippet.matchAll(/-?\d+(?:\.\d+)?/g)].map((item) => Number(item[0]));
+    }),
+  );
+  return [...new Set(values.filter((value) => Number.isFinite(value)))];
+}
+
+function extractAnswerNumericValues(text: string) {
+  return [...text.matchAll(/-?\d+(?:\.\d+)?/g)].map((match) => Number(match[0])).filter((value) => Number.isFinite(value));
+}
+
+function numbersOverlap(answerValues: number[], acceptableValues: number[]) {
+  return answerValues.some((answerValue) => acceptableValues.some((acceptableValue) => Math.abs(answerValue - acceptableValue) < 0.0001));
+}
+
+export function applyMarkingGuardrails(
+  output: PaperMarkOutput,
+  question: PastPaperQuestion,
+  answer: PastPaperAnswer,
+  markSchemeText: string,
+): PaperMarkOutput {
+  const combinedText = markOutputContradictionText(output, markSchemeText);
+  let awardedMarks = output.awardedMarks;
+
+  if (hasExplicitMismatchSignal(combinedText) && !hasExplicitCorrectnessSignal(combinedText)) {
+    awardedMarks = 0;
+  }
+
+  if (question.responseType === "single_choice") {
+    const selectedLetter = extractChoiceLetter(answer.selectedOptions[0] ?? answer.responseText ?? "");
+    const correctLetter = extractCorrectChoiceLetter(combinedText);
+    if (selectedLetter && correctLetter) {
+      if (selectedLetter !== correctLetter) {
+        awardedMarks = 0;
+      } else if (awardedMarks === 0) {
+        awardedMarks = question.maxMarks;
+      }
+    }
+  }
+
+  const acceptableValues = extractExplicitAcceptableValues(combinedText);
+  const answerValues = extractAnswerNumericValues(answerText(answer, question));
+  if (acceptableValues.length && answerValues.length) {
+    if (!numbersOverlap(answerValues, acceptableValues)) {
+      awardedMarks = 0;
+    } else if (awardedMarks === 0 && !hasExplicitMismatchSignal(combinedText)) {
+      awardedMarks = question.maxMarks;
+    }
+  }
+
+  return {
+    ...output,
+    awardedMarks: Math.max(0, Math.min(question.maxMarks, awardedMarks)),
+  };
+}
+
 function retryMarkingModel(currentModel: string, fallbackModels: string[]) {
   const ordered = ["gemini-2.5-flash", DEFAULT_AI_MODEL, ...fallbackModels].filter((model, index, list) => model !== currentModel && list.indexOf(model) === index);
   return ordered[0] ?? null;
@@ -2776,7 +2872,7 @@ export async function markAnswerWithAI(
       `Question ${displayNumber} could not be matched to a reliable mark-scheme row. Review the aligned mark scheme for this question instead of awarding a fabricated zero.`,
     );
   }
-  return mapMarkOutput(answer.id, question.id, maxMarks, output, source, version);
+  return mapMarkOutput(answer.id, question.id, maxMarks, applyMarkingGuardrails(output, question, answer, markSchemeText), source, version);
 }
 
 export function createRemark(attemptId: string, answer: PastPaperAnswer, notes: string | null): PastPaperRemark {

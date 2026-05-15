@@ -44,7 +44,7 @@ import { appMeta } from "./appMeta";
 import { AppLogo } from "./components/AppLogo";
 import { cleanChoiceGlyphs, extractInlineOptions } from "./lib/choiceParsing";
 import { subjectMetaForLabel, subjectMetaList, unsupportedSubjects } from "./subjectMeta";
-import { supportedSubjects, type SupportedSubject } from "./subjects";
+import { selectableSubjects, supportedSubjects, type SelectableSubject, type SupportedSubject } from "./subjects";
 import { currentVersionEntry, versionHistory } from "./versionHistory";
 import { extractFileAssetContent } from "./lib/fileText";
 import {
@@ -159,12 +159,13 @@ type ToastItem = {
   durationMs: number;
 };
 
+type AppView = "landing" | "onboarding" | "app";
+
 const PREFERENCES_STORAGE_KEY = "past-paper-worker:preferences:v1";
-const SELECTED_SUBJECTS_STORAGE_KEY = "past-paper-worker:selected-subjects:v1.3";
-const ONBOARDING_COMPLETE_STORAGE_KEY = "past-paper-worker:onboarding-completed:v1.3";
-const APP_ENTERED_STORAGE_KEY = "past-paper-worker:app-entered:v1.3";
-const ACTIVE_SUBJECT_STORAGE_KEY = "past-paper-worker:active-subject:v1.3";
-const SIDEBAR_COLLAPSED_STORAGE_KEY = "past-paper-worker:sidebar-collapsed:v1.3";
+const SELECTED_SUBJECTS_STORAGE_KEY = "past-paper-worker:selected-subjects:v1.3.1";
+const ONBOARDING_COMPLETE_STORAGE_KEY = "past-paper-worker:onboarding-completed:v1.3.1";
+const ACTIVE_SUBJECT_STORAGE_KEY = "past-paper-worker:active-subject:v1.3.1";
+const SIDEBAR_COLLAPSED_STORAGE_KEY = "past-paper-worker:sidebar-collapsed:v1.3.1";
 
 const defaultPreferences: AppPreferences = {
   themeMode: "dark",
@@ -211,6 +212,10 @@ function isSupportedSubject(value: string): value is SupportedSubject {
   return supportedSubjects.includes(value as SupportedSubject);
 }
 
+function isSelectableSubject(value: string): value is SelectableSubject {
+  return selectableSubjects.includes(value as SelectableSubject);
+}
+
 function readBooleanStorage(key: string, fallback = false) {
   try {
     const value = window.localStorage.getItem(key);
@@ -229,13 +234,17 @@ function writeBooleanStorage(key: string, value: boolean) {
   }
 }
 
-function loadSelectedSubjects(data?: AppData): SupportedSubject[] {
+function normalizeSelectedSubjects(subjects: string[]): SelectableSubject[] {
+  return [...new Set(subjects.filter((subject): subject is SelectableSubject => isSelectableSubject(subject)))];
+}
+
+function loadSelectedSubjects(data?: AppData): SelectableSubject[] {
   try {
     const raw = window.localStorage.getItem(SELECTED_SUBJECTS_STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as unknown;
       if (Array.isArray(parsed)) {
-        const selected = parsed.filter((subject): subject is SupportedSubject => typeof subject === "string" && isSupportedSubject(subject));
+        const selected = parsed.filter((subject): subject is SelectableSubject => typeof subject === "string" && isSelectableSubject(subject));
         if (selected.length) return [...new Set(selected)];
       }
     }
@@ -245,11 +254,11 @@ function loadSelectedSubjects(data?: AppData): SupportedSubject[] {
 
   const inferred = data?.papers
     .map((paper) => paper.subject)
-    .filter((subject): subject is SupportedSubject => isSupportedSubject(subject)) ?? [];
+    .filter((subject): subject is SelectableSubject => isSelectableSubject(subject)) ?? [];
   return [...new Set(inferred)];
 }
 
-function saveSelectedSubjects(subjects: SupportedSubject[]) {
+function saveSelectedSubjects(subjects: SelectableSubject[]) {
   try {
     window.localStorage.setItem(SELECTED_SUBJECTS_STORAGE_KEY, JSON.stringify(subjects));
   } catch {
@@ -257,18 +266,23 @@ function saveSelectedSubjects(subjects: SupportedSubject[]) {
   }
 }
 
-function loadActiveSubject(subjects: SupportedSubject[]) {
+function loadActiveSubject(subjects: SelectableSubject[]) {
   try {
     const raw = window.localStorage.getItem(ACTIVE_SUBJECT_STORAGE_KEY);
-    if (raw && subjects.includes(raw as SupportedSubject)) return raw as SupportedSubject;
+    if (raw && subjects.includes(raw as SelectableSubject)) return raw as SelectableSubject;
   } catch {
     // Non-critical local preference.
   }
-  return subjects[0] ?? supportedSubjects[0];
+  const firstSupported = subjects.find(isSupportedSubject);
+  return firstSupported ?? subjects[0] ?? null;
 }
 
-function saveActiveSubject(subject: SupportedSubject) {
+function saveActiveSubject(subject: string | null) {
   try {
+    if (!subject) {
+      window.localStorage.removeItem(ACTIVE_SUBJECT_STORAGE_KEY);
+      return;
+    }
     window.localStorage.setItem(ACTIVE_SUBJECT_STORAGE_KEY, subject);
   } catch {
     // Non-critical local preference.
@@ -345,6 +359,10 @@ function toNullableNumber(value: string) {
 
 function displayMeta(paper: PastPaper) {
   return [paper.year, paper.series, paper.paperCode].filter(Boolean).join(" / ") || "Metadata pending";
+}
+
+function paperHasResolvedMetadata(paper: PastPaper) {
+  return paper.processingStatus === "ready" || paper.totalMarks !== null || paper.durationMinutes !== null || paper.questions.length > 0;
 }
 
 function statusLabel(value: string) {
@@ -480,11 +498,10 @@ function paperStatusTone(paper: PastPaper, attempts: PastPaperAttempt[]) {
 }
 
 function paperPrimaryActionLabel(paper: PastPaper, attempts: PastPaperAttempt[]) {
-  if (paper.processingStatus === "unprocessed" || paper.processingStatus === "failed") return "Process";
+  if (paper.processingStatus === "unprocessed" || paper.processingStatus === "failed") return "Process now";
   if (paper.processingStatus === "processing") return "Processing";
   if (attempts.some((attempt) => attempt.status === "in_progress")) return "Continue";
-  if (attempts.length) return "Retry";
-  return "Start";
+  return "Start paper";
 }
 
 function paperProgressPercent(data: AppData, paper: PastPaper) {
@@ -804,7 +821,7 @@ function TypewriterText({ phrases, reduceMotion }: { phrases: string[]; reduceMo
     const phrase = phrases[phraseIndex] ?? "";
     const atFullPhrase = !deleting && visibleCount >= phrase.length;
     const atEmptyPhrase = deleting && visibleCount <= 0;
-    const delay = atFullPhrase ? 1350 : atEmptyPhrase ? 260 : deleting ? 34 : 58;
+    const delay = atFullPhrase ? 5200 : atEmptyPhrase ? 420 : deleting ? 46 : 82;
     const timer = window.setTimeout(() => {
       if (atFullPhrase) {
         setDeleting(true);
@@ -832,12 +849,18 @@ function TypewriterText({ phrases, reduceMotion }: { phrases: string[]; reduceMo
 function LandingPage({ reduceMotion, onEnter, onUpload, onFeedback }: { reduceMotion: boolean; onEnter: () => void; onUpload: () => void; onFeedback: () => void }) {
   const phrases = [
     "Upload a paper. Get marks back.",
-    "Practise GCSE questions online.",
-    "See exactly where marks were lost.",
-    "Built for OCR, AQA and Edexcel.",
+    "Answer questions online.",
+    "See where marks were lost.",
+    "Built for GCSE revision.",
+    "Checked against the source.",
+    "Your papers stay local.",
     "Developed by Rayaan Omair.",
   ];
   const reveal = reduceMotion ? {} : { initial: { opacity: 0, y: 18 }, whileInView: { opacity: 1, y: 0 }, viewport: { once: true, margin: "-80px" }, transition: { duration: 0.42 } };
+
+  function scrollToWorkflow() {
+    document.getElementById("workflow")?.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
+  }
 
   return (
     <main className="landing-page">
@@ -870,7 +893,7 @@ function LandingPage({ reduceMotion, onEnter, onUpload, onFeedback }: { reduceMo
             <button className="secondary-button" onClick={onUpload}>
               <UploadCloud size={16} /> Upload a paper
             </button>
-            <a className="secondary-button" href="#workflow">See how it works</a>
+            <button className="secondary-button" onClick={scrollToWorkflow}>See how it works</button>
           </div>
         </motion.div>
 
@@ -945,7 +968,7 @@ function LandingPage({ reduceMotion, onEnter, onUpload, onFeedback }: { reduceMo
       <motion.section className="landing-section" {...reveal}>
         <div className="landing-section__header">
           <span className="eyebrow">Supported subjects</span>
-          <h2>OCR, AQA and Edexcel GCSE workspaces.</h2>
+          <h2>Supported GCSE science and computer science workspaces.</h2>
         </div>
         <div className="subject-chip-grid">
           {subjectMetaList.map((subject) => (
@@ -982,11 +1005,15 @@ function LandingPage({ reduceMotion, onEnter, onUpload, onFeedback }: { reduceMo
   );
 }
 
-function SubjectOnboarding({ selectedSubjects, onSave }: { selectedSubjects: SupportedSubject[]; onSave: (subjects: SupportedSubject[]) => void }) {
-  const [draft, setDraft] = useState<SupportedSubject[]>(selectedSubjects.length ? selectedSubjects : [...supportedSubjects]);
+function SubjectOnboardingV131({ selectedSubjects, onSave }: { selectedSubjects: SelectableSubject[]; onSave: (subjects: SelectableSubject[]) => void }) {
+  const [draft, setDraft] = useState<SelectableSubject[]>(selectedSubjects);
   const [showUnsupported, setShowUnsupported] = useState(false);
 
-  function toggleSubject(subject: SupportedSubject) {
+  useEffect(() => {
+    setDraft(selectedSubjects);
+  }, [selectedSubjects]);
+
+  function toggleSubject(subject: SelectableSubject) {
     setDraft((current) => (current.includes(subject) ? current.filter((item) => item !== subject) : [...current, subject]));
   }
 
@@ -999,8 +1026,13 @@ function SubjectOnboarding({ selectedSubjects, onSave }: { selectedSubjects: Sup
           <div>
             <span className="eyebrow">Setup</span>
             <h1>What subjects are you studying?</h1>
-            <p>You can change this later.</p>
+            <p>Save the subjects you study. Upload and marking support is currently available for AQA Biology, Chemistry, Physics, and OCR Computer Science.</p>
           </div>
+        </div>
+
+        <div className="landing-section__header onboarding-section-heading">
+          <span className="eyebrow">Supported now</span>
+          <h2>Ready for upload and marking</h2>
         </div>
         <div className="subject-picker-grid">
           {subjectMetaList.map((subject) => {
@@ -1020,6 +1052,7 @@ function SubjectOnboarding({ selectedSubjects, onSave }: { selectedSubjects: Sup
             );
           })}
         </div>
+
         <div className="selected-subjects-bar">
           <span>{draft.length ? `${draft.length} selected` : "No subjects selected"}</span>
           <div className="selected-subjects-bar__chips">
@@ -1028,19 +1061,46 @@ function SubjectOnboarding({ selectedSubjects, onSave }: { selectedSubjects: Sup
             ))}
           </div>
         </div>
+
         <button className="unsupported-toggle" onClick={() => setShowUnsupported((value) => !value)} aria-expanded={showUnsupported}>
           <ChevronDown size={16} className={showUnsupported ? "question-disclosure__icon question-disclosure__icon--open" : "question-disclosure__icon"} />
           Unsupported subjects
         </button>
         <AnimatePresence initial={false}>
           {showUnsupported ? (
-            <motion.div className="unsupported-subject-grid" initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }}>
-              {unsupportedSubjects.map((subject) => (
-                <span className="unsupported-subject-chip" key={subject}>{subject} · Not supported yet</span>
-              ))}
+            <motion.div
+              className="unsupported-subject-grid"
+              initial={{ height: 0, opacity: 0, clipPath: "inset(0 0 100% 0)" }}
+              animate={{ height: "auto", opacity: 1, clipPath: "inset(0 0 0 0)" }}
+              exit={{ height: 0, opacity: 0, clipPath: "inset(0 0 100% 0)" }}
+              transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
+            >
+              <div className="unsupported-callout">
+                <strong>Not supported yet</strong>
+                <p>These subjects can be saved, but upload support is not available for them yet.</p>
+              </div>
+              {unsupportedSubjects.map((subject) => {
+                const meta = subjectMetaForLabel(subject);
+                const active = draft.includes(subject);
+                if (!meta) return null;
+                return (
+                  <button
+                    key={subject}
+                    className={active ? "subject-picker-chip subject-picker-chip--unsupported subject-picker-chip--active" : "subject-picker-chip subject-picker-chip--unsupported"}
+                    style={{ "--subject-accent": meta.accent } as React.CSSProperties}
+                    onClick={() => toggleSubject(subject)}
+                    aria-pressed={active}
+                  >
+                    <meta.Icon size={18} />
+                    <span>{meta.shortLabel}</span>
+                    <small>{active ? "Selected · Not supported yet" : "Not added · Not supported yet"}</small>
+                  </button>
+                );
+              })}
             </motion.div>
           ) : null}
         </AnimatePresence>
+
         <div className="button-row onboarding-actions">
           <button className="primary-button" disabled={!draft.length} onClick={() => onSave(draft)}>
             <Check size={16} /> Save subjects
@@ -1070,6 +1130,7 @@ function PaperWindowCard({
   const bestScore = paperBestScoreLabel({ papers: [paper], attempts }, paper);
   const lastMarked = attempts.find((attempt) => attempt.status === "marked");
   const lastScore = lastMarked ? formatPercent(displayAttemptScores(paper, lastMarked).actualScore, preferredAttemptTotal(paper, lastMarked)) : "No marked attempt";
+  const metadataReady = paperHasResolvedMetadata(paper);
   return (
     <article className="paper-window-card os-window">
       <div className="os-window__bar"><span /><span /><span /></div>
@@ -1083,11 +1144,25 @@ function PaperWindowCard({
         <span>{displayMeta(paper)}</span>
       </button>
       <div className="paper-card__metrics">
-        <span>{attempts.length} attempts</span>
-        <span>Last {lastScore}</span>
-        <span>Best {bestScore}</span>
-        <span>{paper.processingStatus === "ready" ? "Ready to practise" : statusLabel(paper.processingStatus)}</span>
+        {metadataReady ? (
+          <>
+            <span>{paper.questions.length} questions</span>
+            <span>{paper.totalMarks ?? "-"} marks</span>
+            <span>{paper.durationMinutes ? `${paper.durationMinutes} min` : "-"}</span>
+            <span>{attempts.length} attempts</span>
+            <span>Last {lastScore}</span>
+            <span>Best {bestScore}</span>
+          </>
+        ) : (
+          <>
+            <span>Metadata pending</span>
+            <span>{attempts.length} attempts</span>
+            <span>{paper.hasMarkScheme ? "Mark scheme ready" : "No mark scheme"}</span>
+            <span>{statusLabel(paper.processingStatus)}</span>
+          </>
+        )}
       </div>
+      {!metadataReady ? <p className="paper-card__hint">Process the paper to extract questions, marks and timing.</p> : null}
       {paper.processingStatus === "processing" ? <ProcessingPanel paper={paper} job={latestJob(paper, "processing")} variant="compact" /> : null}
       {paper.processingError ? <p className="processing-error">{paper.processingError}</p> : null}
       <div className="paper-card__actions">
@@ -1125,14 +1200,15 @@ function SubjectDashboard({
   onProcessPaper: (paper: PastPaper) => void;
   onDeletePaper: (paper: PastPaper) => void;
 }) {
-  const meta = subjectMetaForLabel(activeSubject);
+  const meta = subjectMetaForLabel(activeSubject) as Extract<NonNullable<ReturnType<typeof subjectMetaForLabel>>, { supported: true }> | null;
+  const supportedMeta = meta;
   const activeProcessing = papers.filter((paper) => paper.processingStatus === "processing");
   return (
     <div className="subject-dashboard">
       <header className="subject-dashboard__header">
         <div>
           <span className="eyebrow">Your subject</span>
-          <h1>{meta?.shortLabel ?? activeSubject}</h1>
+          <h1>{supportedMeta?.shortLabel ?? activeSubject}</h1>
           <p>{meta ? `${meta.examBoard} · ${meta.level}${meta.specCode ? ` · ${meta.specCode}` : ""}` : activeSubject}</p>
         </div>
         <div className="button-row">
@@ -1195,12 +1271,68 @@ function SubjectDashboard({
   );
 }
 
-function SubjectSidebar({
+function UnsupportedSubjectDashboard({
+  activeSubject,
+  papers,
+  onEditSubjects,
+}: {
+  activeSubject: SelectableSubject | null;
+  papers: PastPaper[];
+  onEditSubjects: () => void;
+}) {
+  const meta = activeSubject ? subjectMetaForLabel(activeSubject) : null;
+  const legacyPapers = activeSubject ? papers.filter((paper) => paper.subject === activeSubject) : [];
+
+  return (
+    <div className="subject-dashboard subject-dashboard--unsupported">
+      <header className="subject-dashboard__header">
+        <div>
+          <span className="eyebrow">Unsupported subject</span>
+          <h1>{meta?.shortLabel ?? "Not supported yet"}</h1>
+          <p>{activeSubject ?? "Choose a subject to continue."}</p>
+        </div>
+        <div className="button-row">
+          <button className="secondary-button" onClick={onEditSubjects}>
+            <Plus size={16} /> Edit subjects
+          </button>
+        </div>
+      </header>
+
+      <section className="section-frame unsupported-dashboard-panel">
+        <div className="section-frame__header">
+          <div>
+            <span className="eyebrow">Availability</span>
+            <h2>Upload support is not available for this subject yet.</h2>
+            <p>Supported now: AQA Biology, Chemistry, Physics, and OCR Computer Science.</p>
+          </div>
+        </div>
+        <div className="feature-grid unsupported-dashboard-panel__grid">
+          <article className="feature-card">
+            <strong>Not supported yet</strong>
+            <p>This subject can stay in your saved list, but the normal upload, processing, marking, and review flow is disabled for now.</p>
+          </article>
+          <article className="feature-card">
+            <strong>Switch to a supported subject</strong>
+            <p>Pick Biology, Chemistry, Physics, or Computer Science from the main rail to upload and practise papers.</p>
+          </article>
+          <article className="feature-card">
+            <strong>Legacy papers</strong>
+            <p>{legacyPapers.length ? `${legacyPapers.length} existing paper${legacyPapers.length === 1 ? "" : "s"} are stored for this subject, but v1.3.1 does not treat it as supported.` : "No papers stored for this subject yet."}</p>
+          </article>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function SubjectSidebarV131({
   collapsed,
   selectedSubjects,
   activeSubject,
   onToggleCollapsed,
   onSelectSubject,
+  onToggleUnsupportedSubject,
+  onHome,
   onAddSubject,
   onUpload,
   onSettings,
@@ -1208,10 +1340,12 @@ function SubjectSidebar({
   onCredits,
 }: {
   collapsed: boolean;
-  selectedSubjects: SupportedSubject[];
-  activeSubject: SupportedSubject;
+  selectedSubjects: SelectableSubject[];
+  activeSubject: SelectableSubject | null;
   onToggleCollapsed: () => void;
-  onSelectSubject: (subject: SupportedSubject) => void;
+  onSelectSubject: (subject: SelectableSubject) => void;
+  onToggleUnsupportedSubject: (subject: SelectableSubject) => void;
+  onHome: () => void;
   onAddSubject: () => void;
   onUpload: () => void;
   onSettings: () => void;
@@ -1219,18 +1353,33 @@ function SubjectSidebar({
   onCredits: () => void;
 }) {
   const [showUnsupported, setShowUnsupported] = useState(false);
+  const supportedSelected = selectedSubjects.filter(isSupportedSubject);
+  const unsupportedSelected = selectedSubjects.filter((subject) => !isSupportedSubject(subject));
+  const uploadEnabled = Boolean(activeSubject && isSupportedSubject(activeSubject));
+
   return (
     <aside className={collapsed ? "subject-sidebar subject-sidebar--collapsed" : "subject-sidebar"}>
       <div className="subject-sidebar__brand">
-        <button className="icon-button" onClick={onToggleCollapsed} aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}>
-          {collapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
-        </button>
-        <AppLogo size={32} showText={!collapsed} />
+        <div className="subject-sidebar__brand-control">
+          <button className="icon-button" onClick={onToggleCollapsed} aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}>
+            {collapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
+          </button>
+          <button className="subject-sidebar__home-button" onClick={onHome} title="Home">
+            <AppLogo size={32} showText={!collapsed} />
+          </button>
+        </div>
+        {!collapsed ? (
+          <button className="subject-sidebar__home-copy" onClick={onHome} title="Home">
+            <strong>Past Paper Worker</strong>
+            <span>Marked GCSE practice</span>
+          </button>
+        ) : null}
       </div>
+
       <div className="subject-sidebar__section subject-sidebar__section--grow">
-        {!collapsed ? <span className="eyebrow">Your Subjects</span> : null}
+        {!collapsed ? <span className="eyebrow">YOUR SUBJECTS</span> : null}
         <div className="subject-sidebar__list">
-          {selectedSubjects.map((subject) => {
+          {supportedSelected.map((subject) => {
             const meta = subjectMetaForLabel(subject);
             const Icon = meta?.Icon ?? FileText;
             return (
@@ -1247,37 +1396,69 @@ function SubjectSidebar({
             );
           })}
         </div>
+
         <button className="subject-nav-item subject-nav-item--utility" onClick={onAddSubject} title="Add Subject">
           <Plus size={18} />
           {!collapsed ? <span>Add Subject</span> : null}
         </button>
+
         <button className="subject-nav-item subject-nav-item--utility" onClick={() => setShowUnsupported((value) => !value)} aria-expanded={showUnsupported} title="Unsupported subjects">
           <ChevronDown size={18} className={showUnsupported ? "question-disclosure__icon question-disclosure__icon--open" : "question-disclosure__icon"} />
           {!collapsed ? <span>Unsupported subjects</span> : null}
         </button>
-        {!collapsed && showUnsupported ? (
-          <div className="sidebar-unsupported-list">
-            {unsupportedSubjects.slice(0, 8).map((subject) => (
-              <span key={subject}>{subject} · Not supported yet</span>
-            ))}
-          </div>
-        ) : null}
+
+        <AnimatePresence initial={false}>
+          {showUnsupported && !collapsed ? (
+            <motion.div
+              className="sidebar-unsupported-list"
+              initial={{ height: 0, opacity: 0, clipPath: "inset(0 0 100% 0)" }}
+              animate={{ height: "auto", opacity: 1, clipPath: "inset(0 0 0 0)" }}
+              exit={{ height: 0, opacity: 0, clipPath: "inset(0 0 100% 0)" }}
+              transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+            >
+              {unsupportedSubjects.map((subject) => {
+                const meta = subjectMetaForLabel(subject);
+                const selected = unsupportedSelected.includes(subject);
+                const active = activeSubject === subject;
+                if (!meta) return null;
+                return (
+                  <button
+                    key={subject}
+                    className={active ? "unsupported-nav-row unsupported-nav-row--active" : "unsupported-nav-row"}
+                    style={{ "--subject-accent": meta.accent } as React.CSSProperties}
+                    onClick={() => (selected ? onSelectSubject(subject) : onToggleUnsupportedSubject(subject))}
+                  >
+                    <div className="unsupported-nav-row__main">
+                      <meta.Icon size={16} />
+                      <span>{meta.shortLabel}</span>
+                    </div>
+                    <div className="unsupported-nav-row__status">
+                      <small>{active ? "selected" : selected ? "added" : "not added"}</small>
+                      <span className="static-chip">unsupported</span>
+                    </div>
+                  </button>
+                );
+              })}
+            </motion.div>
+          ) : null}
+        </AnimatePresence>
       </div>
-      <div className="subject-sidebar__section">
-        <button className="primary-button primary-button--wide subject-sidebar__upload" onClick={onUpload} title="Upload paper">
+
+      <div className="subject-sidebar__section subject-sidebar__section--bottom">
+        <button className="primary-button primary-button--wide subject-sidebar__upload" onClick={onUpload} title={uploadEnabled ? "Upload paper" : "Upload support is not available for this subject yet"} disabled={!uploadEnabled}>
           <UploadCloud size={16} /> {!collapsed ? "Upload paper" : null}
         </button>
-      </div>
-      <div className="subject-sidebar__section subject-sidebar__utility">
-        <button className="subject-nav-item subject-nav-item--utility" onClick={onSettings} title="Settings">
-          <Settings2 size={18} /> {!collapsed ? <span>Settings</span> : null}
-        </button>
-        <button className="subject-nav-item subject-nav-item--utility" onClick={onVersion} title={`${appMeta.version} ${currentVersionEntry.title}`}>
-          <Sparkles size={18} /> {!collapsed ? <span>{appMeta.version} {currentVersionEntry.title} -&gt;</span> : null}
-        </button>
-        <button className="subject-nav-item subject-nav-item--utility" onClick={onCredits} title="Credits">
-          <Info size={18} /> {!collapsed ? <span>Credits</span> : null}
-        </button>
+        <div className="subject-sidebar__utility">
+          <button className="subject-nav-item subject-nav-item--utility" onClick={onSettings} title="Settings">
+            <Settings2 size={18} /> {!collapsed ? <span>Settings</span> : null}
+          </button>
+          <button className="subject-nav-item subject-nav-item--utility" onClick={onVersion} title={`${appMeta.version} ${currentVersionEntry.title}`}>
+            <Sparkles size={18} /> {!collapsed ? <span>{appMeta.version} {currentVersionEntry.title} -&gt;</span> : null}
+          </button>
+          <button className="subject-nav-item subject-nav-item--utility" onClick={onCredits} title="Credits">
+            <Info size={18} /> {!collapsed ? <span>Credits</span> : null}
+          </button>
+        </div>
       </div>
     </aside>
   );
@@ -2165,7 +2346,7 @@ function SettingsModal({
 }: {
   open: boolean;
   preferences: AppPreferences;
-  selectedSubjects: SupportedSubject[];
+  selectedSubjects: SelectableSubject[];
   data: AppData;
   aiModel: string;
   setAIModel: (value: string) => void;
@@ -2208,12 +2389,19 @@ function SettingsModal({
                 <div className="subject-chip-grid subject-chip-grid--settings">
                   {selectedSubjects.map((subject) => {
                     const meta = subjectMetaForLabel(subject);
-                    return (
-                      <a className="subject-preview-chip" key={subject} href={meta?.specUrl} target="_blank" rel="noreferrer" style={{ "--subject-accent": meta?.accent ?? "var(--accent)" } as React.CSSProperties}>
-                        {meta ? <meta.Icon size={16} /> : <FileText size={16} />}
-                        {meta?.shortLabel ?? subject}
+                    if (!meta) return null;
+                    return meta.supported ? (
+                      <a className="subject-preview-chip" key={subject} href={meta.specUrl} target="_blank" rel="noreferrer" style={{ "--subject-accent": meta.accent } as React.CSSProperties}>
+                        <meta.Icon size={16} />
+                        {meta.shortLabel}
                         <ExternalLink size={13} />
                       </a>
+                    ) : (
+                      <span className="subject-preview-chip" key={subject} style={{ "--subject-accent": meta.accent } as React.CSSProperties}>
+                        <meta.Icon size={16} />
+                        {meta.shortLabel}
+                        <small>Not supported yet</small>
+                      </span>
                     );
                   })}
                 </div>
@@ -2653,19 +2841,17 @@ export function App() {
   const [versionHistoryOpen, setVersionHistoryOpen] = useState(false);
   const [creditsOpen, setCreditsOpen] = useState(false);
   const [preferences, setPreferences] = useState<AppPreferences>(() => loadPreferences());
-  const [selectedSubjects, setSelectedSubjects] = useState<SupportedSubject[]>(() => loadSelectedSubjects(data));
-  const [appEntered, setAppEntered] = useState(() => readBooleanStorage(APP_ENTERED_STORAGE_KEY, data.papers.length > 0));
+  const [selectedSubjects, setSelectedSubjects] = useState<SelectableSubject[]>(() => loadSelectedSubjects(data));
+  const [currentView, setCurrentView] = useState<AppView>("landing");
   const [onboardingComplete, setOnboardingComplete] = useState(() => readBooleanStorage(ONBOARDING_COMPLETE_STORAGE_KEY, data.papers.length > 0));
-  const [activeSubject, setActiveSubject] = useState<SupportedSubject>(() => loadActiveSubject(loadSelectedSubjects(data)));
+  const [activeSubject, setActiveSubject] = useState<SelectableSubject | null>(() => loadActiveSubject(loadSelectedSubjects(data)));
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => readBooleanStorage(SIDEBAR_COLLAPSED_STORAGE_KEY, defaultPreferences.sidebarDefault === "collapsed"));
   const [postOnboardingAction, setPostOnboardingAction] = useState<"upload" | null>(null);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
-  const landingApplied = useRef(false);
 
   useEffect(() => saveData(data), [data]);
   useEffect(() => savePreferences(preferences), [preferences]);
   useEffect(() => saveSelectedSubjects(selectedSubjects), [selectedSubjects]);
-  useEffect(() => writeBooleanStorage(APP_ENTERED_STORAGE_KEY, appEntered), [appEntered]);
   useEffect(() => writeBooleanStorage(ONBOARDING_COMPLETE_STORAGE_KEY, onboardingComplete), [onboardingComplete]);
   useEffect(() => writeBooleanStorage(SIDEBAR_COLLAPSED_STORAGE_KEY, sidebarCollapsed), [sidebarCollapsed]);
   useEffect(() => saveActiveSubject(activeSubject), [activeSubject]);
@@ -2701,29 +2887,46 @@ export function App() {
   }
 
   function enterApp(nextAction: "upload" | null = null) {
-    setAppEntered(true);
-    if (nextAction && !selectedSubjects.length) setPostOnboardingAction(nextAction);
-    if (nextAction === "upload" && selectedSubjects.length) setUploadOpen(true);
+    const supportedSelections = normalizeSelectedSubjects(selectedSubjects).filter(isSupportedSubject);
+    if (!selectedSubjects.length) {
+      setPostOnboardingAction(nextAction);
+      setCurrentView("onboarding");
+      return;
+    }
+    setCurrentView("app");
+    if (nextAction === "upload" && supportedSelections.length) {
+      setActiveSubject((current) => (current && isSupportedSubject(current) ? current : supportedSelections[0] ?? null));
+      setUploadOpen(true);
+    } else if (nextAction === "upload") {
+      setStatus("Upload support is only available for AQA Biology, Chemistry, Physics, and OCR Computer Science.");
+    }
   }
 
-  function saveOnboardingSubjects(subjects: SupportedSubject[]) {
-    const uniqueSubjects = [...new Set(subjects)].filter(isSupportedSubject);
+  function saveOnboardingSubjects(subjects: SelectableSubject[]) {
+    const uniqueSubjects = normalizeSelectedSubjects(subjects);
+    const firstSupported = uniqueSubjects.find(isSupportedSubject) ?? null;
     setSelectedSubjects(uniqueSubjects);
     setOnboardingComplete(true);
-    setActiveSubject(uniqueSubjects[0] ?? supportedSubjects[0]);
+    setActiveSubject(firstSupported ?? uniqueSubjects[0] ?? null);
     setStatus("Subjects saved.");
+    setCurrentView("app");
     if (postOnboardingAction === "upload") {
-      setUploadOpen(true);
+      if (firstSupported) {
+        setUploadOpen(true);
+      } else {
+        setStatus("Upload support is only available for AQA Biology, Chemistry, Physics, and OCR Computer Science.");
+      }
       setPostOnboardingAction(null);
     }
   }
 
   function openSubjectOnboarding() {
     setSettingsOpen(false);
-    setOnboardingComplete(false);
+    setCurrentView("onboarding");
   }
 
-  function openSubjectUpload(subject: SupportedSubject = activeSubject) {
+  function openSubjectUpload(subject: SupportedSubject) {
+    setCurrentView("app");
     setActiveSubject(subject);
     setUploadOpen(true);
   }
@@ -2745,8 +2948,8 @@ export function App() {
   }, [data.papers, selectedPaperId]);
 
   useEffect(() => {
-    if (selectedSubjects.length && selectedSubjects.includes(activeSubject)) return;
-    setActiveSubject(selectedSubjects[0] ?? supportedSubjects[0]);
+    if (activeSubject && selectedSubjects.includes(activeSubject)) return;
+    setActiveSubject(loadActiveSubject(selectedSubjects));
   }, [activeSubject, selectedSubjects]);
 
   useEffect(() => {
@@ -2781,14 +2984,6 @@ export function App() {
     }
     setReviewIndex((value) => Math.min(value, selectedPaper.questions.length - 1));
   }, [selectedPaper?.id, selectedPaper?.questions.length, selectedAttemptId]);
-
-  useEffect(() => {
-    if (landingApplied.current || selectedPaperId || !data.papers.length) return;
-    landingApplied.current = true;
-    if (preferences.defaultLanding === "last_paper") {
-      setSelectedPaperId(data.papers[0]?.id ?? null);
-    }
-  }, [data.papers, preferences.defaultLanding, selectedPaperId]);
 
   useEffect(() => {
     setQuestionsExpanded(false);
@@ -2967,6 +3162,10 @@ export function App() {
   }
 
   async function runProcessing(paper: PastPaper) {
+    if (!isSupportedSubject(paper.subject)) {
+      setError("Processing is only available for AQA Biology, Chemistry, Physics, and OCR Computer Science.");
+      return;
+    }
     try {
       await ensureAIReadyForUserAction();
     } catch (reason) {
@@ -3062,6 +3261,9 @@ export function App() {
     setBusy(true);
     setError(null);
     try {
+      if (!isSupportedSubject(draft.subject)) {
+        throw new Error("Upload support is only available for AQA Biology, Chemistry, Physics, and OCR Computer Science.");
+      }
       const paperId = createId("paper");
       const paperAsset = await createAsset(paperFile, paperId, "paper");
       const markSchemeAsset = markSchemeFile ? await createAsset(markSchemeFile, paperId, "mark_scheme") : null;
@@ -3088,12 +3290,11 @@ export function App() {
         updatedAt: createdAt,
       };
       setData((current) => ({ ...current, papers: [paper, ...current.papers] }));
-      const uploadedSubject = paper.subject;
-      if (isSupportedSubject(uploadedSubject)) {
-        setSelectedSubjects((current) => (current.includes(uploadedSubject) ? current : [...current, uploadedSubject]));
-        setOnboardingComplete(true);
-        setActiveSubject(uploadedSubject);
-      }
+      const uploadedSubject = paper.subject as SupportedSubject;
+      setSelectedSubjects((current) => (current.includes(uploadedSubject) ? current : [...current, uploadedSubject]));
+      setOnboardingComplete(true);
+      setActiveSubject(uploadedSubject);
+      setCurrentView("app");
       setSelectedPaperId(paper.id);
       setUploadOpen(false);
       setStatus(processNow ? "Paper saved and queued for processing." : "Paper saved.");
@@ -3175,6 +3376,10 @@ export function App() {
   }
 
   function beginAttempt(paper: PastPaper) {
+    if (!isSupportedSubject(paper.subject)) {
+      setError("This subject is not supported for practice yet.");
+      return;
+    }
     if (paper.processingStatus !== "ready" || !paper.questions.length) {
       setError("Process the paper before starting an attempt.");
       return;
@@ -3535,9 +3740,12 @@ export function App() {
   const answeredDuringAttempt = selectedAttempt?.answers.filter(isAnswerAttempted).length ?? 0;
   const skippedDuringAttempt = selectedAttempt?.answers.filter((answer) => answer.skipped).length ?? 0;
   const focusProgressPercent = selectedPaper?.questions.length ? Math.round(((activeQuestionIndex + 1) / selectedPaper.questions.length) * 100) : 0;
-  const needsOnboarding = appEntered && (!onboardingComplete || !selectedSubjects.length) && appMode !== "taking" && appMode !== "processing" && appMode !== "marking" && appMode !== "review";
-  const showLanding = !appEntered && appMode !== "taking" && appMode !== "processing" && appMode !== "marking" && appMode !== "review";
-  const activeSubjectPapers = data.papers.filter((paper) => paper.subject === activeSubject);
+  const unsupportedSelectedSubjects = selectedSubjects.filter((subject) => !isSupportedSubject(subject));
+  const supportedActiveSubject = activeSubject && isSupportedSubject(activeSubject) ? activeSubject : null;
+  const canShowProductShell = appMode !== "taking" && appMode !== "processing" && appMode !== "marking" && appMode !== "review";
+  const needsOnboarding = currentView === "onboarding" && canShowProductShell;
+  const showLanding = currentView === "landing" && canShowProductShell;
+  const activeSubjectPapers = activeSubject ? data.papers.filter((paper) => paper.subject === activeSubject) : [];
   const showLegacyDashboard = false;
 
   function feedbackContextPath() {
@@ -3551,10 +3759,14 @@ export function App() {
     if (!window.confirm("Clear all papers and attempts stored on this device?")) return;
     clearData();
     setData({ papers: [], attempts: [] });
+    setSelectedSubjects([]);
+    setActiveSubject(null);
+    setOnboardingComplete(false);
     setSelectedPaperId(null);
     setSelectedAttemptId(null);
     setSystemInfoOpen(false);
     setSettingsOpen(false);
+    setCurrentView("landing");
     setStatus("Local data cleared.");
   }
 
@@ -3580,11 +3792,9 @@ export function App() {
         if (!Array.isArray(imported.papers) || !Array.isArray(imported.attempts)) throw new Error("Invalid backup file.");
         setData({ papers: imported.papers, attempts: imported.attempts });
         const importedSubjects = loadSelectedSubjects({ papers: imported.papers, attempts: imported.attempts });
-        if (importedSubjects.length) {
-          setSelectedSubjects(importedSubjects);
-          setActiveSubject(importedSubjects[0]);
-          setOnboardingComplete(true);
-        }
+        setSelectedSubjects(importedSubjects);
+        setActiveSubject(loadActiveSubject(importedSubjects));
+        setOnboardingComplete(importedSubjects.length > 0);
         setStatus("Backup imported.");
       } catch (reason) {
         setError(reason instanceof Error ? reason.message : "Backup could not be imported.");
@@ -3652,7 +3862,7 @@ export function App() {
   if (needsOnboarding) {
     return (
       <div className={`product-root app-shell--theme-${preferences.themeMode} app-shell--accent-${preferences.accentColour}${preferences.reduceMotion === "reduce" ? " app-shell--reduce-motion" : ""}`} style={rootStyle}>
-        <SubjectOnboarding selectedSubjects={selectedSubjects} onSave={saveOnboardingSubjects} />
+        <SubjectOnboardingV131 selectedSubjects={selectedSubjects} onSave={saveOnboardingSubjects} />
         <FeedbackModal
           open={feedbackOpen}
           draft={feedbackDraft}
@@ -3676,18 +3886,33 @@ export function App() {
   return (
     <div className={rootClassName} style={rootStyle}>
       {appMode !== "taking" && appMode !== "processing" && appMode !== "marking" && appMode !== "review" ? (
-        <SubjectSidebar
+        <SubjectSidebarV131
           collapsed={sidebarCollapsed}
           selectedSubjects={selectedSubjects}
           activeSubject={activeSubject}
           onToggleCollapsed={() => setSidebarCollapsed((value) => !value)}
           onSelectSubject={(subject) => {
+            setCurrentView("app");
             setActiveSubject(subject);
             setSelectedPaperId(null);
             setSelectedAttemptId(null);
           }}
+          onToggleUnsupportedSubject={(subject) => {
+            setCurrentView("app");
+            setSelectedSubjects((current) => (current.includes(subject) ? current : [...current, subject]));
+            setActiveSubject(subject);
+            setSelectedPaperId(null);
+            setSelectedAttemptId(null);
+          }}
+          onHome={() => setCurrentView("landing")}
           onAddSubject={openSubjectOnboarding}
-          onUpload={() => openSubjectUpload(activeSubject)}
+          onUpload={() => {
+            if (!supportedActiveSubject) {
+              setError("Upload support is only available for AQA Biology, Chemistry, Physics, and OCR Computer Science.");
+              return;
+            }
+            openSubjectUpload(supportedActiveSubject);
+          }}
           onSettings={() => setSettingsOpen(true)}
           onVersion={() => setVersionHistoryOpen(true)}
           onCredits={() => setCreditsOpen(true)}
@@ -3734,19 +3959,41 @@ export function App() {
         <InlineStatus pending={busy} error={error} success={status} />
 
         {appMode === "catalogue" || appMode === "empty" ? (
-          <SubjectDashboard
-            activeSubject={activeSubject}
-            papers={activeSubjectPapers}
-            attempts={data.attempts}
-            onUpload={() => openSubjectUpload(activeSubject)}
-            onOpenPaper={(paper) => {
-              setSelectedPaperId(paper.id);
-              setSelectedAttemptId(null);
-            }}
-            onStartPaper={beginAttempt}
-            onProcessPaper={(paper) => void runProcessing(paper)}
-            onDeletePaper={(paper) => deletePaper(paper.id)}
-          />
+          <AnimatePresence mode="wait">
+            {supportedActiveSubject ? (
+              <motion.div
+                key={supportedActiveSubject}
+                initial={preferences.reduceMotion === "reduce" ? undefined : { opacity: 0, y: 12 }}
+                animate={preferences.reduceMotion === "reduce" ? undefined : { opacity: 1, y: 0 }}
+                exit={preferences.reduceMotion === "reduce" ? undefined : { opacity: 0, y: -10 }}
+                transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
+              >
+                <SubjectDashboard
+                  activeSubject={supportedActiveSubject}
+                  papers={activeSubjectPapers}
+                  attempts={data.attempts}
+                  onUpload={() => openSubjectUpload(supportedActiveSubject)}
+                  onOpenPaper={(paper) => {
+                    setSelectedPaperId(paper.id);
+                    setSelectedAttemptId(null);
+                  }}
+                  onStartPaper={beginAttempt}
+                  onProcessPaper={(paper) => void runProcessing(paper)}
+                  onDeletePaper={(paper) => deletePaper(paper.id)}
+                />
+              </motion.div>
+            ) : (
+              <motion.div
+                key={activeSubject ?? unsupportedSelectedSubjects.join(",") ?? "unsupported"}
+                initial={preferences.reduceMotion === "reduce" ? undefined : { opacity: 0, y: 12 }}
+                animate={preferences.reduceMotion === "reduce" ? undefined : { opacity: 1, y: 0 }}
+                exit={preferences.reduceMotion === "reduce" ? undefined : { opacity: 0, y: -10 }}
+                transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
+              >
+                <UnsupportedSubjectDashboard activeSubject={activeSubject} papers={data.papers} onEditSubjects={openSubjectOnboarding} />
+              </motion.div>
+            )}
+          </AnimatePresence>
         ) : null}
 
         {showLegacyDashboard && appMode === "catalogue" ? (
@@ -3889,9 +4136,9 @@ export function App() {
                   </div>
                 </button>
                 <div className="paper-card__metrics">
-                  <span>{paper.questions.length} questions</span>
-                  <span>{paper.totalMarks ?? "?"} marks</span>
-                  <span>{paper.durationMinutes ? `${paper.durationMinutes} min` : "No timer"}</span>
+                  <span>{paperHasResolvedMetadata(paper) ? `${paper.questions.length} questions` : "Metadata pending"}</span>
+                  <span>{paperHasResolvedMetadata(paper) ? `${paper.totalMarks ?? "-"} marks` : "Ready to process"}</span>
+                  <span>{paperHasResolvedMetadata(paper) ? (paper.durationMinutes ? `${paper.durationMinutes} min` : "-") : "Questions, marks and timing pending"}</span>
                   <span>{attempts.length} attempts</span>
                   <span>{paper.hasMarkScheme ? "Mark scheme" : "No mark scheme"}</span>
                   <span>Best {paperBestScoreLabel(data, paper)}</span>
@@ -3958,7 +4205,11 @@ export function App() {
           <div className={appMode === "taking" ? "workspace-grid workspace-grid--taking" : appMode === "review" ? "workspace-grid workspace-grid--review" : "workspace-grid workspace-grid--split"}>
             <SectionFrame
               title={selectedPaper.title}
-              subtitle={`${selectedPaper.processingStatus} / ${selectedPaper.totalMarks ?? "?"} marks / ${selectedPaper.durationMinutes ?? "no timer"} min`}
+              subtitle={
+                paperHasResolvedMetadata(selectedPaper)
+                  ? `${displayMeta(selectedPaper)} / ${selectedPaper.totalMarks ?? "-"} marks / ${selectedPaper.durationMinutes ? `${selectedPaper.durationMinutes} min` : "-"}`
+                  : `${displayMeta(selectedPaper)} / Metadata pending / ${statusLabel(selectedPaper.processingStatus)}`
+              }
               actions={
                 <>
                   <button
@@ -3987,6 +4238,23 @@ export function App() {
             >
               {selectedPaper.processingStatus === "processing" || selectedPaper.processingStatus === "failed" ? <ProcessingPanel paper={selectedPaper} job={latestJob(selectedPaper, "processing")} /> : null}
 
+              {!paperHasResolvedMetadata(selectedPaper) ? (
+                <div className="unsupported-dashboard-panel">
+                  <div className="unsupported-dashboard-panel__grid">
+                    <div className="feature-card">
+                      <span className="eyebrow">Metadata pending</span>
+                      <strong>Ready to process</strong>
+                      <p>Process the paper to extract questions, marks and timing before starting an attempt.</p>
+                    </div>
+                    <div className="feature-card">
+                      <span className="eyebrow">Status</span>
+                      <strong>{selectedPaper.hasMarkScheme ? "Question paper and mark scheme attached" : "Question paper attached"}</strong>
+                      <p>{selectedPaper.hasMarkScheme ? "Marking will be available after extraction completes." : "Attach a mark scheme to unlock AI marking after extraction."}</p>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
               {preferences.showPaperSummary ? (
               <div className="paper-summary-grid">
                 <div className="paper-summary-tile">
@@ -3995,7 +4263,7 @@ export function App() {
                 </div>
                 <div className="paper-summary-tile">
                   <span>Total marks</span>
-                  <strong>{selectedPaper.totalMarks ?? "?"}</strong>
+                  <strong>{selectedPaper.totalMarks ?? "-"}</strong>
                 </div>
                 <div className="paper-summary-tile">
                   <span>Duration</span>
@@ -4389,20 +4657,9 @@ export function App() {
 
             {appMode !== "taking" && appMode !== "marking" && appMode !== "review" ? (
             <SectionFrame
-              title="Review"
+              title="Attempts"
               subtitle={selectedAttempt && displayScores ? `${scoreSummary(displayScores.actualScore, preferredAttemptTotal(selectedPaper, selectedAttempt))} actual / ${scoreSummary(displayScores.confidenceAdjustedScore, preferredAttemptTotal(selectedPaper, selectedAttempt))} confidence-adjusted` : "Attempts and marking history appear here."}
-              actions={
-                selectedAttempt ? (
-                  <>
-                    <button className="secondary-button" onClick={() => setReviewIndex((value) => Math.max(0, value - 1))} disabled={reviewIndex === 0}>
-                      <ChevronLeft size={16} />
-                    </button>
-                    <button className="secondary-button" onClick={() => setReviewIndex((value) => Math.min(selectedPaper.questions.length - 1, value + 1))} disabled={reviewIndex >= selectedPaper.questions.length - 1}>
-                      <ChevronRight size={16} />
-                    </button>
-                  </>
-                ) : null
-              }
+              actions={null}
             >
               <div className="attempt-list">
                 {data.attempts
@@ -4432,94 +4689,6 @@ export function App() {
                   </button>
                 </div>
               ) : null}
-
-              {selectedAttempt && reviewQuestion && reviewAnswer ? (
-                <article className="paper-review-card">
-                  <div className="question-card__header">
-                    <strong>Question {displayQuestionLabel(selectedPaper, reviewQuestion)}</strong>
-                    <span>{marksLabel(reviewQuestion.maxMarks)}</span>
-                  </div>
-                  <p>{cleanVisiblePrompt(reviewQuestion.promptText)}</p>
-                  <QuestionSourceImages paper={selectedPaper} question={reviewQuestion} defaultCollapsed={preferences.sourceFigures === "collapse"} />
-                  <div className="paper-answer-box">
-                    <span className="eyebrow">Your answer</span>
-                    <p>{answerText(reviewAnswer, reviewQuestion)}</p>
-                  </div>
-                  <div className="paper-mark-box">
-                    <div>
-                      <span className="eyebrow">Marks</span>
-                      <strong style={reviewMark ? scoreStyle(reviewMark, reviewQuestion.maxMarks) : predictedScoreStyle(reviewAnswer, reviewQuestion.maxMarks)}>
-                        {reviewSupportIssue
-                          ? "Deducted"
-                          : reviewMark && isMarkingErrorMark(reviewMark)
-                          ? "Error"
-                          : reviewMark
-                          ? `${reviewMark.awardedMarks}/${reviewQuestion.maxMarks}`
-                          : reviewAnswer.skippedWithConfidence
-                            ? `${reviewAnswer.confidencePredictedMarks ?? 0}/${reviewQuestion.maxMarks} predicted`
-                            : "Unmarked"}
-                      </strong>
-                    </div>
-                      <p>
-                      {reviewSupportIssue
-                        ? `Unsupported question format. ${marksLabel(reviewQuestion.maxMarks)} deducted from the attempt total.`
-                        : reviewMark && isMarkingErrorMark(reviewMark)
-                          ? reviewMark.rationale
-                        : reviewMark?.rationale ??
-                          (reviewAnswer.skippedWithConfidence
-                          ? "Skipped with confidence. This predicted score is included in the confidence-adjusted total, not the actual mark."
-                          : selectedPaper.hasMarkScheme
-                            ? "Not marked yet."
-                            : "No mark scheme attached, so marks are not fabricated.")}
-                    </p>
-                    {reviewMark?.missingPoints.length ? (
-                      <div className="chip-wrap">
-                        {reviewMark.missingPoints.map((point) => (
-                          <span className="static-chip" key={point}>
-                            {point}
-                          </span>
-                        ))}
-                      </div>
-                    ) : null}
-                    {reviewMark?.markSchemeEvidence ? <p className="muted-copy">{reviewMark.markSchemeEvidence}</p> : null}
-                  </div>
-                  <div className="button-row">
-                    <button className="secondary-button" onClick={() => void requestRemark(reviewAnswer)} disabled={!reviewMark || busy}>
-                      <RotateCcw size={16} /> Remark
-                    </button>
-                    {reviewQuestion.markSchemeData ? (
-                      <button className="secondary-button" onClick={() => setMarkSchemeDetailsOpen((value) => !value)}>
-                        <ListChecks size={16} /> {markSchemeDetailsOpen ? "Hide mark scheme row" : "Show mark scheme row"}
-                      </button>
-                    ) : null}
-                  </div>
-                  {markSchemeDetailsOpen ? <MarkSchemeDataPanel question={reviewQuestion} onCopy={() => void copyMarkSchemeRow(reviewQuestion)} /> : null}
-                  {selectedAttempt.remarks.filter((remark) => remark.questionId === reviewQuestion.id).length ? (
-                    <div className="paper-history-list">
-                      {selectedAttempt.remarks
-                        .filter((remark) => remark.questionId === reviewQuestion.id)
-                        .map((remark) => {
-                          const proposed = selectedAttempt.marks.find((mark) => mark.id === remark.proposedMarkId);
-                          return (
-                            <div className="remark-card" key={remark.id}>
-                              <div>
-                                <strong>Remark {statusLabel(remark.status)}</strong>
-                                <p>{proposed ? `Proposed ${proposed.awardedMarks}/${reviewQuestion.maxMarks}` : remark.notes ?? "Pending"}</p>
-                              </div>
-                              {proposed && !remark.acceptedAt ? (
-                                <button className="chip-button" onClick={() => acceptRemark(remark.id)}>
-                                  Accept
-                                </button>
-                              ) : null}
-                            </div>
-                          );
-                        })}
-                    </div>
-                  ) : null}
-                </article>
-              ) : (
-                <p className="muted-copy">Select or start an attempt to review answers.</p>
-              )}
             </SectionFrame>
             ) : null}
           </div>
@@ -4532,7 +4701,7 @@ export function App() {
         </aside>
       ) : null}
 
-      <UploadModal open={uploadOpen} pending={busy} initialSubject={activeSubject} onClose={() => setUploadOpen(false)} onSubmit={handleUpload} />
+      <UploadModal open={uploadOpen} pending={busy} initialSubject={activeSubject ?? undefined} onClose={() => setUploadOpen(false)} onSubmit={handleUpload} />
       <MetadataModal open={editingMetadata && Boolean(selectedPaper)} draft={metadataDraft} onChange={setMetadataDraft} onClose={() => setEditingMetadata(false)} onSave={saveMetadata} />
       <FeedbackModal
         open={feedbackOpen}

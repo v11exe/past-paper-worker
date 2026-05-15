@@ -7,6 +7,19 @@ export type VersionHistoryEntry = {
 
 export const versionHistory: VersionHistoryEntry[] = [
   {
+    version: "v1.3.1",
+    title: "Polish and marking fixes",
+    date: "2026-05-15",
+    changes: [
+      "Tightened supported-subject handling.",
+      "Improved sidebar spacing and subject grouping.",
+      "Smoothed landing-page and dashboard animations.",
+      "Fixed multiple-choice answer handling.",
+      "Moved remaining old review/marking screens into the v1.3 layout.",
+      "Improved unsupported-question detection.",
+    ],
+  },
+  {
     version: "v1.3",
     title: "Product redesign",
     date: "2026-05-15",

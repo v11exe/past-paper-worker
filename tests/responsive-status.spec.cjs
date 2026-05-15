@@ -1,11 +1,10 @@
 const { expect, test } = require("@playwright/test");
 
 const UI_KEYS = {
-  selectedSubjects: "past-paper-worker:selected-subjects:v1.3",
-  onboardingComplete: "past-paper-worker:onboarding-completed:v1.3",
-  appEntered: "past-paper-worker:app-entered:v1.3",
-  activeSubject: "past-paper-worker:active-subject:v1.3",
-  sidebarCollapsed: "past-paper-worker:sidebar-collapsed:v1.3",
+  selectedSubjects: "past-paper-worker:selected-subjects:v1.3.1",
+  onboardingComplete: "past-paper-worker:onboarding-completed:v1.3.1",
+  activeSubject: "past-paper-worker:active-subject:v1.3.1",
+  sidebarCollapsed: "past-paper-worker:sidebar-collapsed:v1.3.1",
   preferences: "past-paper-worker:preferences:v1",
   data: "past-paper-worker:data:v1",
 };
@@ -32,7 +31,6 @@ function installSmokeMock(page) {
 function seedDashboard(page, { withPaper = false, collapsed = false } = {}) {
   return page.addInitScript(({ UI_KEYS, withPaper, collapsed }) => {
     window.localStorage.clear();
-    window.localStorage.setItem(UI_KEYS.appEntered, "true");
     window.localStorage.setItem(UI_KEYS.onboardingComplete, "true");
     window.localStorage.setItem(UI_KEYS.selectedSubjects, JSON.stringify(["AQA GCSE Biology", "OCR GCSE Computer Science J277"]));
     window.localStorage.setItem(UI_KEYS.activeSubject, withPaper ? "OCR GCSE Computer Science J277" : "AQA GCSE Biology");
@@ -105,6 +103,7 @@ test("desktop hides Dev mode by default and reveals diagnostics from settings", 
   await seedDashboard(page);
   await page.setViewportSize({ width: 1440, height: 1100 });
   await page.goto("/");
+  await page.getByRole("button", { name: /enter app/i }).click();
 
   await expect(page.locator(".shell-inspector")).toHaveCount(0);
   await page.getByRole("button", { name: "Settings" }).click();
@@ -122,6 +121,7 @@ test("collapsed sidebar remains usable on tablet width", async ({ page }) => {
   await seedDashboard(page, { collapsed: true });
   await page.setViewportSize({ width: 768, height: 1024 });
   await page.goto("/");
+  await page.getByRole("button", { name: /enter app/i }).click();
 
   await expect(page.getByRole("heading", { name: "Biology" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Expand sidebar" })).toBeVisible();
@@ -136,6 +136,7 @@ test("status and feedback controls stay out of the active exam flow", async ({ p
   await seedDashboard(page, { withPaper: true });
   await page.setViewportSize({ width: 820, height: 1180 });
   await page.goto("/");
+  await page.getByRole("button", { name: /enter app/i }).click();
 
   await page.getByText("Responsive paper").click();
   await page.getByRole("button", { name: /Start paper/ }).last().click();

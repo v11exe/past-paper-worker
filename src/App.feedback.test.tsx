@@ -62,17 +62,23 @@ function seedData(data: AppData) {
 function clearUiStorage() {
   [
     "past-paper-worker:feedback-draft:v1",
-    "past-paper-worker:selected-subjects:v1.3",
-    "past-paper-worker:onboarding-completed:v1.3",
-    "past-paper-worker:app-entered:v1.3",
-    "past-paper-worker:active-subject:v1.3",
-    "past-paper-worker:sidebar-collapsed:v1.3",
+    "past-paper-worker:selected-subjects:v1.3.1",
+    "past-paper-worker:onboarding-completed:v1.3.1",
+    "past-paper-worker:active-subject:v1.3.1",
+    "past-paper-worker:sidebar-collapsed:v1.3.1",
   ].forEach((key) => window.localStorage.removeItem(key));
 }
 
 async function enterDashboard(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole("button", { name: /start practising/i }));
-  await user.click(await screen.findByRole("button", { name: /save subjects/i }));
+  await waitFor(() => {
+    expect(screen.queryByRole("button", { name: /save subjects/i }) || screen.queryByRole("heading", { name: "Computer Science" })).toBeTruthy();
+  });
+  const saveButton = screen.queryByRole("button", { name: /save subjects/i });
+  if (saveButton) {
+    await user.click(await screen.findByRole("button", { name: /computer science/i }));
+    await user.click(saveButton);
+  }
 }
 
 describe("feedback flow", () => {
@@ -270,6 +276,7 @@ describe("feedback flow", () => {
     seedData({ papers: [buildReadyPaper()], attempts: [] });
 
     render(<App />);
+    await enterDashboard(user);
 
     const openPaperButton = screen.getAllByText("Test paper")[0].closest("button");
     expect(openPaperButton).not.toBeNull();
@@ -288,6 +295,7 @@ describe("feedback flow", () => {
     seedData({ papers: [buildReadyPaper()], attempts: [] });
 
     render(<App />);
+    await enterDashboard(user);
 
     expect(screen.queryByRole("button", { name: /smoke test/i })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /settings/i }));

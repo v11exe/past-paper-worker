@@ -81,7 +81,7 @@ function hasPositiveMarkingSignal(value: string) {
 
 function hasNegativeMarkingSignal(value: string) {
   const text = value.toLowerCase();
-  return /\b(incorrect|wrong|does not follow|doesn't follow|final answer is incorrect|not correct|cannot be awarded|no marks?|fails to|did not provide|does not provide|insufficient|nothing relevant|no relevant|no matching)\b/.test(text);
+  return /\b(incorrect|wrong|does not follow|doesn't follow|final answer is incorrect|not correct|cannot be awarded|no marks?|no credit|fails to|did not provide|does not provide|insufficient|nothing relevant|no relevant|no matching|does not match|doesn't match|does not correspond|not one of|outside acceptable range)\b/.test(text);
 }
 
 function isRealMissingPoint(value: string) {

@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -9,17 +9,23 @@ import type { AppData, PastPaper, PastPaperQuestion } from "./types";
 function clearUiStorage() {
   [
     "past-paper-worker:feedback-draft:v1",
-    "past-paper-worker:selected-subjects:v1.3",
-    "past-paper-worker:onboarding-completed:v1.3",
-    "past-paper-worker:app-entered:v1.3",
-    "past-paper-worker:active-subject:v1.3",
-    "past-paper-worker:sidebar-collapsed:v1.3",
+    "past-paper-worker:selected-subjects:v1.3.1",
+    "past-paper-worker:onboarding-completed:v1.3.1",
+    "past-paper-worker:active-subject:v1.3.1",
+    "past-paper-worker:sidebar-collapsed:v1.3.1",
   ].forEach((key) => window.localStorage.removeItem(key));
 }
 
 async function enterDashboard(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole("button", { name: /start practising/i }));
-  await user.click(await screen.findByRole("button", { name: /save subjects/i }));
+  await waitFor(() => {
+    expect(screen.queryByRole("button", { name: /save subjects/i }) || screen.queryByRole("heading", { name: "Biology" })).toBeTruthy();
+  });
+  const saveButton = screen.queryByRole("button", { name: /save subjects/i });
+  if (saveButton) {
+    await user.click(await screen.findByRole("button", { name: /biology/i }));
+    await user.click(saveButton);
+  }
 }
 
 function question(patch: Partial<PastPaperQuestion>): PastPaperQuestion {
@@ -96,9 +102,20 @@ describe("v1.3 product shell", () => {
 
     await user.click(screen.getByRole("button", { name: /start practising/i }));
     expect(await screen.findByRole("heading", { name: /what subjects are you studying/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /save subjects/i })).toBeDisabled();
 
+    await user.click(screen.getByRole("button", { name: /biology/i }));
     await user.click(screen.getByRole("button", { name: /save subjects/i }));
     expect(await screen.findByRole("heading", { name: "Biology" })).toBeInTheDocument();
+  });
+
+  it("shows the landing page again on reload even when subjects are already saved", async () => {
+    window.localStorage.setItem("past-paper-worker:selected-subjects:v1.3.1", JSON.stringify(["AQA GCSE Biology"]));
+    window.localStorage.setItem("past-paper-worker:onboarding-completed:v1.3.1", "true");
+    render(<App />);
+
+    expect(screen.getByRole("heading", { name: /past papers, marked in minutes/i })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Biology" })).not.toBeInTheDocument();
   });
 
   it("collapses the sidebar, opens version history, and opens credits", async () => {
@@ -109,14 +126,30 @@ describe("v1.3 product shell", () => {
     await user.click(screen.getByRole("button", { name: /collapse sidebar/i }));
     expect(screen.queryByText("Chemistry")).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /v1.3 product redesign/i }));
+    await user.click(screen.getByRole("button", { name: /v1.3.1 polish and marking fixes/i }));
     expect(await screen.findByRole("heading", { name: "Version history" })).toBeInTheDocument();
-    expect(screen.getByText("Added the scrollable landing page.")).toBeInTheDocument();
+    expect(screen.getByText("Tightened supported-subject handling.")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Close version history" }));
 
     await user.click(screen.getByRole("button", { name: /credits/i }));
     expect(await screen.findByText("Developed by Rayaan Omair.")).toBeInTheDocument();
     expect(screen.getByText("Logo credit: Elliot Neilsen.")).toBeInTheDocument();
+  });
+
+  it("keeps unsupported subjects out of the main rail and shows them in the unsupported dropdown", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: /start practising/i }));
+    await user.click(await screen.findByRole("button", { name: /unsupported subjects/i }));
+    await user.click((await screen.findAllByRole("button", { name: /maths/i }))[0]);
+    await user.click(screen.getByRole("button", { name: /biology/i }));
+    await user.click(screen.getByRole("button", { name: /save subjects/i }));
+
+    expect(await screen.findByRole("heading", { name: "Biology" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Maths" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /unsupported subjects/i }));
+    expect(await screen.findByText("Maths")).toBeInTheDocument();
+    expect(screen.getByText("added")).toBeInTheDocument();
   });
 
   it("preselects the active subject in the upload modal", async () => {
@@ -146,6 +179,7 @@ describe("v1.3 product shell", () => {
     });
 
     render(<App />);
+    await enterDashboard(user);
     await user.click(screen.getByText("Question UI paper"));
     await user.click(await screen.findByRole("button", { name: /start paper/i }));
 
@@ -170,6 +204,7 @@ describe("v1.3 product shell", () => {
     });
 
     render(<App />);
+    await enterDashboard(user);
     await user.click(screen.getByText("Question UI paper"));
     await user.click(await screen.findByRole("button", { name: /start paper/i }));
 
@@ -193,6 +228,7 @@ describe("v1.3 product shell", () => {
     });
 
     render(<App />);
+    await enterDashboard(user);
     await user.click(screen.getByText("Question UI paper"));
     await user.click(await screen.findByRole("button", { name: /start paper/i }));
 

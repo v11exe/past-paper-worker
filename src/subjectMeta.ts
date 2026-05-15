@@ -2,32 +2,55 @@ import {
   Atom,
   Binary,
   BookOpenText,
+  BriefcaseBusiness,
   Calculator,
   Clapperboard,
   Cpu,
   FlaskConical,
   Globe2,
+  Landmark,
   PenLine,
+  Scale,
   Sigma,
+  Sparkles,
   type LucideIcon,
 } from "lucide-react";
 
-import { supportedSubjects, type SupportedSubject } from "./subjects";
+import {
+  supportedSubjects,
+  unsupportedSubjects,
+  type SelectableSubject,
+  type SupportedSubject,
+  type UnsupportedSubject,
+} from "./subjects";
 
-export type SubjectMeta = {
+type SubjectMetaBase = {
   id: string;
-  label: SupportedSubject;
+  label: SelectableSubject;
   shortLabel: string;
+  Icon: LucideIcon;
+  accent: string;
+  supported: boolean;
+};
+
+export type SupportedSubjectMeta = SubjectMetaBase & {
+  label: SupportedSubject;
   examBoard: "AQA" | "OCR" | "Pearson Edexcel";
   level: string;
   specCode?: string;
-  Icon: LucideIcon;
-  accent: string;
   specUrl: string;
   supported: true;
 };
 
-export const subjectMeta: Record<SupportedSubject, SubjectMeta> = {
+export type UnsupportedSubjectMeta = SubjectMetaBase & {
+  label: UnsupportedSubject;
+  supported: false;
+  statusNote: string;
+};
+
+export type SubjectMeta = SupportedSubjectMeta | UnsupportedSubjectMeta;
+
+export const subjectMeta: Record<SupportedSubject, SupportedSubjectMeta> = {
   "AQA GCSE Biology": {
     id: "aqa-gcse-biology",
     label: "AQA GCSE Biology",
@@ -64,41 +87,6 @@ export const subjectMeta: Record<SupportedSubject, SubjectMeta> = {
     specUrl: "https://www.aqa.org.uk/subjects/science/gcse/physics-8463/specification",
     supported: true,
   },
-  "Pearson Edexcel GCSE Mathematics": {
-    id: "pearson-edexcel-gcse-mathematics",
-    label: "Pearson Edexcel GCSE Mathematics",
-    shortLabel: "Maths",
-    examBoard: "Pearson Edexcel",
-    level: "GCSE",
-    specCode: "1MA1",
-    Icon: Calculator,
-    accent: "#fcd34d",
-    specUrl: "https://qualifications.pearson.com/en/qualifications/edexcel-gcses/mathematics-2015.html",
-    supported: true,
-  },
-  "Pearson Edexcel Level 2 Extended Mathematics Certificate": {
-    id: "pearson-edexcel-level-2-extended-mathematics-certificate",
-    label: "Pearson Edexcel Level 2 Extended Mathematics Certificate",
-    shortLabel: "Extended Maths",
-    examBoard: "Pearson Edexcel",
-    level: "Level 2",
-    Icon: Sigma,
-    accent: "#fde68a",
-    specUrl: "https://qualifications.pearson.com/",
-    supported: true,
-  },
-  "OCR GCSE Geography A": {
-    id: "ocr-gcse-geography-a",
-    label: "OCR GCSE Geography A",
-    shortLabel: "Geography",
-    examBoard: "OCR",
-    level: "GCSE A",
-    specCode: "J383",
-    Icon: Globe2,
-    accent: "#67e8f9",
-    specUrl: "https://www.ocr.org.uk/qualifications/gcse/geography-a-geographical-themes-j383-from-2016/",
-    supported: true,
-  },
   "OCR GCSE Computer Science J277": {
     id: "ocr-gcse-computer-science-j277",
     label: "OCR GCSE Computer Science J277",
@@ -111,62 +99,191 @@ export const subjectMeta: Record<SupportedSubject, SubjectMeta> = {
     specUrl: "https://www.ocr.org.uk/qualifications/gcse/computer-science-j277-from-2020/",
     supported: true,
   },
+};
+
+export const unsupportedSubjectMeta: Record<UnsupportedSubject, UnsupportedSubjectMeta> = {
+  "Pearson Edexcel GCSE Mathematics": {
+    id: "pearson-edexcel-gcse-mathematics",
+    label: "Pearson Edexcel GCSE Mathematics",
+    shortLabel: "Maths",
+    Icon: Calculator,
+    accent: "#f6c453",
+    supported: false,
+    statusNote: "Not supported yet",
+  },
+  "Pearson Edexcel Level 2 Extended Mathematics Certificate": {
+    id: "pearson-edexcel-level-2-extended-mathematics-certificate",
+    label: "Pearson Edexcel Level 2 Extended Mathematics Certificate",
+    shortLabel: "Extended Maths",
+    Icon: Sigma,
+    accent: "#fde68a",
+    supported: false,
+    statusNote: "Not supported yet",
+  },
+  "OCR GCSE Geography A": {
+    id: "ocr-gcse-geography-a",
+    label: "OCR GCSE Geography A",
+    shortLabel: "Geography",
+    Icon: Globe2,
+    accent: "#67e8f9",
+    supported: false,
+    statusNote: "Not supported yet",
+  },
   "OCR Cambridge Nationals Creative iMedia J834": {
     id: "ocr-cambridge-nationals-creative-imedia-j834",
     label: "OCR Cambridge Nationals Creative iMedia J834",
     shortLabel: "Creative iMedia",
-    examBoard: "OCR",
-    level: "Cambridge National",
-    specCode: "J834",
     Icon: Clapperboard,
     accent: "#f0abfc",
-    specUrl: "https://www.ocr.org.uk/qualifications/cambridge-nationals/creative-imedia-level-1-2-award-certificate-j834/",
-    supported: true,
+    supported: false,
+    statusNote: "Not supported yet",
   },
   "AQA GCSE English Literature": {
     id: "aqa-gcse-english-literature",
     label: "AQA GCSE English Literature",
     shortLabel: "English Literature",
-    examBoard: "AQA",
-    level: "GCSE",
-    specCode: "8702",
     Icon: BookOpenText,
     accent: "#fda4af",
-    specUrl: "https://www.aqa.org.uk/subjects/english/gcse/english-literature-8702/specification",
-    supported: true,
+    supported: false,
+    statusNote: "Not supported yet",
   },
   "AQA GCSE English Language": {
     id: "aqa-gcse-english-language",
     label: "AQA GCSE English Language",
     shortLabel: "English Language",
-    examBoard: "AQA",
-    level: "GCSE",
-    specCode: "8700",
     Icon: PenLine,
     accent: "#fb7185",
-    specUrl: "https://www.aqa.org.uk/subjects/english/gcse/english-language-8700/specification",
-    supported: true,
+    supported: false,
+    statusNote: "Not supported yet",
   },
+  History: {
+    id: "history",
+    label: "History",
+    shortLabel: "History",
+    Icon: Landmark,
+    accent: "#f59e42",
+    supported: false,
+    statusNote: "Not supported yet",
+  },
+  "Religious Studies": {
+    id: "religious-studies",
+    label: "Religious Studies",
+    shortLabel: "Religious Studies",
+    Icon: BookOpenText,
+    accent: "#fca5a5",
+    supported: false,
+    statusNote: "Not supported yet",
+  },
+  "Combined Science": {
+    id: "combined-science",
+    label: "Combined Science",
+    shortLabel: "Combined Science",
+    Icon: Sparkles,
+    accent: "#5eead4",
+    supported: false,
+    statusNote: "Not supported yet",
+  },
+  "Business Studies": {
+    id: "business-studies",
+    label: "Business Studies",
+    shortLabel: "Business Studies",
+    Icon: BriefcaseBusiness,
+    accent: "#94a3b8",
+    supported: false,
+    statusNote: "Not supported yet",
+  },
+  Psychology: {
+    id: "psychology",
+    label: "Psychology",
+    shortLabel: "Psychology",
+    Icon: Sparkles,
+    accent: "#c084fc",
+    supported: false,
+    statusNote: "Not supported yet",
+  },
+  Sociology: {
+    id: "sociology",
+    label: "Sociology",
+    shortLabel: "Sociology",
+    Icon: BookOpenText,
+    accent: "#fb7185",
+    supported: false,
+    statusNote: "Not supported yet",
+  },
+  "Film Studies": {
+    id: "film-studies",
+    label: "Film Studies",
+    shortLabel: "Film Studies",
+    Icon: Clapperboard,
+    accent: "#f472b6",
+    supported: false,
+    statusNote: "Not supported yet",
+  },
+  Economics: {
+    id: "economics",
+    label: "Economics",
+    shortLabel: "Economics",
+    Icon: BriefcaseBusiness,
+    accent: "#2dd4bf",
+    supported: false,
+    statusNote: "Not supported yet",
+  },
+  "Food and Nutrition": {
+    id: "food-and-nutrition",
+    label: "Food and Nutrition",
+    shortLabel: "Food and Nutrition",
+    Icon: Sparkles,
+    accent: "#fb923c",
+    supported: false,
+    statusNote: "Not supported yet",
+  },
+  "Citizenship Studies": {
+    id: "citizenship-studies",
+    label: "Citizenship Studies",
+    shortLabel: "Citizenship",
+    Icon: Scale,
+    accent: "#38bdf8",
+    supported: false,
+    statusNote: "Not supported yet",
+  },
+  "Design and Technology": {
+    id: "design-and-technology",
+    label: "Design and Technology",
+    shortLabel: "Design and Technology",
+    Icon: Sparkles,
+    accent: "#a3e635",
+    supported: false,
+    statusNote: "Not supported yet",
+  },
+  "Physical Education": {
+    id: "physical-education",
+    label: "Physical Education",
+    shortLabel: "Physical Education",
+    Icon: Sparkles,
+    accent: "#f97316",
+    supported: false,
+    statusNote: "Not supported yet",
+  },
+  "A-Level subjects": {
+    id: "a-level-subjects",
+    label: "A-Level subjects",
+    shortLabel: "A-Level subjects",
+    Icon: Sparkles,
+    accent: "#7dd3fc",
+    supported: false,
+    statusNote: "Not supported yet",
+  },
+};
+
+export const selectableSubjectMeta: Record<SelectableSubject, SubjectMeta> = {
+  ...subjectMeta,
+  ...unsupportedSubjectMeta,
 };
 
 export const subjectMetaList = supportedSubjects.map((subject) => subjectMeta[subject]);
 
-export const unsupportedSubjects = [
-  "History",
-  "Religious Studies",
-  "Combined Science",
-  "Business Studies",
-  "Psychology",
-  "Sociology",
-  "Film Studies",
-  "Economics",
-  "Food and Nutrition",
-  "Citizenship Studies",
-  "Design and Technology",
-  "Physical Education",
-  "A-Level subjects",
-];
+export { unsupportedSubjects };
 
 export function subjectMetaForLabel(subject: string): SubjectMeta | null {
-  return supportedSubjects.includes(subject as SupportedSubject) ? subjectMeta[subject as SupportedSubject] : null;
+  return subject in selectableSubjectMeta ? selectableSubjectMeta[subject as SelectableSubject] : null;
 }

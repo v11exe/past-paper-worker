@@ -47,3 +47,15 @@ class MockIntersectionObserver implements IntersectionObserver {
 if (!globalThis.IntersectionObserver) {
   globalThis.IntersectionObserver = MockIntersectionObserver;
 }
+
+Object.defineProperty(globalThis, "scrollTo", {
+  value: () => undefined,
+  writable: true,
+  configurable: true,
+});
+
+Object.defineProperty(window, "scrollTo", {
+  value: () => undefined,
+  writable: true,
+  configurable: true,
+});

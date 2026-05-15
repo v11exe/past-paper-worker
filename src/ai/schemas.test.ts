@@ -412,4 +412,19 @@ describe("normalizePaperMarkOutput", () => {
     expect(result.awardedMarks).toBe(0);
     expect(result.maxMarks).toBe(2);
   });
+
+  it("zeros contradictory marks when the rationale says the answer does not match the correct answer", () => {
+    const normalized = normalizePaperMarkOutput({
+      awardedMarks: 1,
+      maxMarks: 1,
+      rationale: "The student's answer does not match the correct answer. The correct answer is C.",
+      missingPoints: [],
+      markSchemeEvidence: "Correct answer is C.",
+      markSchemeReference: "01.6",
+    });
+
+    const result = paperMarkOutputSchema.parse(normalized);
+
+    expect(result.awardedMarks).toBe(0);
+  });
 });

@@ -1,11 +1,10 @@
 const { expect, test } = require("@playwright/test");
 
 const UI_KEYS = {
-  selectedSubjects: "past-paper-worker:selected-subjects:v1.3",
-  onboardingComplete: "past-paper-worker:onboarding-completed:v1.3",
-  appEntered: "past-paper-worker:app-entered:v1.3",
-  activeSubject: "past-paper-worker:active-subject:v1.3",
-  sidebarCollapsed: "past-paper-worker:sidebar-collapsed:v1.3",
+  selectedSubjects: "past-paper-worker:selected-subjects:v1.3.1",
+  onboardingComplete: "past-paper-worker:onboarding-completed:v1.3.1",
+  activeSubject: "past-paper-worker:active-subject:v1.3.1",
+  sidebarCollapsed: "past-paper-worker:sidebar-collapsed:v1.3.1",
   preferences: "past-paper-worker:preferences:v1",
   data: "past-paper-worker:data:v1",
 };
@@ -135,7 +134,6 @@ function installAiMock(page) {
 
 function seedProductUi(page, subjects = ["AQA GCSE Biology"]) {
   return page.addInitScript(({ UI_KEYS, subjects }) => {
-    window.localStorage.setItem(UI_KEYS.appEntered, "true");
     window.localStorage.setItem(UI_KEYS.onboardingComplete, "true");
     window.localStorage.setItem(UI_KEYS.selectedSubjects, JSON.stringify(subjects));
     window.localStorage.setItem(UI_KEYS.activeSubject, subjects[0]);
@@ -173,7 +171,6 @@ function buildQuestion(patch) {
 function seedChoiceAndUnsupportedPaper(page) {
   return page.addInitScript(({ UI_KEYS }) => {
     window.localStorage.clear();
-    window.localStorage.setItem(UI_KEYS.appEntered, "true");
     window.localStorage.setItem(UI_KEYS.onboardingComplete, "true");
     window.localStorage.setItem(UI_KEYS.selectedSubjects, JSON.stringify(["AQA GCSE Biology"]));
     window.localStorage.setItem(UI_KEYS.activeSubject, "AQA GCSE Biology");
@@ -280,6 +277,7 @@ test("landing, onboarding, upload, process, take, and AI mark a paper", async ({
   await expect(page.getByRole("heading", { name: /what subjects are you studying/i })).toBeVisible();
   await page.screenshot({ path: "test-results/v1.3-onboarding-subjects.png", fullPage: true });
 
+  await page.getByRole("button", { name: /biology/i }).click();
   await page.getByRole("button", { name: /save subjects/i }).click();
   await expect(page.getByRole("heading", { name: "Biology" })).toBeVisible();
   await page.screenshot({ path: "test-results/v1.3-subject-dashboard-empty.png", fullPage: true });
@@ -294,7 +292,7 @@ test("landing, onboarding, upload, process, take, and AI mark a paper", async ({
   await expect(page.getByRole("button", { name: /Show questions/ })).toBeVisible();
   await page.getByRole("button", { name: /Show questions/ }).click();
   await expect(page.getByText("Q1")).toBeVisible();
-  await expect(page.getByText(/ready \/ 2 marks \/ 1 min/i)).toBeVisible();
+  await expect(page.getByText("2025 / June / MOCK-1 / 2 marks / 1 min")).toBeVisible();
   await page.screenshot({ path: "test-results/v1.3-processed-paper-preview.png", fullPage: true });
 
   await page.getByRole("button", { name: /Start paper/ }).last().click();
@@ -315,6 +313,7 @@ test("landing, onboarding, upload, process, take, and AI mark a paper", async ({
 test("renders AQA choices and unsupported questions as dedicated controls", async ({ page }) => {
   await seedChoiceAndUnsupportedPaper(page);
   await page.goto("/");
+  await page.getByRole("button", { name: /enter app/i }).click();
 
   await page.getByText("AQA choice and unsupported paper").click();
   await page.getByRole("button", { name: /Start paper/ }).last().click();

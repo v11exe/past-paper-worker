@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  applyMarkingGuardrails,
   applyDeterministicMarkSchemeFallback,
   buildDeterministicProcessedPaperOutput,
   computeAttemptScores,
@@ -156,6 +157,128 @@ describe("questionSupportIssue", () => {
 
   it("keeps simple recovered single-choice questions supported", () => {
     expect(questionSupportIssue(question("Tick one box. A RAM B ROM C HDD D SSD", "single_choice"))).toBeNull();
+  });
+});
+
+describe("applyMarkingGuardrails", () => {
+  function question(responseType: PastPaperQuestion["responseType"], maxMarks = 1): PastPaperQuestion {
+    return {
+      id: `question-${responseType}`,
+      paperId: "paper-1",
+      questionNumber: "1",
+      parentQuestionNumber: null,
+      numberingPath: ["1"],
+      promptText: "Prompt",
+      maxMarks,
+      responseType,
+      originalFormat: "text",
+      convertedFormat: null,
+      originalContent: {},
+      convertedContent: {},
+      diagramMediaRefs: [],
+      options: [],
+      pageReferences: [1],
+      evidenceSnippet: null,
+      imagePageReferences: [1],
+      confidence: null,
+      extractionWarnings: [],
+      markSchemeRef: null,
+      markSchemeData: null,
+      displayOrder: 0,
+    };
+  }
+
+  function answer(patch: Partial<PastPaperAnswer>): PastPaperAnswer {
+    return {
+      id: "answer-1",
+      attemptId: "attempt-1",
+      questionId: "question-1",
+      responseText: null,
+      numericResponse: null,
+      selectedOptions: [],
+      skipped: false,
+      skippedWithConfidence: false,
+      confidencePredictedMarks: null,
+      createdAt: "2026-05-15T12:00:00.000Z",
+      updatedAt: "2026-05-15T12:00:00.000Z",
+      ...patch,
+    };
+  }
+
+  it("forces single-choice mismatches to zero when D is chosen and C is correct", () => {
+    const guarded = applyMarkingGuardrails(
+      {
+        awardedMarks: 1,
+        maxMarks: 1,
+        rationale: "The student's selected answer does not match the correct answer.",
+        missingPoints: [],
+        markSchemeEvidence: "The correct answer is C.",
+        markSchemeReference: {},
+        confidence: 80,
+      },
+      question("single_choice", 1),
+      answer({ selectedOptions: ["D. cytoplasm"] }),
+      "The correct answer is C.",
+    );
+
+    expect(guarded.awardedMarks).toBe(0);
+  });
+
+  it("forces numeric mismatches to zero when the answer is outside acceptable values", () => {
+    const guarded = applyMarkingGuardrails(
+      {
+        awardedMarks: 2,
+        maxMarks: 2,
+        rationale: "Acceptable values are 6, 6.25, or 6.3 micrometres.",
+        missingPoints: [],
+        markSchemeEvidence: "Acceptable values are 6 / 6.25 / 6.3 micrometres.",
+        markSchemeReference: {},
+        confidence: 80,
+      },
+      question("numeric", 2),
+      answer({ responseText: "10, maybe 3" }),
+      "Acceptable values are 6 / 6.25 / 6.3 micrometres.",
+    );
+
+    expect(guarded.awardedMarks).toBe(0);
+  });
+
+  it("keeps correct single-choice matches credited when C is chosen and C is correct", () => {
+    const guarded = applyMarkingGuardrails(
+      {
+        awardedMarks: 0,
+        maxMarks: 1,
+        rationale: "The correct answer is C.",
+        missingPoints: [],
+        markSchemeEvidence: "The correct answer is C.",
+        markSchemeReference: {},
+        confidence: 80,
+      },
+      question("single_choice", 1),
+      answer({ selectedOptions: ["C. cell wall"] }),
+      "The correct answer is C.",
+    );
+
+    expect(guarded.awardedMarks).toBe(1);
+  });
+
+  it("keeps numeric matches fully credited when an acceptable value is present", () => {
+    const guarded = applyMarkingGuardrails(
+      {
+        awardedMarks: 0,
+        maxMarks: 2,
+        rationale: "Acceptable values are 6, 6.25, or 6.3 micrometres.",
+        missingPoints: [],
+        markSchemeEvidence: "Acceptable values are 6 / 6.25 / 6.3 micrometres.",
+        markSchemeReference: {},
+        confidence: 80,
+      },
+      question("numeric", 2),
+      answer({ responseText: "6.25" }),
+      "Acceptable values are 6 / 6.25 / 6.3 micrometres.",
+    );
+
+    expect(guarded.awardedMarks).toBe(2);
   });
 });
 
