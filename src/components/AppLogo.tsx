@@ -5,7 +5,7 @@ export function AppLogo({ size = 32, showText = true }: { size?: 24 | 32 | 44; s
       {showText ? (
         <div className="app-logo__text">
           <strong>Past Paper Worker</strong>
-          <span>Grounded exam practice</span>
+          <span>Marked GCSE practice</span>
         </div>
       ) : null}
     </div>

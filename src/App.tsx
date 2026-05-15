@@ -7,23 +7,30 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Code2,
   Clock3,
   Copy,
   Download,
   Edit3,
+  ExternalLink,
   Eye,
   FileText,
   FlaskConical,
+  Github,
   Info,
   Loader2,
   Maximize2,
   MessageSquare,
   ListChecks,
+  PanelLeftClose,
+  PanelLeftOpen,
   Play,
+  Plus,
   RotateCcw,
   Save,
   ScanLine,
   Settings2,
+  ShieldCheck,
   SkipForward,
   Sparkles,
   Target,
@@ -35,7 +42,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DEFAULT_AI_MODEL, FALLBACK_AI_MODELS, AI_MODEL_CHOICES, ensureAIReadyForUserAction, aiChat, runAISmokeTest } from "./ai/provider";
 import { appMeta } from "./appMeta";
 import { AppLogo } from "./components/AppLogo";
-import { supportedSubjects } from "./subjects";
+import { cleanChoiceGlyphs, extractInlineOptions } from "./lib/choiceParsing";
+import { subjectMetaForLabel, subjectMetaList, unsupportedSubjects } from "./subjectMeta";
+import { supportedSubjects, type SupportedSubject } from "./subjects";
+import { currentVersionEntry, versionHistory } from "./versionHistory";
 import { extractFileAssetContent } from "./lib/fileText";
 import {
   FEEDBACK_TYPE_OPTIONS,
@@ -72,7 +82,6 @@ import {
   questionSupportIssue,
   processingStages,
   startAttempt,
-  supportedQuestionTypeLabels,
   supportedTotalMarksForPaper,
   unsupportedMarksForPaper,
 } from "./lib/paperEngine";
@@ -103,7 +112,7 @@ const emptyDraft: PaperDraftInput = {
   paperCode: "",
 };
 
-type ThemeMode = "dark" | "dim" | "contrast";
+type ThemeMode = "dark" | "system" | "dim" | "contrast";
 type AccentColour = "elliots" | "blue" | "purple" | "amber" | "rose" | "cyan" | "indigo" | "peach" | "graphite" | "custom";
 type DashboardDensity = "comfortable" | "compact";
 type NotificationDuration = "normal" | "longer" | "reduced";
@@ -111,6 +120,7 @@ type MotionPreference = "system" | "reduce";
 type FigurePreference = "show" | "collapse";
 type NavPreference = "grid" | "list";
 type LandingPreference = "overview" | "catalogue" | "last_paper";
+type SidebarDefault = "expanded" | "collapsed";
 
 type AppPreferences = {
   themeMode: ThemeMode;
@@ -126,6 +136,11 @@ type AppPreferences = {
   showFocusProgress: boolean;
   showConfidenceSkip: boolean;
   showFloatingFeedback: boolean;
+  devModeEnabled: boolean;
+  sidebarDefault: SidebarDefault;
+  autoSaveAnswers: boolean;
+  focusModeDefault: boolean;
+  timerBehaviour: "count_up" | "count_down";
   sourceFigures: FigurePreference;
   questionNavigation: NavPreference;
   notificationDuration: NotificationDuration;
@@ -145,6 +160,11 @@ type ToastItem = {
 };
 
 const PREFERENCES_STORAGE_KEY = "past-paper-worker:preferences:v1";
+const SELECTED_SUBJECTS_STORAGE_KEY = "past-paper-worker:selected-subjects:v1.3";
+const ONBOARDING_COMPLETE_STORAGE_KEY = "past-paper-worker:onboarding-completed:v1.3";
+const APP_ENTERED_STORAGE_KEY = "past-paper-worker:app-entered:v1.3";
+const ACTIVE_SUBJECT_STORAGE_KEY = "past-paper-worker:active-subject:v1.3";
+const SIDEBAR_COLLAPSED_STORAGE_KEY = "past-paper-worker:sidebar-collapsed:v1.3";
 
 const defaultPreferences: AppPreferences = {
   themeMode: "dark",
@@ -160,6 +180,11 @@ const defaultPreferences: AppPreferences = {
   showFocusProgress: true,
   showConfidenceSkip: true,
   showFloatingFeedback: true,
+  devModeEnabled: false,
+  sidebarDefault: "expanded",
+  autoSaveAnswers: true,
+  focusModeDefault: true,
+  timerBehaviour: "count_down",
   sourceFigures: "show",
   questionNavigation: "grid",
   notificationDuration: "normal",
@@ -182,6 +207,74 @@ const accentOptions: Array<{ value: AccentColour; label: string }> = [
   { value: "custom", label: "Custom" },
 ];
 
+function isSupportedSubject(value: string): value is SupportedSubject {
+  return supportedSubjects.includes(value as SupportedSubject);
+}
+
+function readBooleanStorage(key: string, fallback = false) {
+  try {
+    const value = window.localStorage.getItem(key);
+    if (value === null) return fallback;
+    return value === "true";
+  } catch {
+    return fallback;
+  }
+}
+
+function writeBooleanStorage(key: string, value: boolean) {
+  try {
+    window.localStorage.setItem(key, value ? "true" : "false");
+  } catch {
+    // Local settings are optional polish, not core paper storage.
+  }
+}
+
+function loadSelectedSubjects(data?: AppData): SupportedSubject[] {
+  try {
+    const raw = window.localStorage.getItem(SELECTED_SUBJECTS_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as unknown;
+      if (Array.isArray(parsed)) {
+        const selected = parsed.filter((subject): subject is SupportedSubject => typeof subject === "string" && isSupportedSubject(subject));
+        if (selected.length) return [...new Set(selected)];
+      }
+    }
+  } catch {
+    // Fall back to papers below.
+  }
+
+  const inferred = data?.papers
+    .map((paper) => paper.subject)
+    .filter((subject): subject is SupportedSubject => isSupportedSubject(subject)) ?? [];
+  return [...new Set(inferred)];
+}
+
+function saveSelectedSubjects(subjects: SupportedSubject[]) {
+  try {
+    window.localStorage.setItem(SELECTED_SUBJECTS_STORAGE_KEY, JSON.stringify(subjects));
+  } catch {
+    // Non-critical local preference.
+  }
+}
+
+function loadActiveSubject(subjects: SupportedSubject[]) {
+  try {
+    const raw = window.localStorage.getItem(ACTIVE_SUBJECT_STORAGE_KEY);
+    if (raw && subjects.includes(raw as SupportedSubject)) return raw as SupportedSubject;
+  } catch {
+    // Non-critical local preference.
+  }
+  return subjects[0] ?? supportedSubjects[0];
+}
+
+function saveActiveSubject(subject: SupportedSubject) {
+  try {
+    window.localStorage.setItem(ACTIVE_SUBJECT_STORAGE_KEY, subject);
+  } catch {
+    // Non-critical local preference.
+  }
+}
+
 function validHexColour(value: unknown, fallback: string) {
   return typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value) ? value : fallback;
 }
@@ -194,7 +287,7 @@ function loadPreferences(): AppPreferences {
     return {
       ...defaultPreferences,
       ...parsed,
-      themeMode: ["dark", "dim", "contrast"].includes(String(parsed.themeMode)) ? (parsed.themeMode as ThemeMode) : defaultPreferences.themeMode,
+      themeMode: ["dark", "system", "dim", "contrast"].includes(String(parsed.themeMode)) ? (parsed.themeMode as ThemeMode) : defaultPreferences.themeMode,
       accentColour: accentOptions.some((option) => option.value === parsed.accentColour) ? (parsed.accentColour as AccentColour) : defaultPreferences.accentColour,
       dashboardDensity: parsed.dashboardDensity === "compact" ? "compact" : "comfortable",
       showTechnicalModel: typeof parsed.showTechnicalModel === "boolean" ? parsed.showTechnicalModel : defaultPreferences.showTechnicalModel,
@@ -207,6 +300,11 @@ function loadPreferences(): AppPreferences {
       showFocusProgress: typeof parsed.showFocusProgress === "boolean" ? parsed.showFocusProgress : defaultPreferences.showFocusProgress,
       showConfidenceSkip: typeof parsed.showConfidenceSkip === "boolean" ? parsed.showConfidenceSkip : defaultPreferences.showConfidenceSkip,
       showFloatingFeedback: typeof parsed.showFloatingFeedback === "boolean" ? parsed.showFloatingFeedback : defaultPreferences.showFloatingFeedback,
+      devModeEnabled: typeof parsed.devModeEnabled === "boolean" ? parsed.devModeEnabled : defaultPreferences.devModeEnabled,
+      sidebarDefault: parsed.sidebarDefault === "collapsed" ? "collapsed" : "expanded",
+      autoSaveAnswers: typeof parsed.autoSaveAnswers === "boolean" ? parsed.autoSaveAnswers : defaultPreferences.autoSaveAnswers,
+      focusModeDefault: typeof parsed.focusModeDefault === "boolean" ? parsed.focusModeDefault : defaultPreferences.focusModeDefault,
+      timerBehaviour: parsed.timerBehaviour === "count_up" ? "count_up" : "count_down",
       notificationDuration: parsed.notificationDuration === "longer" || parsed.notificationDuration === "reduced" ? parsed.notificationDuration : "normal",
       reduceMotion: parsed.reduceMotion === "reduce" ? "reduce" : "system",
       sourceFigures: parsed.sourceFigures === "collapse" ? "collapse" : "show",
@@ -262,15 +360,6 @@ function statusLabel(value: string) {
     saved: "Saved",
   };
   return labels[value] ?? value.replaceAll("_", " ");
-}
-
-function formatUpdateTimestamp(value: string) {
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return "Time unavailable";
-  return new Intl.DateTimeFormat("en-GB", {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(parsed);
 }
 
 function marksLabel(marks: number) {
@@ -702,6 +791,587 @@ function SectionFrame({ title, subtitle, actions, children }: { title: string; s
   );
 }
 
+function TypewriterText({ phrases, reduceMotion }: { phrases: string[]; reduceMotion: boolean }) {
+  const [phraseIndex, setPhraseIndex] = useState(0);
+  const [visibleCount, setVisibleCount] = useState(phrases[0]?.length ?? 0);
+  const [deleting, setDeleting] = useState(false);
+
+  useEffect(() => {
+    if (reduceMotion || !phrases.length) {
+      setVisibleCount(phrases[0]?.length ?? 0);
+      return;
+    }
+    const phrase = phrases[phraseIndex] ?? "";
+    const atFullPhrase = !deleting && visibleCount >= phrase.length;
+    const atEmptyPhrase = deleting && visibleCount <= 0;
+    const delay = atFullPhrase ? 1350 : atEmptyPhrase ? 260 : deleting ? 34 : 58;
+    const timer = window.setTimeout(() => {
+      if (atFullPhrase) {
+        setDeleting(true);
+        return;
+      }
+      if (atEmptyPhrase) {
+        setDeleting(false);
+        setPhraseIndex((index) => (index + 1) % phrases.length);
+        return;
+      }
+      setVisibleCount((count) => count + (deleting ? -1 : 1));
+    }, delay);
+    return () => window.clearTimeout(timer);
+  }, [deleting, phraseIndex, phrases, reduceMotion, visibleCount]);
+
+  const phrase = phrases[phraseIndex] ?? "";
+  return (
+    <span className="typewriter" aria-hidden="true">
+      {reduceMotion ? phrases[0] : phrase.slice(0, visibleCount)}
+      <span className="typewriter__caret" />
+    </span>
+  );
+}
+
+function LandingPage({ reduceMotion, onEnter, onUpload, onFeedback }: { reduceMotion: boolean; onEnter: () => void; onUpload: () => void; onFeedback: () => void }) {
+  const phrases = [
+    "Upload a paper. Get marks back.",
+    "Practise GCSE questions online.",
+    "See exactly where marks were lost.",
+    "Built for OCR, AQA and Edexcel.",
+    "Developed by Rayaan Omair.",
+  ];
+  const reveal = reduceMotion ? {} : { initial: { opacity: 0, y: 18 }, whileInView: { opacity: 1, y: 0 }, viewport: { once: true, margin: "-80px" }, transition: { duration: 0.42 } };
+
+  return (
+    <main className="landing-page">
+      <nav className="landing-nav" aria-label="Landing navigation">
+        <AppLogo size={32} />
+        <div className="button-row">
+          <button className="secondary-button" onClick={onEnter}>Enter app</button>
+          <a className="secondary-button" href="https://github.com/v11exe/past-paper-worker" target="_blank" rel="noreferrer">
+            <Github size={16} /> GitHub
+          </a>
+          <button className="secondary-button" onClick={onFeedback}>
+            <MessageSquare size={16} /> Feedback
+          </button>
+        </div>
+      </nav>
+
+      <section className="landing-hero">
+        <motion.div className="landing-hero__copy" {...reveal}>
+          <span className="pixel-label">Developed by Rayaan Omair</span>
+          <h1>Past papers, marked in minutes.</h1>
+          <p className="landing-hero__typewriter">
+            <TypewriterText phrases={phrases} reduceMotion={reduceMotion} />
+            <span className="sr-only">{phrases.join(" ")}</span>
+          </p>
+          <p>Upload a question paper and mark scheme. Answer questions online, then get examiner-style feedback against the source.</p>
+          <div className="button-row">
+            <button className="primary-button" onClick={onEnter}>
+              <Play size={16} /> Start practising
+            </button>
+            <button className="secondary-button" onClick={onUpload}>
+              <UploadCloud size={16} /> Upload a paper
+            </button>
+            <a className="secondary-button" href="#workflow">See how it works</a>
+          </div>
+        </motion.div>
+
+        <motion.div className="landing-preview os-window" {...reveal}>
+          <div className="os-window__bar">
+            <span />
+            <span />
+            <span />
+          </div>
+          <div className="landing-preview__body">
+            <div className="landing-preview__paper">
+              <span className="eyebrow">Question 1</span>
+              <strong>Which structure controls the activities of the cell?</strong>
+              {["A. nucleus", "B. ribosome", "C. cell wall", "D. cytoplasm"].map((option) => (
+                <span key={option} className="landing-preview__choice">{option}</span>
+              ))}
+            </div>
+            <div className="landing-preview__mark">
+              <span className="eyebrow">Marked</span>
+              <strong>1/1</strong>
+              <p>Correct. The nucleus controls cell activities.</p>
+            </div>
+          </div>
+        </motion.div>
+      </section>
+
+      <motion.section className="quick-strip" {...reveal} aria-label="What Past Paper Worker does">
+        {["Upload paper", "Extract questions", "Answer online", "Mark answers", "Review feedback", "Keep progress locally"].map((item) => (
+          <button key={item} className="quick-strip__item" onClick={item === "Upload paper" ? onUpload : undefined}>{item}</button>
+        ))}
+      </motion.section>
+
+      <motion.section id="workflow" className="landing-section landing-section--steps" {...reveal}>
+        <div className="landing-section__header">
+          <span className="eyebrow">Workflow</span>
+          <h2>From upload to review.</h2>
+        </div>
+        <div className="workflow-grid">
+          {[
+            ["1", "Upload your paper", "Add the question paper and mark scheme."],
+            ["2", "Answer questions online", "Work through one question at a time."],
+            ["3", "Review your marks", "See your score, feedback, and missed points."],
+          ].map(([step, title, copy]) => (
+            <article className="workflow-card os-window" key={step}>
+              <div className="os-window__bar"><span /><span /><span /></div>
+              <span className="workflow-card__step">{step}</span>
+              <strong>{title}</strong>
+              <p>{copy}</p>
+            </article>
+          ))}
+        </div>
+      </motion.section>
+
+      <motion.section className="landing-section" {...reveal}>
+        <div className="feature-grid">
+          {[
+            ["Source-checked marking", "Feedback is based on the uploaded mark scheme."],
+            ["Focus mode", "Answer one question at a time without dashboard clutter."],
+            ["Local storage", "Papers and attempts stay on this device."],
+            ["Supported GCSE subjects", "Built around the subjects you actually study."],
+            ["Retry and review", "Repeat papers and compare marked attempts."],
+            ["Bug reports with diagnostics", "Send useful details when something breaks."],
+          ].map(([title, copy]) => (
+            <article className="feature-card" key={title}>
+              <strong>{title}</strong>
+              <p>{copy}</p>
+            </article>
+          ))}
+        </div>
+      </motion.section>
+
+      <motion.section className="landing-section" {...reveal}>
+        <div className="landing-section__header">
+          <span className="eyebrow">Supported subjects</span>
+          <h2>OCR, AQA and Edexcel GCSE workspaces.</h2>
+        </div>
+        <div className="subject-chip-grid">
+          {subjectMetaList.map((subject) => (
+            <span className="subject-preview-chip" key={subject.id} style={{ "--subject-accent": subject.accent } as React.CSSProperties}>
+              <subject.Icon size={16} /> {subject.shortLabel}
+            </span>
+          ))}
+        </div>
+      </motion.section>
+
+      <motion.section className="landing-trust os-window" {...reveal}>
+        <div className="os-window__bar"><span /><span /><span /></div>
+        <div>
+          <ShieldCheck size={22} />
+          <h2>Your papers stay local.</h2>
+          <p>Papers and attempts are stored on this device. AI requests go through the secure Worker proxy, so API keys stay server-side.</p>
+        </div>
+        <div>
+          <Code2 size={22} />
+          <h2>Built from real revision workflow.</h2>
+          <p>Past Paper Worker is designed around uploading papers, practising them, and seeing where marks were lost, not around generic AI chat.</p>
+        </div>
+      </motion.section>
+
+      <footer className="landing-footer">
+        <strong>Past Paper Worker</strong>
+        <span>Developed by Rayaan Omair</span>
+        <span>Logo credit: Elliot Neilsen</span>
+        <span>Version {appMeta.version}</span>
+        <button className="chip-button" onClick={onFeedback}>Feedback</button>
+        <a className="chip-button" href="https://github.com/v11exe/past-paper-worker" target="_blank" rel="noreferrer">GitHub</a>
+      </footer>
+    </main>
+  );
+}
+
+function SubjectOnboarding({ selectedSubjects, onSave }: { selectedSubjects: SupportedSubject[]; onSave: (subjects: SupportedSubject[]) => void }) {
+  const [draft, setDraft] = useState<SupportedSubject[]>(selectedSubjects.length ? selectedSubjects : [...supportedSubjects]);
+  const [showUnsupported, setShowUnsupported] = useState(false);
+
+  function toggleSubject(subject: SupportedSubject) {
+    setDraft((current) => (current.includes(subject) ? current.filter((item) => item !== subject) : [...current, subject]));
+  }
+
+  return (
+    <main className="onboarding-page">
+      <section className="onboarding-panel os-window">
+        <div className="os-window__bar"><span /><span /><span /></div>
+        <div className="onboarding-panel__header">
+          <AppLogo size={44} />
+          <div>
+            <span className="eyebrow">Setup</span>
+            <h1>What subjects are you studying?</h1>
+            <p>You can change this later.</p>
+          </div>
+        </div>
+        <div className="subject-picker-grid">
+          {subjectMetaList.map((subject) => {
+            const active = draft.includes(subject.label);
+            return (
+              <button
+                key={subject.id}
+                className={active ? "subject-picker-chip subject-picker-chip--active" : "subject-picker-chip"}
+                style={{ "--subject-accent": subject.accent } as React.CSSProperties}
+                onClick={() => toggleSubject(subject.label)}
+                aria-pressed={active}
+              >
+                <subject.Icon size={18} />
+                <span>{subject.shortLabel}</span>
+                <small>{subject.examBoard} · {subject.specCode ?? subject.level}</small>
+              </button>
+            );
+          })}
+        </div>
+        <div className="selected-subjects-bar">
+          <span>{draft.length ? `${draft.length} selected` : "No subjects selected"}</span>
+          <div className="selected-subjects-bar__chips">
+            {draft.map((subject) => (
+              <span className="static-chip" key={subject}>{subjectMetaForLabel(subject)?.shortLabel ?? subject}</span>
+            ))}
+          </div>
+        </div>
+        <button className="unsupported-toggle" onClick={() => setShowUnsupported((value) => !value)} aria-expanded={showUnsupported}>
+          <ChevronDown size={16} className={showUnsupported ? "question-disclosure__icon question-disclosure__icon--open" : "question-disclosure__icon"} />
+          Unsupported subjects
+        </button>
+        <AnimatePresence initial={false}>
+          {showUnsupported ? (
+            <motion.div className="unsupported-subject-grid" initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }}>
+              {unsupportedSubjects.map((subject) => (
+                <span className="unsupported-subject-chip" key={subject}>{subject} · Not supported yet</span>
+              ))}
+            </motion.div>
+          ) : null}
+        </AnimatePresence>
+        <div className="button-row onboarding-actions">
+          <button className="primary-button" disabled={!draft.length} onClick={() => onSave(draft)}>
+            <Check size={16} /> Save subjects
+          </button>
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function PaperWindowCard({
+  paper,
+  attempts,
+  onOpen,
+  onStart,
+  onProcess,
+  onDelete,
+}: {
+  paper: PastPaper;
+  attempts: PastPaperAttempt[];
+  onOpen: () => void;
+  onStart: () => void;
+  onProcess: () => void;
+  onDelete: () => void;
+}) {
+  const tone = paperStatusTone(paper, attempts);
+  const bestScore = paperBestScoreLabel({ papers: [paper], attempts }, paper);
+  const lastMarked = attempts.find((attempt) => attempt.status === "marked");
+  const lastScore = lastMarked ? formatPercent(displayAttemptScores(paper, lastMarked).actualScore, preferredAttemptTotal(paper, lastMarked)) : "No marked attempt";
+  return (
+    <article className="paper-window-card os-window">
+      <div className="os-window__bar"><span /><span /><span /></div>
+      <button className="paper-window-card__main" onClick={onOpen}>
+        <div className="paper-card__chips">
+          <span className={`status-chip status-chip--${tone}`}>{statusLabel(tone)}</span>
+          {paper.year ? <span className="static-chip">{paper.year}</span> : null}
+          {paper.series ? <span className="static-chip">{paper.series}</span> : null}
+        </div>
+        <strong>{paper.title}</strong>
+        <span>{displayMeta(paper)}</span>
+      </button>
+      <div className="paper-card__metrics">
+        <span>{attempts.length} attempts</span>
+        <span>Last {lastScore}</span>
+        <span>Best {bestScore}</span>
+        <span>{paper.processingStatus === "ready" ? "Ready to practise" : statusLabel(paper.processingStatus)}</span>
+      </div>
+      {paper.processingStatus === "processing" ? <ProcessingPanel paper={paper} job={latestJob(paper, "processing")} variant="compact" /> : null}
+      {paper.processingError ? <p className="processing-error">{paper.processingError}</p> : null}
+      <div className="paper-card__actions">
+        <button className={paper.processingStatus === "ready" ? "primary-button paper-card__primary-action" : "secondary-button paper-card__primary-action"} onClick={paper.processingStatus === "ready" ? onStart : onProcess} disabled={paper.processingStatus === "processing"}>
+          {paper.processingStatus === "ready" ? <Play size={16} /> : <ScanLine size={16} />}
+          {paper.processingStatus === "ready" ? "Start paper" : "Process now"}
+        </button>
+        <button className="icon-button" onClick={onOpen} aria-label={`Open ${paper.title}`}>
+          <Eye size={16} />
+        </button>
+        <button className="icon-button danger-button" onClick={onDelete} aria-label={`Delete ${paper.title}`}>
+          <Trash2 size={16} />
+        </button>
+      </div>
+    </article>
+  );
+}
+
+function SubjectDashboard({
+  activeSubject,
+  papers,
+  attempts,
+  onUpload,
+  onOpenPaper,
+  onStartPaper,
+  onProcessPaper,
+  onDeletePaper,
+}: {
+  activeSubject: SupportedSubject;
+  papers: PastPaper[];
+  attempts: PastPaperAttempt[];
+  onUpload: () => void;
+  onOpenPaper: (paper: PastPaper) => void;
+  onStartPaper: (paper: PastPaper) => void;
+  onProcessPaper: (paper: PastPaper) => void;
+  onDeletePaper: (paper: PastPaper) => void;
+}) {
+  const meta = subjectMetaForLabel(activeSubject);
+  const activeProcessing = papers.filter((paper) => paper.processingStatus === "processing");
+  return (
+    <div className="subject-dashboard">
+      <header className="subject-dashboard__header">
+        <div>
+          <span className="eyebrow">Your subject</span>
+          <h1>{meta?.shortLabel ?? activeSubject}</h1>
+          <p>{meta ? `${meta.examBoard} · ${meta.level}${meta.specCode ? ` · ${meta.specCode}` : ""}` : activeSubject}</p>
+        </div>
+        <div className="button-row">
+          {meta ? (
+            <a className="secondary-button" href={meta.specUrl} target="_blank" rel="noreferrer">
+              Specification <ExternalLink size={16} />
+            </a>
+          ) : null}
+          <button className="primary-button" onClick={onUpload}>
+            <UploadCloud size={16} /> Upload paper
+          </button>
+        </div>
+      </header>
+
+      {activeProcessing.length ? (
+        <section className="subject-dashboard__queue">
+          {activeProcessing.map((paper) => (
+            <ProcessingPanel key={paper.id} paper={paper} job={latestJob(paper, "processing")} variant="compact" />
+          ))}
+        </section>
+      ) : null}
+
+      <section className="upload-card os-window">
+        <div className="os-window__bar"><span /><span /><span /></div>
+        <button className="upload-card__button" onClick={onUpload}>
+          <span className="upload-card__plus"><Plus size={30} /></span>
+          <strong>Upload paper</strong>
+          <p>Add a question paper and mark scheme for {meta?.shortLabel ?? activeSubject}.</p>
+        </button>
+      </section>
+
+      <section className="subject-dashboard__papers">
+        <div className="section-frame__header">
+          <div>
+            <span className="eyebrow">Existing papers</span>
+            <h2>{papers.length ? `${papers.length} paper${papers.length === 1 ? "" : "s"}` : "No papers yet."}</h2>
+            {!papers.length ? <p>Upload a paper for this subject to begin.</p> : null}
+          </div>
+        </div>
+        {papers.length ? (
+          <div className="paper-window-grid">
+            {papers.map((paper) => {
+              const paperAttempts = attempts.filter((attempt) => attempt.paperId === paper.id);
+              return (
+                <PaperWindowCard
+                  key={paper.id}
+                  paper={paper}
+                  attempts={paperAttempts}
+                  onOpen={() => onOpenPaper(paper)}
+                  onStart={() => onStartPaper(paper)}
+                  onProcess={() => onProcessPaper(paper)}
+                  onDelete={() => onDeletePaper(paper)}
+                />
+              );
+            })}
+          </div>
+        ) : null}
+      </section>
+    </div>
+  );
+}
+
+function SubjectSidebar({
+  collapsed,
+  selectedSubjects,
+  activeSubject,
+  onToggleCollapsed,
+  onSelectSubject,
+  onAddSubject,
+  onUpload,
+  onSettings,
+  onVersion,
+  onCredits,
+}: {
+  collapsed: boolean;
+  selectedSubjects: SupportedSubject[];
+  activeSubject: SupportedSubject;
+  onToggleCollapsed: () => void;
+  onSelectSubject: (subject: SupportedSubject) => void;
+  onAddSubject: () => void;
+  onUpload: () => void;
+  onSettings: () => void;
+  onVersion: () => void;
+  onCredits: () => void;
+}) {
+  const [showUnsupported, setShowUnsupported] = useState(false);
+  return (
+    <aside className={collapsed ? "subject-sidebar subject-sidebar--collapsed" : "subject-sidebar"}>
+      <div className="subject-sidebar__brand">
+        <button className="icon-button" onClick={onToggleCollapsed} aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}>
+          {collapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
+        </button>
+        <AppLogo size={32} showText={!collapsed} />
+      </div>
+      <div className="subject-sidebar__section subject-sidebar__section--grow">
+        {!collapsed ? <span className="eyebrow">Your Subjects</span> : null}
+        <div className="subject-sidebar__list">
+          {selectedSubjects.map((subject) => {
+            const meta = subjectMetaForLabel(subject);
+            const Icon = meta?.Icon ?? FileText;
+            return (
+              <button
+                key={subject}
+                className={subject === activeSubject ? "subject-nav-item subject-nav-item--active" : "subject-nav-item"}
+                onClick={() => onSelectSubject(subject)}
+                title={meta?.shortLabel ?? subject}
+                style={{ "--subject-accent": meta?.accent ?? "var(--accent)" } as React.CSSProperties}
+              >
+                <Icon size={18} />
+                {!collapsed ? <span>{meta?.shortLabel ?? subject}</span> : null}
+              </button>
+            );
+          })}
+        </div>
+        <button className="subject-nav-item subject-nav-item--utility" onClick={onAddSubject} title="Add Subject">
+          <Plus size={18} />
+          {!collapsed ? <span>Add Subject</span> : null}
+        </button>
+        <button className="subject-nav-item subject-nav-item--utility" onClick={() => setShowUnsupported((value) => !value)} aria-expanded={showUnsupported} title="Unsupported subjects">
+          <ChevronDown size={18} className={showUnsupported ? "question-disclosure__icon question-disclosure__icon--open" : "question-disclosure__icon"} />
+          {!collapsed ? <span>Unsupported subjects</span> : null}
+        </button>
+        {!collapsed && showUnsupported ? (
+          <div className="sidebar-unsupported-list">
+            {unsupportedSubjects.slice(0, 8).map((subject) => (
+              <span key={subject}>{subject} · Not supported yet</span>
+            ))}
+          </div>
+        ) : null}
+      </div>
+      <div className="subject-sidebar__section">
+        <button className="primary-button primary-button--wide subject-sidebar__upload" onClick={onUpload} title="Upload paper">
+          <UploadCloud size={16} /> {!collapsed ? "Upload paper" : null}
+        </button>
+      </div>
+      <div className="subject-sidebar__section subject-sidebar__utility">
+        <button className="subject-nav-item subject-nav-item--utility" onClick={onSettings} title="Settings">
+          <Settings2 size={18} /> {!collapsed ? <span>Settings</span> : null}
+        </button>
+        <button className="subject-nav-item subject-nav-item--utility" onClick={onVersion} title={`${appMeta.version} ${currentVersionEntry.title}`}>
+          <Sparkles size={18} /> {!collapsed ? <span>{appMeta.version} {currentVersionEntry.title} -&gt;</span> : null}
+        </button>
+        <button className="subject-nav-item subject-nav-item--utility" onClick={onCredits} title="Credits">
+          <Info size={18} /> {!collapsed ? <span>Credits</span> : null}
+        </button>
+      </div>
+    </aside>
+  );
+}
+
+function VersionHistoryModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  return (
+    <AnimatePresence>
+      {open ? (
+        <motion.div className="paper-modal" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+          <motion.div className="paper-modal__panel version-modal__panel" initial={{ y: 18, scale: 0.98 }} animate={{ y: 0, scale: 1 }} exit={{ y: 18, scale: 0.98 }}>
+            <div className="section-frame__header">
+              <div>
+                <span className="eyebrow">Version</span>
+                <h2>Version history</h2>
+              </div>
+              <button className="icon-button" onClick={onClose} aria-label="Close version history">
+                <X size={16} />
+              </button>
+            </div>
+            <div className="version-timeline">
+              {versionHistory.map((entry) => (
+                <article className="version-entry" key={entry.version}>
+                  <span className="static-chip">{entry.version}</span>
+                  <div>
+                    <h3>{entry.title}</h3>
+                    <p>{entry.date}</p>
+                    <ul>
+                      {entry.changes.map((change) => (
+                        <li key={change}>{change}</li>
+                      ))}
+                    </ul>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </motion.div>
+        </motion.div>
+      ) : null}
+    </AnimatePresence>
+  );
+}
+
+function CreditsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  return (
+    <AnimatePresence>
+      {open ? (
+        <motion.div className="paper-modal" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+          <motion.div className="paper-modal__panel paper-modal__panel--mini" initial={{ y: 18, scale: 0.98 }} animate={{ y: 0, scale: 1 }} exit={{ y: 18, scale: 0.98 }}>
+            <div className="section-frame__header">
+              <div>
+                <span className="eyebrow">Credits</span>
+                <h2>Past Paper Worker</h2>
+              </div>
+              <button className="icon-button" onClick={onClose} aria-label="Close credits">
+                <X size={16} />
+              </button>
+            </div>
+            <div className="credits-panel">
+              <p><strong>Developed by Rayaan Omair.</strong></p>
+              <p><strong>Logo credit: Elliot Neilsen.</strong></p>
+              <div className="chip-wrap">
+                {["React", "Vite", "Cloudflare Workers", "Gemini via secure Worker proxy", "pdf.js", "lucide-react", "framer-motion"].map((item) => (
+                  <span className="static-chip" key={item}>{item}</span>
+                ))}
+              </div>
+            </div>
+          </motion.div>
+        </motion.div>
+      ) : null}
+    </AnimatePresence>
+  );
+}
+
+function UnsupportedQuestionPanel({ issue, marks, onReport }: { issue: { reason: string; reported: boolean }; marks: number; onReport?: () => void }) {
+  return (
+    <div className="unsupported-question-state" role="note">
+      <div>
+        <span className="eyebrow">Unsupported question type</span>
+        <strong>Unsupported question type</strong>
+        <p>This question needs a table, diagram, matching grid, or drawing tool that is not supported yet.</p>
+        <p>This question will not be included in your marked total.</p>
+      </div>
+      <p className="muted-copy">{issue.reason}</p>
+      {onReport ? (
+        <button className="secondary-button" onClick={onReport} disabled={issue.reported}>
+          <AlertCircle size={16} /> {issue.reported ? "Reported" : "Report inaccurate classification"}
+        </button>
+      ) : null}
+      <span className="static-chip static-chip--danger">-{marks} marks</span>
+    </div>
+  );
+}
+
 function InlineStatus({ pending, error, success }: { pending?: boolean; error?: string | null; success?: string | null }) {
   if (pending) {
     return (
@@ -949,11 +1619,13 @@ function ProcessingPanel({ paper, job, variant = "full" }: { paper: PastPaper; j
 function UploadModal({
   open,
   pending,
+  initialSubject,
   onClose,
   onSubmit,
 }: {
   open: boolean;
   pending: boolean;
+  initialSubject?: string;
   onClose: () => void;
   onSubmit: (draft: PaperDraftInput, paperFile: File, markSchemeFile: File | null, processNow: boolean) => void;
 }) {
@@ -963,10 +1635,10 @@ function UploadModal({
 
   useEffect(() => {
     if (!open) return;
-    setDraft(emptyDraft);
+    setDraft({ ...emptyDraft, subject: initialSubject && isSupportedSubject(initialSubject) ? initialSubject : emptyDraft.subject });
     setPaperFile(null);
     setMarkSchemeFile(null);
-  }, [open]);
+  }, [initialSubject, open]);
 
   const submit = (processNow: boolean) => {
     if (!paperFile) return;
@@ -1004,15 +1676,15 @@ function UploadModal({
               </label>
               <label className="field">
                 <span>Topic</span>
-                <input value={draft.topic} onChange={(event) => setDraft((state) => ({ ...state, topic: event.target.value }))} />
+                <input value={draft.topic} onChange={(event) => setDraft((state) => ({ ...state, topic: event.target.value }))} placeholder="Optional" />
               </label>
               <label className="field">
                 <span>Subtopic</span>
-                <input value={draft.subtopic} onChange={(event) => setDraft((state) => ({ ...state, subtopic: event.target.value }))} />
+                <input value={draft.subtopic} onChange={(event) => setDraft((state) => ({ ...state, subtopic: event.target.value }))} placeholder="Optional" />
               </label>
               <label className="field">
                 <span>Year</span>
-                <input value={draft.year} onChange={(event) => setDraft((state) => ({ ...state, year: event.target.value }))} inputMode="numeric" />
+                <input value={draft.year} onChange={(event) => setDraft((state) => ({ ...state, year: event.target.value }))} inputMode="numeric" placeholder="Optional" />
               </label>
               <label className="field">
                 <span>Series</span>
@@ -1023,21 +1695,21 @@ function UploadModal({
                 <input value={draft.paperCode} onChange={(event) => setDraft((state) => ({ ...state, paperCode: event.target.value }))} />
               </label>
               <label className="field">
-                <span>Past paper file</span>
+                <span>Question paper</span>
                 <input type="file" accept=".pdf,.png,.jpg,.jpeg,.webp" onChange={(event) => setPaperFile(event.target.files?.[0] ?? null)} />
               </label>
               <label className="field">
-                <span>Mark scheme file</span>
+                <span>Mark scheme</span>
                 <input type="file" accept=".pdf,.png,.jpg,.jpeg,.webp" onChange={(event) => setMarkSchemeFile(event.target.files?.[0] ?? null)} />
               </label>
             </div>
 
             <div className="button-row">
               <button className="secondary-button" onClick={() => submit(false)} disabled={!paperFile || pending}>
-                <Save size={16} /> Submit
+                <Save size={16} /> Save only
               </button>
               <button className="primary-button" onClick={() => submit(true)} disabled={!paperFile || pending}>
-                <ScanLine size={16} /> Process and submit
+                <ScanLine size={16} /> Process now
               </button>
             </div>
           </motion.div>
@@ -1460,7 +2132,7 @@ function PreferenceSelect<T extends string>({
 function PreferenceToggle({ label, description, checked, onChange }: { label: string; description: string; checked: boolean; onChange: (checked: boolean) => void }) {
   return (
     <label className="preference-toggle">
-      <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
+      <input type="checkbox" aria-label={label} checked={checked} onChange={(event) => onChange(event.target.checked)} />
       <span className="preference-toggle__control" />
       <span>
         <strong>{label}</strong>
@@ -1473,14 +2145,42 @@ function PreferenceToggle({ label, description, checked, onChange }: { label: st
 function SettingsModal({
   open,
   preferences,
+  selectedSubjects,
+  data,
+  aiModel,
+  setAIModel,
+  smokeTest,
+  smokeBusy,
   onChange,
   onReset,
+  onEditSubjects,
+  onOpenFeedback,
+  onOpenVersion,
+  onOpenCredits,
+  onRunSmokeTest,
+  onExportData,
+  onImportData,
+  onClearLocalData,
   onClose,
 }: {
   open: boolean;
   preferences: AppPreferences;
+  selectedSubjects: SupportedSubject[];
+  data: AppData;
+  aiModel: string;
+  setAIModel: (value: string) => void;
+  smokeTest: AISmokeTestResult | null;
+  smokeBusy: boolean;
   onChange: (patch: Partial<AppPreferences>) => void;
   onReset: () => void;
+  onEditSubjects: () => void;
+  onOpenFeedback: (type?: FeedbackDraft["type"]) => void;
+  onOpenVersion: () => void;
+  onOpenCredits: () => void;
+  onRunSmokeTest: () => void;
+  onExportData: () => void;
+  onImportData: (file: File | null) => void;
+  onClearLocalData: () => void;
   onClose: () => void;
 }) {
   return (
@@ -1491,8 +2191,8 @@ function SettingsModal({
             <div className="section-frame__header settings-modal__header">
               <div>
                 <span className="eyebrow">Settings</span>
-                <h2>Customize your workspace</h2>
-                <p>These settings stay on this device and only change how the app feels.</p>
+                <h2>Workspace settings</h2>
+                <p>Subjects, practice defaults, storage, feedback, version, credits, and Dev mode.</p>
               </div>
               <button className="icon-button" onClick={onClose} aria-label="Close settings">
                 <X size={16} />
@@ -1502,32 +2202,55 @@ function SettingsModal({
             <div className="settings-modal__grid">
               <section className="settings-section">
                 <div>
-                  <span className="eyebrow">Look and feel</span>
-                  <h3>Theme</h3>
+                  <span className="eyebrow">Subjects</span>
+                  <h3>Your subjects</h3>
+                </div>
+                <div className="subject-chip-grid subject-chip-grid--settings">
+                  {selectedSubjects.map((subject) => {
+                    const meta = subjectMetaForLabel(subject);
+                    return (
+                      <a className="subject-preview-chip" key={subject} href={meta?.specUrl} target="_blank" rel="noreferrer" style={{ "--subject-accent": meta?.accent ?? "var(--accent)" } as React.CSSProperties}>
+                        {meta ? <meta.Icon size={16} /> : <FileText size={16} />}
+                        {meta?.shortLabel ?? subject}
+                        <ExternalLink size={13} />
+                      </a>
+                    );
+                  })}
+                </div>
+                <div className="button-row">
+                  <button className="secondary-button" onClick={onEditSubjects}>
+                    <Plus size={16} /> Add subject
+                  </button>
+                </div>
+              </section>
+
+              <section className="settings-section">
+                <div>
+                  <span className="eyebrow">Appearance</span>
+                  <h3>Theme and layout</h3>
                 </div>
                 <div className="preference-grid">
                   <PreferenceSelect
-                    label="Theme mode"
-                    value={preferences.themeMode}
+                    label="Theme"
+                    value={preferences.themeMode === "system" ? "system" : "dark"}
                     options={[
                       { value: "dark", label: "Dark" },
-                      { value: "dim", label: "Dim" },
-                      { value: "contrast", label: "High contrast" },
+                      { value: "system", label: "System" },
                     ]}
                     onChange={(themeMode) => onChange({ themeMode })}
                   />
                   <PreferenceSelect label="Accent scheme" value={preferences.accentColour} options={accentOptions} onChange={(accentColour) => onChange({ accentColour })} />
                   <PreferenceSelect
-                    label="Dashboard density"
-                    value={preferences.dashboardDensity}
+                    label="Sidebar default"
+                    value={preferences.sidebarDefault}
                     options={[
-                      { value: "comfortable", label: "Comfortable" },
-                      { value: "compact", label: "Compact" },
+                      { value: "expanded", label: "Expanded" },
+                      { value: "collapsed", label: "Collapsed" },
                     ]}
-                    onChange={(dashboardDensity) => onChange({ dashboardDensity })}
+                    onChange={(sidebarDefault) => onChange({ sidebarDefault })}
                   />
                   <PreferenceSelect
-                    label="Motion"
+                    label="Reduced motion"
                     value={preferences.reduceMotion}
                     options={[
                       { value: "system", label: "Follow system" },
@@ -1555,36 +2278,28 @@ function SettingsModal({
 
               <section className="settings-section">
                 <div>
-                  <span className="eyebrow">Dashboard customization</span>
-                  <h3>Dashboard features</h3>
-                </div>
-                <div className="preference-toggle-grid">
-                  <PreferenceToggle label="Analytics panel" description="Show the right-side analytics card." checked={preferences.showAnalyticsPanel} onChange={(showAnalyticsPanel) => onChange({ showAnalyticsPanel })} />
-                  <PreferenceToggle label="System info button" description="Show the top-right dashboard system button on smaller screens." checked={preferences.showHeaderSystemInfo} onChange={(showHeaderSystemInfo) => onChange({ showHeaderSystemInfo })} />
-                  <PreferenceToggle label="Recent update box" description="Show version and commit information in the sidebar." checked={preferences.showRecentUpdate} onChange={(showRecentUpdate) => onChange({ showRecentUpdate })} />
-                  <PreferenceToggle label="Hero status panel" description="Show AI, storage, and version inside the empty dashboard hero." checked={preferences.showHeroStatus} onChange={(showHeroStatus) => onChange({ showHeroStatus })} />
-                  <PreferenceToggle label="Question legend" description="Show the blank/answered/marked/unsupported legend." checked={preferences.showQuestionLegend} onChange={(showQuestionLegend) => onChange({ showQuestionLegend })} />
-                  <PreferenceToggle label="Paper summary tiles" description="Show total marks, duration, attempts, and best score tiles." checked={preferences.showPaperSummary} onChange={(showPaperSummary) => onChange({ showPaperSummary })} />
-                  <PreferenceToggle label="Floating feedback button" description="Keep the round feedback shortcut on dashboard pages." checked={preferences.showFloatingFeedback} onChange={(showFloatingFeedback) => onChange({ showFloatingFeedback })} />
-                </div>
-                <PreferenceSelect
-                  label="Default dashboard landing"
-                  value={preferences.defaultLanding}
-                  options={[
-                    { value: "overview", label: "Home overview" },
-                    { value: "catalogue", label: "Catalogue" },
-                    { value: "last_paper", label: "Last opened paper" },
-                  ]}
-                  onChange={(defaultLanding) => onChange({ defaultLanding })}
-                />
-              </section>
-
-              <section className="settings-section">
-                <div>
-                  <span className="eyebrow">Focus customization</span>
-                  <h3>Answering flow</h3>
+                  <span className="eyebrow">Practice</span>
+                  <h3>Answering defaults</h3>
                 </div>
                 <div className="preference-grid">
+                  <PreferenceSelect
+                    label="Focus mode default"
+                    value={preferences.focusModeDefault ? "show" : "hide"}
+                    options={[
+                      { value: "show", label: "On" },
+                      { value: "hide", label: "Off" },
+                    ]}
+                    onChange={(value) => onChange({ focusModeDefault: value === "show" })}
+                  />
+                  <PreferenceSelect
+                    label="Timer behaviour"
+                    value={preferences.timerBehaviour}
+                    options={[
+                      { value: "count_down", label: "Count down" },
+                      { value: "count_up", label: "Count up" },
+                    ]}
+                    onChange={(timerBehaviour) => onChange({ timerBehaviour })}
+                  />
                   <PreferenceSelect
                     label="Source figures"
                     value={preferences.sourceFigures}
@@ -1603,30 +2318,107 @@ function SettingsModal({
                     ]}
                     onChange={(questionNavigation) => onChange({ questionNavigation })}
                   />
-                  <PreferenceSelect
-                    label="Notification duration"
-                    value={preferences.notificationDuration}
-                    options={[
-                      { value: "normal", label: "Normal" },
-                      { value: "longer", label: "Longer" },
-                      { value: "reduced", label: "Reduced" },
-                    ]}
-                    onChange={(notificationDuration) => onChange({ notificationDuration })}
-                  />
-                  <PreferenceSelect
-                    label="Technical model info"
-                    value={preferences.showTechnicalModel ? "show" : "hide"}
-                    options={[
-                      { value: "show", label: "Show" },
-                      { value: "hide", label: "Hide" },
-                    ]}
-                    onChange={(value) => onChange({ showTechnicalModel: value === "show" })}
-                  />
                 </div>
                 <div className="preference-toggle-grid">
+                  <PreferenceToggle label="Auto-save answers" description="Keep answer edits saved in the current attempt." checked={preferences.autoSaveAnswers} onChange={(autoSaveAnswers) => onChange({ autoSaveAnswers })} />
                   <PreferenceToggle label="Focus progress card" description="Show answered/skipped counts and question dots while answering." checked={preferences.showFocusProgress} onChange={(showFocusProgress) => onChange({ showFocusProgress })} />
                   <PreferenceToggle label="Skip with confidence panel" description="Show the confidence skip shortcut below supported questions." checked={preferences.showConfidenceSkip} onChange={(showConfidenceSkip) => onChange({ showConfidenceSkip })} />
                 </div>
+              </section>
+
+              <section className="settings-section">
+                <div>
+                  <span className="eyebrow">Storage</span>
+                  <h3>Local-only data</h3>
+                  <p>{data.papers.length} paper{data.papers.length === 1 ? "" : "s"} and {data.attempts.length} attempt{data.attempts.length === 1 ? "" : "s"} stored on this device.</p>
+                </div>
+                <div className="button-row">
+                  <button className="secondary-button" onClick={onExportData}>
+                    <Download size={16} /> Export all data
+                  </button>
+                  <label className="secondary-button import-backup-button">
+                    <UploadCloud size={16} /> Import backup
+                    <input type="file" accept="application/json,.json" onChange={(event) => onImportData(event.target.files?.[0] ?? null)} />
+                  </label>
+                  <button className="secondary-button danger-button" onClick={onClearLocalData}>
+                    <Trash2 size={16} /> Clear local data
+                  </button>
+                </div>
+              </section>
+
+              <section className="settings-section">
+                <div>
+                  <span className="eyebrow">Feedback</span>
+                  <h3>Report or suggest</h3>
+                  <p>Diagnostics unavailable.</p>
+                </div>
+                <div className="button-row">
+                  <button className="secondary-button" onClick={() => onOpenFeedback("bug_report")}>
+                    <MessageSquare size={16} /> Report a bug
+                  </button>
+                  <button className="secondary-button" onClick={() => onOpenFeedback("feature_request")}>
+                    <Sparkles size={16} /> Suggest a feature
+                  </button>
+                </div>
+              </section>
+
+              <section className="settings-section">
+                <div>
+                  <span className="eyebrow">Version</span>
+                  <h3>{appMeta.version} · {currentVersionEntry.title}</h3>
+                  <p>{currentVersionEntry.date}</p>
+                </div>
+                <button className="secondary-button" onClick={onOpenVersion}>
+                  <Sparkles size={16} /> Open changelog
+                </button>
+              </section>
+
+              <section className="settings-section">
+                <div>
+                  <span className="eyebrow">Credits</span>
+                  <h3>People and providers</h3>
+                  <p>Developed by Rayaan Omair. Logo credit: Elliot Neilsen.</p>
+                </div>
+                <button className="secondary-button" onClick={onOpenCredits}>
+                  <Info size={16} /> Open credits
+                </button>
+              </section>
+
+              <section className="settings-section settings-section--dev">
+                <div>
+                  <span className="eyebrow">Dev mode</span>
+                  <h3>Debug tools</h3>
+                </div>
+                <PreferenceToggle label="Enable Dev mode" description="Show provider checks, model switch, commit hash, and raw diagnostics." checked={preferences.devModeEnabled} onChange={(devModeEnabled) => onChange({ devModeEnabled })} />
+                {preferences.devModeEnabled ? (
+                  <div className="dev-mode-panel">
+                    <div className="preference-grid">
+                      <label className="field compact-field">
+                        <span>Model switch</span>
+                        <select aria-label="Model switch" value={aiModel} onChange={(event) => setAIModel(event.target.value)}>
+                          {AI_MODEL_CHOICES.map((model) => (
+                            <option key={model} value={model}>{model}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <div className="diagnostic-grid">
+                        <span>Provider Gemini</span>
+                        <span>API keys server-side</span>
+                        <span>Commit {appMeta.commitHash ?? "unavailable"}</span>
+                        <span>{data.papers.length} local papers</span>
+                      </div>
+                    </div>
+                    <div className="button-row">
+                      <button className="secondary-button" onClick={onRunSmokeTest} disabled={smokeBusy}>
+                        <FlaskConical size={16} /> Smoke test
+                      </button>
+                      <button className="secondary-button" onClick={onExportData}>
+                        <Download size={16} /> Diagnostics export
+                      </button>
+                    </div>
+                    {smokeTest ? <p className="muted-copy">Last smoke test: proxy {smokeTest.proxyCheck.success ? "ok" : "failed"}, text {smokeTest.textCall.success ? "ok" : "failed"}.</p> : null}
+                  </div>
+                ) : null}
               </section>
             </div>
 
@@ -1751,7 +2543,7 @@ function QuestionSourceImages({ paper, question, defaultCollapsed = false }: { p
 }
 
 function basicCleanPrompt(promptText: string) {
-  return promptText
+  return cleanChoiceGlyphs(promptText)
     .replace(/\s*(?:[[(]\s*\d+\s*(?:marks?)?\s*[\])]|\[\s*\d+\s*])/gi, "")
     .replace(/^\s*(?:question\s*)?\d+\s*(?:[.)/-]\s*)?/i, "")
     .replace(/^\s*(?:\([a-z]\)|[a-z][.)])\s*/i, "")
@@ -1763,26 +2555,8 @@ function basicCleanPrompt(promptText: string) {
 
 function cleanVisiblePrompt(promptText: string) {
   const cleaned = basicCleanPrompt(promptText);
-  const tickSplit = cleaned.split(/\bTick\s+one\s+box\.?/i);
-  const tail = tickSplit[1]?.trim() ?? "";
-  if (!tail) return cleaned;
-  const words = tail.split(/\s+/).filter(Boolean);
-  if (/^((?:[A-H]\s*){2,})$/i.test(tail) || (words.length >= 2 && words.length <= 8 && words.every((word) => word.length <= 28))) {
-    return `${tickSplit[0].trim()} Tick one box.`;
-  }
-  return cleaned;
-}
-
-function embeddedChoiceOptions(promptText: string) {
-  const cleaned = basicCleanPrompt(promptText);
-  const tickSplit = cleaned.split(/\bTick\s+one\s+box\.?/i);
-  const tail = tickSplit[1]?.trim() ?? "";
-  if (!tail) return [] as string[];
-  const letterRun = tail.match(/^((?:[A-H]\s*){2,})$/i);
-  if (letterRun) return tail.split(/\s+/).filter(Boolean);
-  const words = tail.split(/\s+/).filter(Boolean);
-  if (words.length >= 2 && words.length <= 8 && words.every((word) => word.length <= 28)) return words;
-  return [];
+  const extracted = extractInlineOptions(cleaned);
+  return extracted.options.length ? extracted.promptText : cleaned;
 }
 
 function AnswerInput({ question, answer, onChange }: { question: PastPaperQuestion; answer: PastPaperAnswer; onChange: (patch: Partial<PastPaperAnswer>) => void }) {
@@ -1800,19 +2574,10 @@ function AnswerInput({ question, answer, onChange }: { question: PastPaperQuesti
   }
 
   if (question.responseType === "single_choice" || question.responseType === "multi_select") {
-    const options = question.options.length ? question.options : embeddedChoiceOptions(question.promptText);
-    if (!options.length) {
-      return (
-        <div className="choice-fallback">
-          <p>Options were not extracted cleanly. Type the visible choice letter or answer text.</p>
-          <input
-            aria-label="Choice answer"
-            placeholder="Choice answer"
-            value={answer.responseText ?? ""}
-            onChange={(event) => onChange({ responseText: event.target.value, selectedOptions: [], skipped: false, skippedWithConfidence: false, confidencePredictedMarks: null })}
-          />
-        </div>
-      );
+    const extracted = extractInlineOptions(question.promptText);
+    const options = (question.options.length ? question.options : extracted.options).map(cleanChoiceGlyphs).filter(Boolean);
+    if (options.length < 2) {
+      return <UnsupportedQuestionPanel issue={{ reason: "This choice question did not extract into a clean option list.", reported: false }} marks={question.maxMarks} />;
     }
 
     return (
@@ -1885,12 +2650,25 @@ export function App() {
   const [feedbackError, setFeedbackError] = useState<string | null>(null);
   const [systemInfoOpen, setSystemInfoOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [versionHistoryOpen, setVersionHistoryOpen] = useState(false);
+  const [creditsOpen, setCreditsOpen] = useState(false);
   const [preferences, setPreferences] = useState<AppPreferences>(() => loadPreferences());
+  const [selectedSubjects, setSelectedSubjects] = useState<SupportedSubject[]>(() => loadSelectedSubjects(data));
+  const [appEntered, setAppEntered] = useState(() => readBooleanStorage(APP_ENTERED_STORAGE_KEY, data.papers.length > 0));
+  const [onboardingComplete, setOnboardingComplete] = useState(() => readBooleanStorage(ONBOARDING_COMPLETE_STORAGE_KEY, data.papers.length > 0));
+  const [activeSubject, setActiveSubject] = useState<SupportedSubject>(() => loadActiveSubject(loadSelectedSubjects(data)));
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => readBooleanStorage(SIDEBAR_COLLAPSED_STORAGE_KEY, defaultPreferences.sidebarDefault === "collapsed"));
+  const [postOnboardingAction, setPostOnboardingAction] = useState<"upload" | null>(null);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const landingApplied = useRef(false);
 
   useEffect(() => saveData(data), [data]);
   useEffect(() => savePreferences(preferences), [preferences]);
+  useEffect(() => saveSelectedSubjects(selectedSubjects), [selectedSubjects]);
+  useEffect(() => writeBooleanStorage(APP_ENTERED_STORAGE_KEY, appEntered), [appEntered]);
+  useEffect(() => writeBooleanStorage(ONBOARDING_COMPLETE_STORAGE_KEY, onboardingComplete), [onboardingComplete]);
+  useEffect(() => writeBooleanStorage(SIDEBAR_COLLAPSED_STORAGE_KEY, sidebarCollapsed), [sidebarCollapsed]);
+  useEffect(() => saveActiveSubject(activeSubject), [activeSubject]);
 
   const pushToast = useCallback(
     (kind: ToastKind, message: string) => {
@@ -1922,6 +2700,34 @@ export function App() {
     setStatus("Settings reset to defaults.");
   }
 
+  function enterApp(nextAction: "upload" | null = null) {
+    setAppEntered(true);
+    if (nextAction && !selectedSubjects.length) setPostOnboardingAction(nextAction);
+    if (nextAction === "upload" && selectedSubjects.length) setUploadOpen(true);
+  }
+
+  function saveOnboardingSubjects(subjects: SupportedSubject[]) {
+    const uniqueSubjects = [...new Set(subjects)].filter(isSupportedSubject);
+    setSelectedSubjects(uniqueSubjects);
+    setOnboardingComplete(true);
+    setActiveSubject(uniqueSubjects[0] ?? supportedSubjects[0]);
+    setStatus("Subjects saved.");
+    if (postOnboardingAction === "upload") {
+      setUploadOpen(true);
+      setPostOnboardingAction(null);
+    }
+  }
+
+  function openSubjectOnboarding() {
+    setSettingsOpen(false);
+    setOnboardingComplete(false);
+  }
+
+  function openSubjectUpload(subject: SupportedSubject = activeSubject) {
+    setActiveSubject(subject);
+    setUploadOpen(true);
+  }
+
   useEffect(() => {
     if (!status) return;
     pushToast("success", status);
@@ -1937,6 +2743,11 @@ export function App() {
   useEffect(() => {
     if (selectedPaperId && !data.papers.some((paper) => paper.id === selectedPaperId)) setSelectedPaperId(null);
   }, [data.papers, selectedPaperId]);
+
+  useEffect(() => {
+    if (selectedSubjects.length && selectedSubjects.includes(activeSubject)) return;
+    setActiveSubject(selectedSubjects[0] ?? supportedSubjects[0]);
+  }, [activeSubject, selectedSubjects]);
 
   useEffect(() => {
     const interval = window.setInterval(() => setClockNow(Date.now()), 1000);
@@ -1962,7 +2773,6 @@ export function App() {
   const reviewSupportIssue = reviewQuestion ? questionSupportIssue(reviewQuestion) : null;
   const reviewMark = reviewQuestion ? latestAcceptedMark(selectedAttempt, reviewQuestion.id) : null;
   const displayScores = selectedPaper && selectedAttempt ? displayAttemptScores(selectedPaper, selectedAttempt) : selectedAttempt;
-  const processingQueue = data.papers.filter((paper) => paper.processingStatus === "processing").length;
 
   useEffect(() => {
     if (!selectedPaper?.questions.length) {
@@ -2023,10 +2833,30 @@ export function App() {
     });
   }, [selectedPaper]);
 
-  function openFeedback() {
+  async function openFeedback(type?: FeedbackDraft["type"]) {
     setSystemInfoOpen(false);
-    setFeedbackDraft(loadFeedbackDraft());
-    setFeedbackAttachments([]);
+    setSettingsOpen(false);
+    let diagnosticAttachments: FeedbackAttachment[] = [];
+    if (type === "bug_report" && selectedPaper) {
+      const diagnosticJson = JSON.stringify(diagnosticBundle(selectedPaper, data.attempts), null, 2);
+      const file = new File([diagnosticJson], `${selectedPaper.title.replace(/[^a-z0-9]+/gi, "-").replace(/(^-|-$)/g, "").toLowerCase() || "paper"}-diagnostics.json`, {
+        type: "application/json",
+      });
+      diagnosticAttachments = await filesToFeedbackAttachments([file]);
+      setStatus("Diagnostics attached.");
+    } else if (type === "bug_report") {
+      setStatus("Diagnostics unavailable.");
+    }
+    const attachmentMeta = diagnosticAttachments.map(({ id, filename, contentType, sizeBytes, encodedSizeEstimate }) => ({
+      id,
+      filename,
+      contentType,
+      sizeBytes,
+      encodedSizeEstimate,
+    }));
+    const draft = { ...loadFeedbackDraft(), ...(type ? { type } : {}), attachments: attachmentMeta };
+    setFeedbackDraft(draft);
+    setFeedbackAttachments(diagnosticAttachments);
     setFeedbackTouched({});
     setFeedbackError(null);
     setFeedbackOpen(true);
@@ -2258,6 +3088,12 @@ export function App() {
         updatedAt: createdAt,
       };
       setData((current) => ({ ...current, papers: [paper, ...current.papers] }));
+      const uploadedSubject = paper.subject;
+      if (isSupportedSubject(uploadedSubject)) {
+        setSelectedSubjects((current) => (current.includes(uploadedSubject) ? current : [...current, uploadedSubject]));
+        setOnboardingComplete(true);
+        setActiveSubject(uploadedSubject);
+      }
       setSelectedPaperId(paper.id);
       setUploadOpen(false);
       setStatus(processNow ? "Paper saved and queued for processing." : "Paper saved.");
@@ -2351,7 +3187,7 @@ export function App() {
     setReviewIndex(0);
     setStatus("Attempt started.");
     setError(null);
-    void enterFocusMode();
+    if (preferences.focusModeDefault) void enterFocusMode();
   }
 
   const updateAnswer = useCallback((questionId: string, patch: Partial<PastPaperAnswer>) => {
@@ -2683,17 +3519,6 @@ export function App() {
     return visible;
   }, [feedbackDraft, feedbackTouched]);
   const feedbackCanSubmit = feedbackDraftIsValid(validateFeedbackDraft(feedbackDraft)) && !feedbackSubmitting;
-  const dashboardStatusAccessible =
-    (appMode === "empty" || appMode === "catalogue" || appMode === "ready") &&
-    preferences.showHeaderSystemInfo &&
-    !uploadOpen &&
-    !editingMetadata &&
-    !confidenceSkipOpen &&
-    !feedbackOpen &&
-    !systemInfoOpen &&
-    !settingsOpen &&
-    !busy &&
-    !smokeBusy;
   const showFeedbackButton =
     (appMode === "empty" || appMode === "catalogue" || appMode === "ready") &&
     preferences.showFloatingFeedback &&
@@ -2710,6 +3535,10 @@ export function App() {
   const answeredDuringAttempt = selectedAttempt?.answers.filter(isAnswerAttempted).length ?? 0;
   const skippedDuringAttempt = selectedAttempt?.answers.filter((answer) => answer.skipped).length ?? 0;
   const focusProgressPercent = selectedPaper?.questions.length ? Math.round(((activeQuestionIndex + 1) / selectedPaper.questions.length) * 100) : 0;
+  const needsOnboarding = appEntered && (!onboardingComplete || !selectedSubjects.length) && appMode !== "taking" && appMode !== "processing" && appMode !== "marking" && appMode !== "review";
+  const showLanding = !appEntered && appMode !== "taking" && appMode !== "processing" && appMode !== "marking" && appMode !== "review";
+  const activeSubjectPapers = data.papers.filter((paper) => paper.subject === activeSubject);
+  const showLegacyDashboard = false;
 
   function feedbackContextPath() {
     const page = window.location.pathname || "/";
@@ -2719,11 +3548,50 @@ export function App() {
   }
 
   function clearLocalDashboardData() {
+    if (!window.confirm("Clear all papers and attempts stored on this device?")) return;
     clearData();
     setData({ papers: [], attempts: [] });
     setSelectedPaperId(null);
     setSelectedAttemptId(null);
     setSystemInfoOpen(false);
+    setSettingsOpen(false);
+    setStatus("Local data cleared.");
+  }
+
+  function exportAllData() {
+    const blob = new Blob([JSON.stringify({ exportedAt: nowIso(), appVersion: appMeta.version, data }, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `past-paper-worker-${appMeta.version}-backup.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function importBackup(file: File | null) {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const parsed = JSON.parse(String(reader.result)) as { data?: AppData; papers?: PastPaper[]; attempts?: PastPaperAttempt[] };
+        const imported = parsed.data ?? { papers: parsed.papers ?? [], attempts: parsed.attempts ?? [] };
+        if (!Array.isArray(imported.papers) || !Array.isArray(imported.attempts)) throw new Error("Invalid backup file.");
+        setData({ papers: imported.papers, attempts: imported.attempts });
+        const importedSubjects = loadSelectedSubjects({ papers: imported.papers, attempts: imported.attempts });
+        if (importedSubjects.length) {
+          setSelectedSubjects(importedSubjects);
+          setActiveSubject(importedSubjects[0]);
+          setOnboardingComplete(true);
+        }
+        setStatus("Backup imported.");
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : "Backup could not be imported.");
+      }
+    };
+    reader.onerror = () => setError("Backup could not be read.");
+    reader.readAsText(file);
   }
 
   async function copyMarkSchemeRow(question: PastPaperQuestion | null) {
@@ -2738,6 +3606,7 @@ export function App() {
 
   const rootClassName = [
     "app-shell",
+    appMode !== "taking" && appMode !== "processing" && appMode !== "marking" && appMode !== "review" ? "app-shell--subject-product" : "",
     `app-shell--${appMode}`,
     `app-shell--theme-${preferences.themeMode}`,
     `app-shell--accent-${preferences.accentColour}`,
@@ -2756,75 +3625,73 @@ export function App() {
         } as React.CSSProperties)
       : undefined;
 
+  if (showLanding) {
+    return (
+      <div className={`product-root app-shell--theme-${preferences.themeMode} app-shell--accent-${preferences.accentColour}${preferences.reduceMotion === "reduce" ? " app-shell--reduce-motion" : ""}`} style={rootStyle}>
+        <LandingPage reduceMotion={preferences.reduceMotion === "reduce"} onEnter={() => enterApp()} onUpload={() => enterApp("upload")} onFeedback={() => openFeedback()} />
+        <FeedbackModal
+          open={feedbackOpen}
+          draft={feedbackDraft}
+          attachments={feedbackAttachments}
+          errors={feedbackErrors}
+          pending={feedbackSubmitting}
+          submitEnabled={feedbackCanSubmit}
+          serverError={feedbackError}
+          onChange={patchFeedbackDraft}
+          onBlur={touchFeedbackField}
+          onAddFiles={(files) => void addFeedbackFiles(files)}
+          onRemoveAttachment={removeFeedbackAttachment}
+          onClose={closeFeedback}
+          onSubmit={() => void submitFeedbackForm()}
+        />
+        <ToastStack toasts={toasts} onDismiss={dismissToast} />
+      </div>
+    );
+  }
+
+  if (needsOnboarding) {
+    return (
+      <div className={`product-root app-shell--theme-${preferences.themeMode} app-shell--accent-${preferences.accentColour}${preferences.reduceMotion === "reduce" ? " app-shell--reduce-motion" : ""}`} style={rootStyle}>
+        <SubjectOnboarding selectedSubjects={selectedSubjects} onSave={saveOnboardingSubjects} />
+        <FeedbackModal
+          open={feedbackOpen}
+          draft={feedbackDraft}
+          attachments={feedbackAttachments}
+          errors={feedbackErrors}
+          pending={feedbackSubmitting}
+          submitEnabled={feedbackCanSubmit}
+          serverError={feedbackError}
+          onChange={patchFeedbackDraft}
+          onBlur={touchFeedbackField}
+          onAddFiles={(files) => void addFeedbackFiles(files)}
+          onRemoveAttachment={removeFeedbackAttachment}
+          onClose={closeFeedback}
+          onSubmit={() => void submitFeedbackForm()}
+        />
+        <ToastStack toasts={toasts} onDismiss={dismissToast} />
+      </div>
+    );
+  }
+
   return (
     <div className={rootClassName} style={rootStyle}>
       {appMode !== "taking" && appMode !== "processing" && appMode !== "marking" && appMode !== "review" ? (
-      <aside className="shell-sidebar">
-        <button className="shell-brand shell-brand--button glass-chrome" onClick={() => { setSelectedPaperId(null); setSelectedAttemptId(null); }} aria-label="Open full dashboard">
-          <AppLogo size={44} />
-        </button>
-
-        <div className="shell-sidebar__block glass-chrome">
-          <span className="eyebrow">Queue</span>
-          <div className="metric-row">
-            <span>Processing</span>
-            <strong>{processingQueue}</strong>
-          </div>
-          <div className="metric-row">
-            <span>Papers</span>
-            <strong>{data.papers.length}</strong>
-          </div>
-          <button className="primary-button primary-button--wide" onClick={() => setUploadOpen(true)}>
-            <UploadCloud size={16} /> Upload paper
-          </button>
-        </div>
-
-        {preferences.showRecentUpdate ? (
-        <div className="shell-sidebar__block glass-chrome update-card">
-          <span className="eyebrow">Recent update</span>
-          <div className="update-card__body">
-            <strong>{appMeta.version}</strong>
-            <p>{appMeta.commitMessage}</p>
-            <div className="update-card__meta">
-              {appMeta.commitHash ? <span>Commit {appMeta.commitHash}</span> : null}
-              <span>{formatUpdateTimestamp(appMeta.updatedAt)}</span>
-            </div>
-          </div>
-        </div>
-        ) : null}
-
-        <button className="settings-launch-button glass-chrome" onClick={() => setSettingsOpen(true)}>
-          <Settings2 size={18} />
-          <span>
-            <strong>Settings</strong>
-            <small>Customize dashboard, focus mode, colours, and panels</small>
-          </span>
-          <ChevronRight size={16} />
-        </button>
-
-        <div className="shell-sidebar__block shell-sidebar__block--grow glass-chrome">
-          <span className="eyebrow">Catalogue</span>
-          <div className="paper-mini-list">
-            {data.papers.map((paper) => (
-              <button
-                key={paper.id}
-                className={paper.id === selectedPaperId ? "list-button list-button--active" : "list-button"}
-                onClick={() => {
-                  setSelectedPaperId(paper.id);
-                  setSelectedAttemptId(null);
-                }}
-              >
-                <div>
-                  <strong>{paper.title}</strong>
-                  <span>{statusLabel(paper.processingStatus)}</span>
-                </div>
-                <FileText size={16} />
-              </button>
-            ))}
-            {!data.papers.length ? <p className="muted-copy">No papers yet.</p> : null}
-          </div>
-        </div>
-      </aside>
+        <SubjectSidebar
+          collapsed={sidebarCollapsed}
+          selectedSubjects={selectedSubjects}
+          activeSubject={activeSubject}
+          onToggleCollapsed={() => setSidebarCollapsed((value) => !value)}
+          onSelectSubject={(subject) => {
+            setActiveSubject(subject);
+            setSelectedPaperId(null);
+            setSelectedAttemptId(null);
+          }}
+          onAddSubject={openSubjectOnboarding}
+          onUpload={() => openSubjectUpload(activeSubject)}
+          onSettings={() => setSettingsOpen(true)}
+          onVersion={() => setVersionHistoryOpen(true)}
+          onCredits={() => setCreditsOpen(true)}
+        />
       ) : null}
 
       <main className="shell-workspace">
@@ -2838,7 +3705,7 @@ export function App() {
               </span>
             </div>
             <div className={overtimeSeconds ? "focus-timer focus-timer--overtime" : "focus-timer"}>
-              <Clock3 size={16} /> {durationLimit ? formatClock(secondsRemaining) : formatClock(elapsedSeconds)}
+              <Clock3 size={16} /> {durationLimit && preferences.timerBehaviour === "count_down" ? formatClock(secondsRemaining) : formatClock(elapsedSeconds)}
             </div>
             <button className="secondary-button" onClick={submitAttempt}>
               <Check size={16} /> End attempt
@@ -2850,33 +3717,39 @@ export function App() {
               <X size={16} /> Exit focus
             </button>
           </header>
-        ) : (
+        ) : appMode === "catalogue" || appMode === "empty" ? null : (
           <header className="workspace-header glass-chrome">
             <div>
               <span className="eyebrow">{statusLabel(appMode)}</span>
-              <h1>{appMode === "empty" ? "Turn past papers into marked practice." : "Practise real past papers with source-checked marking."}</h1>
+              <h1>{selectedPaper?.title ?? "Paper workspace"}</h1>
             </div>
             <div className="button-row">
-              {dashboardStatusAccessible ? (
-                <button className="secondary-button status-toggle-button" onClick={() => setSystemInfoOpen(true)}>
-                  <Info size={16} /> System info
-                </button>
-              ) : null}
-              <button className="secondary-button" onClick={() => void runSmokeTest()} disabled={smokeBusy}>
-                <FlaskConical size={16} /> Smoke test
+              <button className="secondary-button" onClick={() => setSettingsOpen(true)}>
+                <Settings2 size={16} /> Settings
               </button>
-              {appMode === "catalogue" || appMode === "ready" || appMode === "empty" ? (
-                <button className="secondary-button" onClick={askForSuggestions} disabled={busy}>
-                  <BrainCircuit size={16} /> AI suggestions
-                </button>
-              ) : null}
             </div>
           </header>
         )}
 
         <InlineStatus pending={busy} error={error} success={status} />
 
-        {appMode === "catalogue" ? (
+        {appMode === "catalogue" || appMode === "empty" ? (
+          <SubjectDashboard
+            activeSubject={activeSubject}
+            papers={activeSubjectPapers}
+            attempts={data.attempts}
+            onUpload={() => openSubjectUpload(activeSubject)}
+            onOpenPaper={(paper) => {
+              setSelectedPaperId(paper.id);
+              setSelectedAttemptId(null);
+            }}
+            onStartPaper={beginAttempt}
+            onProcessPaper={(paper) => void runProcessing(paper)}
+            onDeletePaper={(paper) => deletePaper(paper.id)}
+          />
+        ) : null}
+
+        {showLegacyDashboard && appMode === "catalogue" ? (
         <div className="stats-grid">
           <div className="stat-card">
             <span>Completed attempts</span>
@@ -2893,13 +3766,13 @@ export function App() {
         </div>
         ) : null}
 
-        {suggestions && (appMode === "catalogue" || appMode === "ready" || appMode === "empty") ? (
+        {showLegacyDashboard && suggestions && (appMode === "catalogue" || appMode === "ready" || appMode === "empty") ? (
           <SectionFrame title="AI Suggestions" subtitle="Generated through the Gemini proxy.">
             <p className="reading-copy">{suggestions}</p>
           </SectionFrame>
         ) : null}
 
-        {appMode === "empty" ? (
+        {showLegacyDashboard && appMode === "empty" ? (
           <div className="dashboard-overview">
             <section className="dashboard-hero glass-chrome">
               <div className="dashboard-hero__copy">
@@ -2966,7 +3839,7 @@ export function App() {
                   <button className="secondary-button" onClick={askForSuggestions} disabled={busy}>
                     <BrainCircuit size={16} /> AI suggestions
                   </button>
-                  <button className="secondary-button" onClick={openFeedback}>
+                  <button className="secondary-button" onClick={() => openFeedback()}>
                     <MessageSquare size={16} /> Share feedback
                   </button>
                 </div>
@@ -2980,7 +3853,7 @@ export function App() {
           </div>
         ) : null}
 
-        {appMode === "catalogue" ? (
+        {showLegacyDashboard && appMode === "catalogue" ? (
         <SectionFrame title="Paper Catalogue" subtitle="Grouped by subject and ordered by identified year. Open a paper for its dedicated dashboard.">
           <div className="subject-catalogue">
             {subjectPaperGroups(data.papers).map((group) => (
@@ -3076,9 +3949,6 @@ export function App() {
               </button>
               <button className="secondary-button" onClick={() => void runProcessing(selectedPaper)} disabled={selectedPaper.processingStatus === "processing"}>
                 <RotateCcw size={16} /> Retry
-              </button>
-              <button className="secondary-button" onClick={() => void runSmokeTest()} disabled={smokeBusy}>
-                <FlaskConical size={16} /> Run smoke test
               </button>
             </div>
           </div>
@@ -3192,7 +4062,7 @@ export function App() {
                     </span>
                     <span>{marksLabel(activeQuestion.maxMarks)}</span>
                     <span className={overtimeSeconds ? "paper-timer-strip__overtime" : ""}>
-                      <Clock3 size={16} /> {durationLimit ? formatClock(secondsRemaining) : formatClock(elapsedSeconds)}
+                      <Clock3 size={16} /> {durationLimit && preferences.timerBehaviour === "count_down" ? formatClock(secondsRemaining) : formatClock(elapsedSeconds)}
                     </span>
                   </div>
                   {preferences.showFocusProgress ? (
@@ -3234,29 +4104,7 @@ export function App() {
                     <p className="question-prompt">{cleanVisiblePrompt(activeQuestion.promptText)}</p>
                     <div className={activeAnswer.skipped ? "answer-workspace answer-workspace--skipped" : "answer-workspace"}>
                       {activeSupportIssue ? (
-                        <div className="unsupported-question-state">
-                          <div>
-                            <span className="eyebrow">Unsupported format</span>
-                            <strong>This question cannot be read by the current answer UI.</strong>
-                            <p>{activeSupportIssue.reason}</p>
-                          </div>
-                          <div className="supported-format-panel">
-                            <span className="eyebrow">Currently supported</span>
-                            <div className="chip-wrap">
-                              {supportedQuestionTypeLabels.map((label) => (
-                                <span className="static-chip" key={label}>
-                                  {label}
-                                </span>
-                              ))}
-                            </div>
-                          </div>
-                          <div className="button-row button-row--start">
-                            <button className="secondary-button" onClick={() => reportUnsupportedQuestion(activeQuestion)} disabled={activeSupportIssue.reported}>
-                              <AlertCircle size={16} /> {activeSupportIssue.reported ? "Reported" : "Report inaccurate classification"}
-                            </button>
-                          </div>
-                          <p className="muted-copy">{marksLabel(activeQuestion.maxMarks)} will be deducted from the attempt total.</p>
-                        </div>
+                        <UnsupportedQuestionPanel issue={activeSupportIssue} marks={activeQuestion.maxMarks} onReport={() => reportUnsupportedQuestion(activeQuestion)} />
                       ) : (
                         <AnswerInput question={activeQuestion} answer={activeAnswer} onChange={(patch) => updateAnswer(activeQuestion.id, patch)} />
                       )}
@@ -3678,13 +4526,13 @@ export function App() {
         ) : null}
       </main>
 
-      {appMode === "catalogue" || appMode === "ready" || appMode === "empty" ? (
-      <aside className="shell-inspector">
-        <DashboardStatusPanels aiModel={aiModel} setAIModel={setAIModel} smokeTest={smokeTest} analytics={analytics} onClearLocalData={clearLocalDashboardData} preferences={preferences} />
-      </aside>
+      {preferences.devModeEnabled && !settingsOpen && (appMode === "catalogue" || appMode === "ready" || appMode === "empty") ? (
+        <aside className="shell-inspector shell-inspector--dev">
+          <DashboardStatusPanels aiModel={aiModel} setAIModel={setAIModel} smokeTest={smokeTest} analytics={analytics} onClearLocalData={clearLocalDashboardData} preferences={preferences} />
+        </aside>
       ) : null}
 
-      <UploadModal open={uploadOpen} pending={busy} onClose={() => setUploadOpen(false)} onSubmit={handleUpload} />
+      <UploadModal open={uploadOpen} pending={busy} initialSubject={activeSubject} onClose={() => setUploadOpen(false)} onSubmit={handleUpload} />
       <MetadataModal open={editingMetadata && Boolean(selectedPaper)} draft={metadataDraft} onChange={setMetadataDraft} onClose={() => setEditingMetadata(false)} onSave={saveMetadata} />
       <FeedbackModal
         open={feedbackOpen}
@@ -3711,7 +4559,32 @@ export function App() {
         preferences={preferences}
         onClose={() => setSystemInfoOpen(false)}
       />
-      <SettingsModal open={settingsOpen} preferences={preferences} onChange={patchPreferences} onReset={resetPreferences} onClose={() => setSettingsOpen(false)} />
+      <SettingsModal
+        open={settingsOpen}
+        preferences={preferences}
+        selectedSubjects={selectedSubjects}
+        data={data}
+        aiModel={aiModel}
+        setAIModel={setAIModel}
+        smokeTest={smokeTest}
+        smokeBusy={smokeBusy}
+        onChange={(patch) => {
+          patchPreferences(patch);
+          if (patch.sidebarDefault) setSidebarCollapsed(patch.sidebarDefault === "collapsed");
+        }}
+        onReset={resetPreferences}
+        onEditSubjects={openSubjectOnboarding}
+        onOpenFeedback={openFeedback}
+        onOpenVersion={() => setVersionHistoryOpen(true)}
+        onOpenCredits={() => setCreditsOpen(true)}
+        onRunSmokeTest={() => void runSmokeTest()}
+        onExportData={exportAllData}
+        onImportData={importBackup}
+        onClearLocalData={clearLocalDashboardData}
+        onClose={() => setSettingsOpen(false)}
+      />
+      <VersionHistoryModal open={versionHistoryOpen} onClose={() => setVersionHistoryOpen(false)} />
+      <CreditsModal open={creditsOpen} onClose={() => setCreditsOpen(false)} />
       <ConfidenceSkipModal
         open={confidenceSkipOpen}
         question={activeQuestion}
@@ -3721,7 +4594,7 @@ export function App() {
         onConfirm={confirmConfidenceSkip}
       />
       {showFeedbackButton ? (
-        <button className="feedback-fab" type="button" aria-label="Send feedback" onClick={openFeedback}>
+        <button className="feedback-fab" type="button" aria-label="Send feedback" onClick={() => openFeedback()}>
           <MessageSquare size={20} />
         </button>
       ) : null}
