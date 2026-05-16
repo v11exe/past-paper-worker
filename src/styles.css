@@ -2841,6 +2841,41 @@ p {
   grid-template-columns: minmax(0, 1fr);
 }
 
+.app-shell--subject-product.app-shell--marking,
+.app-shell--subject-product.app-shell--review {
+  grid-template-columns: 280px minmax(0, 1fr);
+}
+
+.app-shell--marking .shell-workspace,
+.app-shell--review .shell-workspace {
+  padding: 20px;
+  align-items: stretch;
+  justify-content: flex-start;
+  align-content: start;
+}
+
+.app-shell--marking .paper-workspace-v133,
+.app-shell--review .paper-workspace-v133 {
+  width: min(960px, 100%);
+  margin: 0 auto;
+  align-self: start;
+}
+
+.app-shell--marking .paper-workspace-v133__header,
+.app-shell--marking .paper-workspace-v133__panel,
+.app-shell--review .paper-workspace-v133__header,
+.app-shell--review .paper-workspace-v133__panel,
+.app-shell--marking .paper-review-card--focus,
+.app-shell--review .paper-review-card--focus {
+  width: min(960px, 100%);
+  margin: 0 auto;
+}
+
+.app-shell--marking .workspace-header,
+.app-shell--review .workspace-header {
+  margin-top: 0;
+}
+
 .app-shell--taking,
 .app-shell--focus {
   grid-template-columns: minmax(0, 1fr);

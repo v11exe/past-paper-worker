@@ -9,10 +9,10 @@ import type { AppData, PastPaper, PastPaperAttempt, PastPaperQuestion } from "./
 function clearUiStorage() {
   [
     "past-paper-worker:feedback-draft:v1",
-    "past-paper-worker:selected-subjects:v1.3.3",
-    "past-paper-worker:onboarding-completed:v1.3.3",
-    "past-paper-worker:active-subject:v1.3.3",
-    "past-paper-worker:sidebar-collapsed:v1.3.3",
+    "past-paper-worker:selected-subjects:v1.3.4",
+    "past-paper-worker:onboarding-completed:v1.3.4",
+    "past-paper-worker:active-subject:v1.3.4",
+    "past-paper-worker:sidebar-collapsed:v1.3.4",
   ].forEach((key) => window.localStorage.removeItem(key));
 }
 
@@ -130,8 +130,8 @@ describe("v1.3 product shell", () => {
   });
 
   it("shows the landing page again on reload even when subjects are already saved", async () => {
-    window.localStorage.setItem("past-paper-worker:selected-subjects:v1.3.3", JSON.stringify(["AQA GCSE Biology"]));
-    window.localStorage.setItem("past-paper-worker:onboarding-completed:v1.3.3", "true");
+    window.localStorage.setItem("past-paper-worker:selected-subjects:v1.3.4", JSON.stringify(["AQA GCSE Biology"]));
+    window.localStorage.setItem("past-paper-worker:onboarding-completed:v1.3.4", "true");
     render(<App />);
 
     expect(screen.getByRole("heading", { name: /past papers, marked in minutes/i })).toBeInTheDocument();
@@ -146,7 +146,7 @@ describe("v1.3 product shell", () => {
     await user.click(screen.getByRole("button", { name: /collapse sidebar/i }));
     expect(screen.queryByText("Chemistry")).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /v1.3.3 marking workspace and quota fixes/i }));
+    await user.click(screen.getByRole("button", { name: /v1.3.4 marking layout fix/i }));
     expect(await screen.findByRole("heading", { name: "Version history" })).toBeInTheDocument();
     expect(screen.getByText("Tightened supported-subject handling.")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Close version history" }));

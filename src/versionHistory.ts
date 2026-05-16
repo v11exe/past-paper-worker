@@ -7,6 +7,15 @@ export type VersionHistoryEntry = {
 
 export const versionHistory: VersionHistoryEntry[] = [
   {
+    version: "v1.3.4",
+    title: "Marking layout fix",
+    date: "2026-05-15",
+    changes: [
+      "Fixed excess vertical spacing in the marking workspace.",
+      "Kept marking progress visible without needing to scroll.",
+    ],
+  },
+  {
     version: "v1.3.3",
     title: "Marking workspace and quota fixes",
     date: "2026-05-15",

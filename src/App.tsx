@@ -165,10 +165,10 @@ type ToastItem = {
 type AppView = "landing" | "onboarding" | "app";
 
 const PREFERENCES_STORAGE_KEY = "past-paper-worker:preferences:v1";
-const SELECTED_SUBJECTS_STORAGE_KEY = "past-paper-worker:selected-subjects:v1.3.3";
-const ONBOARDING_COMPLETE_STORAGE_KEY = "past-paper-worker:onboarding-completed:v1.3.3";
-const ACTIVE_SUBJECT_STORAGE_KEY = "past-paper-worker:active-subject:v1.3.3";
-const SIDEBAR_COLLAPSED_STORAGE_KEY = "past-paper-worker:sidebar-collapsed:v1.3.3";
+const SELECTED_SUBJECTS_STORAGE_KEY = "past-paper-worker:selected-subjects:v1.3.4";
+const ONBOARDING_COMPLETE_STORAGE_KEY = "past-paper-worker:onboarding-completed:v1.3.4";
+const ACTIVE_SUBJECT_STORAGE_KEY = "past-paper-worker:active-subject:v1.3.4";
+const SIDEBAR_COLLAPSED_STORAGE_KEY = "past-paper-worker:sidebar-collapsed:v1.3.4";
 const LANDING_PHRASES = [
   "Upload a paper. Get marks back.",
   "Answer questions online.",
@@ -1682,7 +1682,7 @@ function UnsupportedSubjectDashboard({
           </article>
           <article className="feature-card">
             <strong>Legacy papers</strong>
-            <p>{legacyPapers.length ? `${legacyPapers.length} existing paper${legacyPapers.length === 1 ? "" : "s"} are stored for this subject, but v1.3.3 does not treat it as supported.` : "No papers stored for this subject yet."}</p>
+            <p>{legacyPapers.length ? `${legacyPapers.length} existing paper${legacyPapers.length === 1 ? "" : "s"} are stored for this subject, but v1.3.4 does not treat it as supported.` : "No papers stored for this subject yet."}</p>
           </article>
         </div>
       </section>
