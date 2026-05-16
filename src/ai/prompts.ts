@@ -53,6 +53,7 @@ export function buildPaperProcessingPrompt(input: {
 }) {
   return [
     "You are processing an exam past paper into strict structured JSON for a paper-taking UI.",
+    "You are extracting GCSE exam questions. Treat the source paper as authoritative. Do not infer or invent content that is not visible. If a question requires a table, graph, drawing, diagram labelling, matching grid, or row-by-row checkbox table, mark it as unsupported rather than forcing it into a text box.",
     "Return JSON only. No markdown. No commentary.",
     `Title: ${input.title}`,
     `Subject: ${input.subject}`,
@@ -88,6 +89,7 @@ export function buildPageInventoryPrompt(input: {
 }) {
   return [
     "Build a compact inventory of an exam paper from page text and any attached page screenshots.",
+    "Treat the source paper as authoritative. Preserve exact visible question numbering and source page references. Do not infer or invent missing questions.",
     "Return JSON only. No markdown. No commentary.",
     `Title supplied by user: ${input.title}`,
     `Subject: ${input.subject}`,
@@ -112,6 +114,7 @@ export function buildQuestionBoundaryPrompt(input: {
 }) {
   return [
     "Identify the ordered question boundaries in this exam paper.",
+    "Treat the source paper as authoritative. Preserve exact question numbering and source page references. Do not infer or invent missing questions.",
     "Return JSON only. No markdown. No commentary.",
     `Title: ${input.title}`,
     `Subject: ${input.subject}`,
@@ -140,6 +143,7 @@ export function buildQuestionExtractionPrompt(input: {
 }) {
   return [
     "Extract structured exam questions for only the supplied page range.",
+    "You are extracting GCSE exam questions. Treat the source paper as authoritative. Do not infer or invent content that is not visible. If a question requires a table, graph, drawing, diagram labelling, matching grid, or row-by-row checkbox table, mark it as unsupported rather than forcing it into a text box.",
     "Return JSON only. No markdown. No commentary.",
     `Title: ${input.title}`,
     `Subject: ${input.subject}`,
@@ -152,6 +156,7 @@ export function buildQuestionExtractionPrompt(input: {
     "Rules:",
     "1. Extract only questions whose start/end pages are listed below.",
     "2. Preserve numbering hierarchy such as 1, 1.1, 1(a).",
+    "2b. Preserve the exact visible question numbering; never renumber, skip forward, or create missing subparts.",
     "2a. When a page range belongs to a main question but contains subquestions numbered 1, 2, 3, treat them as subparts of that main question, not as new top-level paper questions.",
     "3. Attach mediaRefs only for required named/referenced figures, diagrams, graphs, maps, photographs, flowcharts, or source extracts. Do not attach generic page screenshots, answer-line tables, tick-box tables, or layout-only content.",
     "4. Leave markSchemeRef and markSchemeData null; mark schemes are aligned in a later stage.",
@@ -162,7 +167,7 @@ export function buildQuestionExtractionPrompt(input: {
     "9. responseType must be exactly one of long_text, short_text, numeric, single_choice, multi_select. Do not output calculation, tick_box, equation, table, diagram, or any other value.",
     "10. Only reinterpret genuinely simple answer formats into supported UI types. If the item is a table/grid/matrix, row-by-row checkbox table, matching table, drawing, plotting, shading, diagram-completion, or diagram-labelling task, keep the question text but set originalContent.unsupportedQuestionFormat true and originalContent.unsupportedReason. Unsupported questions must not become normal text answers.",
     "10a. AQA phrases such as Tick one box, Shade one lozenge, Choose one answer are single_choice; Tick two boxes or Choose two answers are multi_select when the options are visible.",
-    "10b. For single_choice or multi_select questions, extract every visible answer option into options as concise strings. Do not leave A/B/C/D options embedded only in promptText. Remove visual checkbox, tick, lozenge, or square glyphs from promptText and option text.",
+    "10b. For single_choice or multi_select questions, extract every visible answer option into options as concise strings. Extract AQA tick-box options cleanly. Do not leave A/B/C/D options embedded only in promptText. Remove visual checkbox, tick, lozenge, or square glyphs from promptText and option text.",
     "11. If a question explicitly refers to a required figure, diagram, graph, map, photograph, flowchart, or source extract, add a mediaRef with the visible label and pageNumber even when exact cropping is not available. Do not add mediaRefs for ordinary answer tables, tick boxes, blank working spaces, or whole pages.",
     "12. Copy visible mark allocations into maxMarks for the specific extracted item. If promptText visibly contains several subpart mark allocations, either split the subparts or make maxMarks the sum of those visible allocations.",
     "Question boundaries:",
@@ -180,6 +185,7 @@ export function buildMarkSchemeAlignmentPrompt(input: {
 }) {
   return [
     "Align mark-scheme content to already extracted exam questions.",
+    "Treat the source mark scheme as authoritative. Do not invent marking points, accept guidance, do-not-accept guidance, or question references.",
     "Return JSON only. No markdown. No commentary.",
     `Title: ${input.title}`,
     `Subject: ${input.subject}`,
@@ -209,14 +215,16 @@ export function buildPaperMarkingPrompt(input: {
   markSchemeText: string;
 }) {
   return [
-    "Mark this answer using only the supplied mark scheme content.",
-    "Return JSON only. No markdown. No commentary.",
+    "You are a strict GCSE examiner. Mark only against the supplied mark scheme. Do not reward the student for vague, unrelated, guessed, or partially contradictory answers unless the mark scheme explicitly allows it. If the answer does not match the mark point, award 0 for that mark point. Do not be generous because the answer sounds biologically plausible. Use the source mark scheme, not general knowledge.",
+    "Return valid JSON only. No markdown. No prose outside the JSON object.",
     `Subject: ${input.subject}`,
     `Question ${input.questionNumber} (${input.maxMarks} marks): ${input.promptText}`,
     `Student answer: ${input.answerText}`,
     `Aligned mark scheme content: ${input.markSchemeText}`,
     "The supplied mark scheme may include several rows from the same parent question. First identify the row/subpart that matches the exact question number and wording, then mark only against that relevant row or rows.",
     "Apply the mark scheme like a careful examiner. Award every mark the student earns using points and acceptable alternatives. Do not award marks for answers listed as do-not-accept. Ignore content listed as ignore unless it contradicts an otherwise correct answer.",
+    "For AQA Biology, Chemistry, and Physics, apply AQA mark scheme logic exactly: award only visible marking points; apply do-not-accept guidance; ignore irrelevant extra writing unless it contradicts the answer; if the student gives multiple alternatives and one contradicts the correct answer, mark according to the mark scheme guidance; do not award marks for copied question words.",
+    "For Computer Science, apply OCR J277 mark scheme logic exactly: credit precise technical vocabulary; do not award vague restatements; require the specific concept named by the mark scheme.",
     "Use the markSchemeEvidence field to quote or summarise the exact mark-scheme row/section used. Put row/page/reference details in markSchemeReference.",
     "Return awardedMarks, maxMarks, a short rationale string, missingPoints as an array of strings, markSchemeEvidence as one string or null, markSchemeReference as an object, and confidence.",
     "Do not return markSchemeEvidence as an array. Do not return markSchemeReference as a string.",

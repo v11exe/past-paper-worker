@@ -62,6 +62,10 @@ function seedData(data: AppData) {
 function clearUiStorage() {
   [
     "past-paper-worker:feedback-draft:v1",
+    "past-paper-worker:selected-subjects:v1.3.5",
+    "past-paper-worker:onboarding-completed:v1.3.5",
+    "past-paper-worker:active-subject:v1.3.5",
+    "past-paper-worker:sidebar-collapsed:v1.3.5",
     "past-paper-worker:selected-subjects:v1.3.4",
     "past-paper-worker:onboarding-completed:v1.3.4",
     "past-paper-worker:active-subject:v1.3.4",
@@ -302,7 +306,11 @@ describe("feedback flow", () => {
     expect(await screen.findByRole("heading", { name: "Workspace settings" })).toBeInTheDocument();
     expect(screen.queryByLabelText("Model switch")).not.toBeInTheDocument();
     await user.click(screen.getByLabelText("Enable Dev mode"));
-    expect(await screen.findByLabelText("Model switch")).toBeInTheDocument();
+    const modelSwitch = await screen.findByLabelText("Model switch");
+    expect(modelSwitch).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Claude Sonnet 4.6" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Gemini 2.5 Flash Lite" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Gemini 2.5 Flash" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /smoke test/i })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Close settings" }));
 

@@ -9,6 +9,10 @@ import type { AppData, PastPaper, PastPaperAttempt, PastPaperQuestion } from "./
 function clearUiStorage() {
   [
     "past-paper-worker:feedback-draft:v1",
+    "past-paper-worker:selected-subjects:v1.3.5",
+    "past-paper-worker:onboarding-completed:v1.3.5",
+    "past-paper-worker:active-subject:v1.3.5",
+    "past-paper-worker:sidebar-collapsed:v1.3.5",
     "past-paper-worker:selected-subjects:v1.3.4",
     "past-paper-worker:onboarding-completed:v1.3.4",
     "past-paper-worker:active-subject:v1.3.4",
@@ -146,7 +150,7 @@ describe("v1.3 product shell", () => {
     await user.click(screen.getByRole("button", { name: /collapse sidebar/i }));
     expect(screen.queryByText("Chemistry")).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /v1.3.4 marking layout fix/i }));
+    await user.click(screen.getByRole("button", { name: /v1.3.5 claude sonnet migration/i }));
     expect(await screen.findByRole("heading", { name: "Version history" })).toBeInTheDocument();
     expect(screen.getByText("Tightened supported-subject handling.")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Close version history" }));
@@ -316,7 +320,7 @@ describe("v1.3 product shell", () => {
           markingIssues: [{
             questionId: "q1",
             type: "transient_provider_error",
-            message: "Gemini quota limit reached. Retry in about 47 seconds.",
+            message: "AI provider quota limit reached. Retry in about 47 seconds.",
             retryAfterMs: 47000,
             createdAt: "2026-05-15T12:11:00.000Z",
           }],
@@ -330,7 +334,7 @@ describe("v1.3 product shell", () => {
     await user.click(screen.getAllByRole("button", { name: /marked/i })[1]);
 
     expect(await screen.findByText("Marked review")).toBeInTheDocument();
-    expect(screen.getByText(/gemini quota limit reached/i)).toBeInTheDocument();
+    expect(screen.getByText(/ai provider quota limit reached/i)).toBeInTheDocument();
     expect(screen.getAllByText("Pending").length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: /retry this question/i })).toBeInTheDocument();
   });

@@ -39,7 +39,7 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { DEFAULT_AI_MODEL, FALLBACK_AI_MODELS, AI_MODEL_CHOICES, ensureAIReadyForUserAction, aiChat, runAISmokeTest } from "./ai/provider";
+import { DEFAULT_AI_MODEL, FALLBACK_AI_MODELS, AI_MODEL_CHOICES, ensureAIReadyForUserAction, aiChat, modelLabelForModel, resolveAIModelConfig, runAISmokeTest } from "./ai/provider";
 import { appMeta } from "./appMeta";
 import { AppLogo } from "./components/AppLogo";
 import { cleanChoiceGlyphs, extractInlineOptions } from "./lib/choiceParsing";
@@ -162,13 +162,25 @@ type ToastItem = {
   durationMs: number;
 };
 
+type RuntimeEnvStatus = {
+  hasAnthropicKey: boolean;
+  hasGeminiKey: boolean;
+  keys: string[];
+};
+
 type AppView = "landing" | "onboarding" | "app";
 
 const PREFERENCES_STORAGE_KEY = "past-paper-worker:preferences:v1";
-const SELECTED_SUBJECTS_STORAGE_KEY = "past-paper-worker:selected-subjects:v1.3.4";
-const ONBOARDING_COMPLETE_STORAGE_KEY = "past-paper-worker:onboarding-completed:v1.3.4";
-const ACTIVE_SUBJECT_STORAGE_KEY = "past-paper-worker:active-subject:v1.3.4";
-const SIDEBAR_COLLAPSED_STORAGE_KEY = "past-paper-worker:sidebar-collapsed:v1.3.4";
+const SELECTED_SUBJECTS_STORAGE_KEY = "past-paper-worker:selected-subjects:v1.3.5";
+const ONBOARDING_COMPLETE_STORAGE_KEY = "past-paper-worker:onboarding-completed:v1.3.5";
+const ACTIVE_SUBJECT_STORAGE_KEY = "past-paper-worker:active-subject:v1.3.5";
+const SIDEBAR_COLLAPSED_STORAGE_KEY = "past-paper-worker:sidebar-collapsed:v1.3.5";
+const LEGACY_UI_STORAGE_KEYS = {
+  selectedSubjects: "past-paper-worker:selected-subjects:v1.3.4",
+  onboardingComplete: "past-paper-worker:onboarding-completed:v1.3.4",
+  activeSubject: "past-paper-worker:active-subject:v1.3.4",
+  sidebarCollapsed: "past-paper-worker:sidebar-collapsed:v1.3.4",
+} as const;
 const LANDING_PHRASES = [
   "Upload a paper. Get marks back.",
   "Answer questions online.",
@@ -228,9 +240,9 @@ function isSelectableSubject(value: string): value is SelectableSubject {
   return selectableSubjects.includes(value as SelectableSubject);
 }
 
-function readBooleanStorage(key: string, fallback = false) {
+function readBooleanStorage(key: string, fallback = false, legacyKey?: string) {
   try {
-    const value = window.localStorage.getItem(key);
+    const value = window.localStorage.getItem(key) ?? (legacyKey ? window.localStorage.getItem(legacyKey) : null);
     if (value === null) return fallback;
     return value === "true";
   } catch {
@@ -252,7 +264,7 @@ function normalizeSelectedSubjects(subjects: string[]): SelectableSubject[] {
 
 function loadSelectedSubjects(data?: AppData): SelectableSubject[] {
   try {
-    const raw = window.localStorage.getItem(SELECTED_SUBJECTS_STORAGE_KEY);
+    const raw = window.localStorage.getItem(SELECTED_SUBJECTS_STORAGE_KEY) ?? window.localStorage.getItem(LEGACY_UI_STORAGE_KEYS.selectedSubjects);
     if (raw) {
       const parsed = JSON.parse(raw) as unknown;
       if (Array.isArray(parsed)) {
@@ -280,7 +292,7 @@ function saveSelectedSubjects(subjects: SelectableSubject[]) {
 
 function loadActiveSubject(subjects: SelectableSubject[]) {
   try {
-    const raw = window.localStorage.getItem(ACTIVE_SUBJECT_STORAGE_KEY);
+    const raw = window.localStorage.getItem(ACTIVE_SUBJECT_STORAGE_KEY) ?? window.localStorage.getItem(LEGACY_UI_STORAGE_KEYS.activeSubject);
     if (raw && subjects.includes(raw as SelectableSubject)) return raw as SelectableSubject;
   } catch {
     // Non-critical local preference.
@@ -467,7 +479,7 @@ function markingIssueLabel(issue: PastPaperMarkingIssue | null | undefined) {
   if (!issue) return null;
   if (issue.type === "transient_provider_error") {
     const seconds = issue.retryAfterMs ? Math.max(1, Math.round(issue.retryAfterMs / 1000)) : null;
-    return seconds ? `Gemini quota limit reached. This answer was not marked. Retry in about ${seconds} seconds.` : "Gemini quota limit reached. This answer was not marked yet.";
+    return seconds ? `AI provider quota limit reached. This answer was not marked. Retry in about ${seconds} seconds.` : "AI provider quota limit reached. This answer was not marked yet.";
   }
   return issue.message;
 }
@@ -1044,6 +1056,34 @@ function textLengthForAsset(asset: PastPaperAsset) {
 
 function latestAIRequest(diagnostics?: ProcessingDiagnostics | null) {
   return diagnostics?.aiRequests.at(-1) ?? null;
+}
+
+function aiModelShortLabel(model?: string | null, modelLabel?: string | null) {
+  if (model) return modelLabelForModel(model, true);
+  return modelLabel ?? modelLabelForModel(DEFAULT_AI_MODEL, true);
+}
+
+function processingModelStatus(diagnostics: ProcessingDiagnostics | null | undefined) {
+  const requests = diagnostics?.aiRequests ?? [];
+  const successful = [...requests].reverse().find((request) => request.status === "success");
+  const finalModel = successful?.model ?? DEFAULT_AI_MODEL;
+  const finalLabel = successful?.modelLabel ?? modelLabelForModel(finalModel);
+  const fallbackFromModel = successful?.fallbackFromModel ?? requests.find((request) => request.fallbackFromModel)?.fallbackFromModel ?? null;
+  if (fallbackFromModel) {
+    return `Paper processed by ${finalLabel} after ${aiModelShortLabel(fallbackFromModel)} was unavailable.`;
+  }
+  return `Paper processed by ${aiModelShortLabel(finalModel, finalLabel)}.`;
+}
+
+function markingModelStatus(marks: PastPaperQuestionMark[]) {
+  const aiMarks = marks.filter((mark) => mark.model);
+  const fallbackMark = aiMarks.find((mark) => mark.fallbackFromModel);
+  const labels = [...new Set(aiMarks.map((mark) => mark.modelLabel ?? (mark.model ? modelLabelForModel(mark.model) : null)).filter((label): label is string => Boolean(label)))];
+  if (!aiMarks.length) return "Attempt marked with local deterministic checks.";
+  if (labels.length > 1 && fallbackMark) return "Attempt marked using Claude Sonnet and Gemini fallback.";
+  const label = labels[0] ?? modelLabelForModel(DEFAULT_AI_MODEL, true);
+  if (fallbackMark?.fallbackFromModel) return `Attempt marked by ${label} after ${aiModelShortLabel(fallbackMark.fallbackFromModel)} was unavailable.`;
+  return `Attempt marked by ${aiModelShortLabel(aiMarks[0].model, label)}.`;
 }
 
 function diagnosticBundle(paper: PastPaper, attempts: PastPaperAttempt[] = []) {
@@ -1682,7 +1722,7 @@ function UnsupportedSubjectDashboard({
           </article>
           <article className="feature-card">
             <strong>Legacy papers</strong>
-            <p>{legacyPapers.length ? `${legacyPapers.length} existing paper${legacyPapers.length === 1 ? "" : "s"} are stored for this subject, but v1.3.4 does not treat it as supported.` : "No papers stored for this subject yet."}</p>
+            <p>{legacyPapers.length ? `${legacyPapers.length} existing paper${legacyPapers.length === 1 ? "" : "s"} are stored for this subject, but v1.3.5 does not treat it as supported.` : "No papers stored for this subject yet."}</p>
           </article>
         </div>
       </section>
@@ -1886,7 +1926,7 @@ function CreditsModal({ open, onClose }: { open: boolean; onClose: () => void })
               <p><strong>Developed by Rayaan Omair.</strong></p>
               <p><strong>Logo credit: Elliot Neilsen.</strong></p>
               <div className="chip-wrap">
-                {["React", "Vite", "Cloudflare Workers", "Gemini via secure Worker proxy", "pdf.js", "lucide-react", "framer-motion"].map((item) => (
+                {["React", "Vite", "Cloudflare Workers", "AI via secure Worker proxy", "pdf.js", "lucide-react", "framer-motion"].map((item) => (
                   <span className="static-chip" key={item}>{item}</span>
                 ))}
               </div>
@@ -2124,7 +2164,7 @@ function ProcessingPanel({ paper, job, variant = "full" }: { paper: PastPaper; j
             <span>Text {paperTextChars.toLocaleString()} chars</span>
             <span>Screenshots {diagnostics.screenshotStats.filter((item) => item.assetKind === "paper").length}</span>
             <span>Prompt {diagnostics.promptStats.at(-1)?.charCount.toLocaleString() ?? 0} chars</span>
-            <span>Model {latestRequest?.model ?? DEFAULT_AI_MODEL}</span>
+            <span>Model {latestRequest?.modelLabel ?? modelLabelForModel(latestRequest?.model ?? DEFAULT_AI_MODEL)}</span>
             <span>Last {diagnostics.lastSuccessfulStage ?? "none"}</span>
           </div>
         ) : null}
@@ -2138,7 +2178,7 @@ function ProcessingPanel({ paper, job, variant = "full" }: { paper: PastPaper; j
                 Screenshots:{" "}
                 {diagnostics.screenshotStats.map((shot) => `${shot.assetKind} p${shot.pageNumber} ${shot.width}x${shot.height} ${shot.byteSize}b`).join(" / ") || "none"}
               </span>
-              <span>Requests: {diagnostics.aiRequests.map((request) => `${request.label} ${request.status} ${request.startedAt} ${request.endedAt ?? ""}`).join(" / ") || "none"}</span>
+              <span>Requests: {diagnostics.aiRequests.map((request) => `${request.label} ${request.provider ?? "ai"} ${request.modelLabel ?? request.model} ${request.status} ${request.startedAt} ${request.endedAt ?? ""}`).join(" / ") || "none"}</span>
               <span>Schema paths: {diagnostics.schemaErrors.flatMap((item) => item.paths).join(", ") || "none"}</span>
               <span>Integrity: {diagnostics.integrityFailures?.join(" / ") || "none"}</span>
             </div>
@@ -2516,20 +2556,20 @@ function DashboardStatusPanels({
         <span className="eyebrow">System</span>
         <div className="metric-row">
           <span>AI provider</span>
-          <strong>Gemini</strong>
+          <strong>{modelLabelForModel(aiModel, true)}</strong>
         </div>
-        {preferences.showTechnicalModel ? (
+        {preferences.devModeEnabled ? (
           <>
             <div className="metric-row">
               <span>Model</span>
-              <strong>{aiModel}</strong>
+              <strong>{modelLabelForModel(aiModel)}</strong>
             </div>
             <label className="field compact-field">
               <span>Model switch</span>
               <select aria-label="Model switch" value={aiModel} onChange={(event) => setAIModel(event.target.value)}>
                 {AI_MODEL_CHOICES.map((model) => (
-                  <option key={model} value={model}>
-                    {model}
+                  <option key={model.model} value={model.model}>
+                    {model.label}
                   </option>
                 ))}
               </select>
@@ -2698,6 +2738,7 @@ function SettingsModal({
   setAIModel,
   smokeTest,
   smokeBusy,
+  runtimeEnvStatus,
   onChange,
   onReset,
   onEditSubjects,
@@ -2718,6 +2759,7 @@ function SettingsModal({
   setAIModel: (value: string) => void;
   smokeTest: AISmokeTestResult | null;
   smokeBusy: boolean;
+  runtimeEnvStatus: RuntimeEnvStatus | null;
   onChange: (patch: Partial<AppPreferences>) => void;
   onReset: () => void;
   onEditSubjects: () => void;
@@ -2951,13 +2993,16 @@ function SettingsModal({
                         <span>Model switch</span>
                         <select aria-label="Model switch" value={aiModel} onChange={(event) => setAIModel(event.target.value)}>
                           {AI_MODEL_CHOICES.map((model) => (
-                            <option key={model} value={model}>{model}</option>
+                            <option key={model.model} value={model.model}>{model.label}</option>
                           ))}
                         </select>
                       </label>
                       <div className="diagnostic-grid">
-                        <span>Provider Gemini</span>
-                        <span>API keys server-side</span>
+                        <span>Selected provider {resolveAIModelConfig(aiModel).provider}</span>
+                        <span>Selected model {modelLabelForModel(aiModel)}</span>
+                        <span>Fallback order {FALLBACK_AI_MODELS.map((model) => modelLabelForModel(model)).join(" / ")}</span>
+                        <span>Anthropic key configured: {runtimeEnvStatus ? (runtimeEnvStatus.hasAnthropicKey ? "yes" : "no") : "unknown"}</span>
+                        <span>Gemini key configured: {runtimeEnvStatus ? (runtimeEnvStatus.hasGeminiKey ? "yes" : "no") : "unknown"}</span>
                         <span>Commit {appMeta.commitHash ?? "unavailable"}</span>
                         <span>{data.papers.length} local papers</span>
                       </div>
@@ -3189,6 +3234,7 @@ export function App() {
   const [aiModel, setAIModel] = useState(DEFAULT_AI_MODEL);
   const [smokeTest, setSmokeTest] = useState<AISmokeTestResult | null>(null);
   const [smokeBusy, setSmokeBusy] = useState(false);
+  const [runtimeEnvStatus, setRuntimeEnvStatus] = useState<RuntimeEnvStatus | null>(null);
   const [isFocusMode, setIsFocusMode] = useState(false);
   const [fullscreenSupported, setFullscreenSupported] = useState(false);
   const cancelledProcessingJobs = useRef(new Set<string>());
@@ -3209,9 +3255,9 @@ export function App() {
   const [preferences, setPreferences] = useState<AppPreferences>(() => loadPreferences());
   const [selectedSubjects, setSelectedSubjects] = useState<SelectableSubject[]>(() => loadSelectedSubjects(data));
   const [currentView, setCurrentView] = useState<AppView>("landing");
-  const [onboardingComplete, setOnboardingComplete] = useState(() => readBooleanStorage(ONBOARDING_COMPLETE_STORAGE_KEY, data.papers.length > 0));
+  const [onboardingComplete, setOnboardingComplete] = useState(() => readBooleanStorage(ONBOARDING_COMPLETE_STORAGE_KEY, data.papers.length > 0, LEGACY_UI_STORAGE_KEYS.onboardingComplete));
   const [activeSubject, setActiveSubject] = useState<SelectableSubject | null>(() => loadActiveSubject(loadSelectedSubjects(data)));
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => readBooleanStorage(SIDEBAR_COLLAPSED_STORAGE_KEY, defaultPreferences.sidebarDefault === "collapsed"));
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => readBooleanStorage(SIDEBAR_COLLAPSED_STORAGE_KEY, defaultPreferences.sidebarDefault === "collapsed", LEGACY_UI_STORAGE_KEYS.sidebarCollapsed));
   const [postOnboardingAction, setPostOnboardingAction] = useState<"upload" | null>(null);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
 
@@ -3221,6 +3267,32 @@ export function App() {
   useEffect(() => writeBooleanStorage(ONBOARDING_COMPLETE_STORAGE_KEY, onboardingComplete), [onboardingComplete]);
   useEffect(() => writeBooleanStorage(SIDEBAR_COLLAPSED_STORAGE_KEY, sidebarCollapsed), [sidebarCollapsed]);
   useEffect(() => saveActiveSubject(activeSubject), [activeSubject]);
+
+  useEffect(() => {
+    if (!settingsOpen || !preferences.devModeEnabled) return;
+    let cancelled = false;
+    try {
+      fetch("/api/debug/env", { headers: { accept: "application/json" } })
+        .then((response) => (response.ok ? response.json() : null))
+        .then((payload: unknown) => {
+          if (cancelled || !payload || typeof payload !== "object") return;
+          const record = payload as Partial<RuntimeEnvStatus>;
+          setRuntimeEnvStatus({
+            hasAnthropicKey: Boolean(record.hasAnthropicKey),
+            hasGeminiKey: Boolean(record.hasGeminiKey),
+            keys: Array.isArray(record.keys) ? record.keys.filter((key): key is string => typeof key === "string") : [],
+          });
+        })
+        .catch(() => {
+          if (!cancelled) setRuntimeEnvStatus(null);
+        });
+    } catch {
+      setRuntimeEnvStatus(null);
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [preferences.devModeEnabled, settingsOpen]);
 
   const pushToast = useCallback(
     (kind: ToastKind, message: string) => {
@@ -3535,7 +3607,7 @@ export function App() {
     try {
       await ensureAIReadyForUserAction();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Gemini AI is unavailable");
+      setError(reason instanceof Error ? reason.message : "AI provider is unavailable");
       return;
     }
     const job = buildProcessingJob(paper.id);
@@ -3567,7 +3639,7 @@ export function App() {
           item.id === job.id ? { ...item, status: "completed", progressPercent: 100, currentStage: "finalising", diagnostics: processed.processingDiagnostics ?? latestDiagnostics, updatedAt: nowIso() } : item,
         ),
       }));
-      setStatus("Paper processed into structured questions.");
+      setStatus(processingModelStatus(processed.processingDiagnostics ?? latestDiagnostics));
       setError(null);
     } catch (reason) {
       if (cancelledProcessingJobs.current.has(job.id)) return;
@@ -3919,7 +3991,7 @@ export function App() {
       const version = selectedAttempt.marks.filter((mark) => mark.questionId === question.id).length + 1;
       const mark = await markAnswerWithAI(selectedPaper, question, answer, version, "ai", { model: aiModel, fallbackModels: FALLBACK_AI_MODELS.filter((model) => model !== aiModel) });
       patchAttempt(selectedAttempt.id, (attempt) => mergeAttemptMarkingState(attempt, { marks: [mark] }, selectedPaper));
-      setStatus(`Marked question ${displayQuestionLabel(selectedPaper, question)}.`);
+      setStatus(`Marked question ${displayQuestionLabel(selectedPaper, question)} by ${mark.model ? aiModelShortLabel(mark.model, mark.modelLabel) : "local checks"}.`);
     } catch (reason) {
       const retryAfterMs = retryAfterMsFromError(reason);
       const rawMessage = reason instanceof Error ? reason.message : String(reason);
@@ -3928,8 +4000,8 @@ export function App() {
         isTransientMarkingError(reason) ? "transient_provider_error" : "mark_scheme_alignment_error",
         isTransientMarkingError(reason)
           ? retryAfterMs
-            ? `Gemini quota limit reached. Retry in about ${Math.max(1, Math.round(retryAfterMs / 1000))} seconds.`
-            : "Gemini quota limit reached. This answer was not marked yet."
+            ? `AI provider quota limit reached. Retry in about ${Math.max(1, Math.round(retryAfterMs / 1000))} seconds.`
+            : "AI provider quota limit reached. This answer was not marked yet."
           : rawMessage,
         { rawMessage, retryAfterMs },
       );
@@ -3959,7 +4031,7 @@ export function App() {
     try {
       await ensureAIReadyForUserAction();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Gemini AI is unavailable");
+      setError(reason instanceof Error ? reason.message : "AI provider is unavailable");
       setBusy(false);
       return;
     }
@@ -3999,7 +4071,7 @@ export function App() {
               const retryAfterMs = retryAfterMsFromError(reason) ?? 60_000;
               updateJob(selectedPaper.id, job.id, {
                 currentStage: "marking answers",
-                errorMessage: `Gemini quota reached. Waiting ${Math.max(1, Math.round(retryAfterMs / 1000))}s before retrying question ${displayQuestionLabel(selectedPaper, question)}.`,
+                errorMessage: `AI provider quota reached. Waiting ${Math.max(1, Math.round(retryAfterMs / 1000))}s before retrying question ${displayQuestionLabel(selectedPaper, question)}.`,
               });
               await waitForRetryDelay(retryAfterMs);
               continue;
@@ -4010,8 +4082,8 @@ export function App() {
                 isTransientMarkingError(reason) ? "transient_provider_error" : "mark_scheme_alignment_error",
                 isTransientMarkingError(reason)
                   ? retryAfterMsFromError(reason)
-                    ? `Gemini quota limit reached. This answer was not marked. Retry in about ${Math.max(1, Math.round((retryAfterMsFromError(reason) ?? 0) / 1000))} seconds.`
-                    : "Gemini quota limit reached. This answer was not marked yet."
+                    ? `AI provider quota limit reached. This answer was not marked. Retry in about ${Math.max(1, Math.round((retryAfterMsFromError(reason) ?? 0) / 1000))} seconds.`
+                    : "AI provider quota limit reached. This answer was not marked yet."
                   : rawMessage,
                 { rawMessage, retryAfterMs: retryAfterMsFromError(reason) },
               ),
@@ -4042,7 +4114,7 @@ export function App() {
       setStatus(
         issues.length
           ? `Attempt marked with issues. ${marks.length} answered question${marks.length === 1 ? "" : "s"} scored, ${issues.filter((issue) => issue.type === "transient_provider_error").length} waiting for retry.`
-          : `Attempt marked with Gemini AI. ${marks.length} answered question${marks.length === 1 ? "" : "s"} scored.`,
+          : markingModelStatus(marks),
       );
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : "Marking failed";
@@ -4062,7 +4134,7 @@ export function App() {
     try {
       await ensureAIReadyForUserAction();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Gemini AI is unavailable");
+      setError(reason instanceof Error ? reason.message : "AI provider is unavailable");
       setBusy(false);
       return;
     }
@@ -4149,9 +4221,9 @@ export function App() {
           };
         });
       }
-      setStatus("Gemini smoke test complete.");
+      setStatus("AI smoke test complete.");
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Gemini smoke test failed");
+      setError(reason instanceof Error ? reason.message : "AI smoke test failed");
     } finally {
       setSmokeBusy(false);
     }
@@ -4477,7 +4549,7 @@ export function App() {
         ) : null}
 
         {showLegacyDashboard && suggestions && (appMode === "catalogue" || appMode === "ready" || appMode === "empty") ? (
-          <SectionFrame title="AI Suggestions" subtitle="Generated through the Gemini proxy.">
+          <SectionFrame title="AI Suggestions" subtitle="Generated through the secure AI proxy.">
             <p className="reading-copy">{suggestions}</p>
           </SectionFrame>
         ) : null}
@@ -4502,7 +4574,7 @@ export function App() {
               <div className="dashboard-hero__status">
                 <div className="metric-row">
                   <span>AI provider</span>
-                  <strong>Gemini</strong>
+                  <strong>{modelLabelForModel(aiModel, true)}</strong>
                 </div>
                 <div className="metric-row">
                   <span>Storage</span>
@@ -5231,6 +5303,7 @@ export function App() {
         setAIModel={setAIModel}
         smokeTest={smokeTest}
         smokeBusy={smokeBusy}
+        runtimeEnvStatus={runtimeEnvStatus}
         onChange={(patch) => {
           patchPreferences(patch);
           if (patch.sidebarDefault) setSidebarCollapsed(patch.sidebarDefault === "collapsed");

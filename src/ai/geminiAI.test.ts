@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { pageInventoryOutputSchema } from "./schemas";
-import { aiChat, aiStructuredJson, ensureAIReadyForUserAction, runAISmokeTest } from "./geminiAI";
+import { DEFAULT_AI_MODEL, aiChat, aiStructuredJson, ensureAIReadyForUserAction, runAISmokeTest } from "./provider";
 
 afterEach(() => {
   window.__AI_TEST_MOCK__ = undefined;
@@ -17,6 +17,38 @@ describe("ensureAIReadyForUserAction", () => {
 });
 
 describe("aiStructuredJson", () => {
+  it("uses Claude Sonnet as the default structured JSON model", async () => {
+    let seenModel = "";
+    let seenProvider = "";
+    window.__AI_TEST_MOCK__ = {
+      respond: async (request) => {
+        seenModel = request.model;
+        seenProvider = request.provider ?? "";
+        return {
+          ok: true,
+          operation: request.operation,
+          provider: "anthropic",
+          model: request.model,
+          text: JSON.stringify({
+            title: "Mock Paper",
+            year: 2025,
+            series: "June",
+            paperCode: "MOCK-1",
+            totalMarks: 2,
+            durationMinutes: 60,
+            pages: [{ pageNumber: 1, role: "questions", questionHints: ["1"], visualContent: [], textSummary: "One question", needsImage: false }],
+          }),
+        };
+      },
+    };
+
+    await aiStructuredJson("inventory", pageInventoryOutputSchema, { operation: "page_inventory", debugLabel: "Page inventory" });
+
+    expect(DEFAULT_AI_MODEL).toBe("claude-sonnet-4-6");
+    expect(seenModel).toBe("claude-sonnet-4-6");
+    expect(seenProvider).toBe("anthropic");
+  });
+
   it("surfaces proxy failure objects before schema validation", async () => {
     window.__AI_TEST_MOCK__ = {
       respond: async (request) => ({
@@ -74,9 +106,71 @@ describe("aiStructuredJson", () => {
       aiStructuredJson("inventory", pageInventoryOutputSchema, { operation: "page_inventory", debugLabel: "Page inventory" }),
     ).rejects.toThrow("AI returned invalid JSON");
   });
+
+  it("retries invalid Claude JSON once with a repair prompt", async () => {
+    const prompts: string[] = [];
+    window.__AI_TEST_MOCK__ = {
+      respond: async (request) => {
+        prompts.push(request.prompt);
+        if (request.requestLabel?.includes("JSON repair")) {
+          return {
+            ok: true,
+            operation: request.operation,
+            provider: "anthropic",
+            model: request.model,
+            text: JSON.stringify({
+              title: "Repaired Paper",
+              year: null,
+              series: null,
+              paperCode: null,
+              totalMarks: null,
+              durationMinutes: null,
+              pages: [{ pageNumber: 1, role: "questions", questionHints: [], visualContent: [], textSummary: "Question page", needsImage: false }],
+            }),
+          };
+        }
+        return { ok: true, operation: request.operation, provider: "anthropic", model: request.model, text: "```json\nnot-json\n```" };
+      },
+    };
+
+    const result = await aiStructuredJson("inventory", pageInventoryOutputSchema, { operation: "page_inventory", debugLabel: "Page inventory" });
+
+    expect(result.title).toBe("Repaired Paper");
+    expect(prompts).toHaveLength(2);
+    expect(prompts[1]).toContain("Your previous response was not valid JSON");
+  });
 });
 
 describe("aiChat", () => {
+  it("falls back from Claude to Gemini for retryable provider failures and records diagnostics", async () => {
+    const diagnostics: string[] = [];
+    window.__AI_TEST_MOCK__ = {
+      respond: async (request) => {
+        if (request.provider === "anthropic") {
+          return {
+            ok: false,
+            operation: request.operation,
+            provider: "anthropic",
+            model: request.model,
+            error: { type: "server", message: "ANTHROPIC_API_KEY missing at runtime", retryable: true, statusCode: 500 },
+          };
+        }
+        return { ok: true, operation: request.operation, provider: "gemini", model: request.model, modelLabel: "Gemini 2.5 Flash Lite", text: "ok" };
+      },
+    };
+
+    const text = await aiChat("Reply with ok", {
+      operation: "smoke_text",
+      fallbackModels: ["gemini-2.5-flash-lite"],
+      onRequestDiagnostic: (diagnostic) => {
+        if (diagnostic.status === "success") diagnostics.push(`${diagnostic.provider}:${diagnostic.model}:${diagnostic.fallbackFromModel ?? "primary"}`);
+      },
+    });
+
+    expect(text).toBe("ok");
+    expect(diagnostics).toContain("gemini:gemini-2.5-flash-lite:claude-sonnet-4-6");
+  });
+
   it("marks long-running proxy requests as timeouts", async () => {
     window.__AI_TEST_MOCK__ = {
       respond: async (request) => {

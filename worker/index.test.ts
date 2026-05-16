@@ -2,8 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 import worker from "./index";
 
 describe("worker routing", () => {
-  it("reports runtime env presence without exposing the Gemini key", async () => {
+  it("reports runtime env presence without exposing provider keys", async () => {
     const response = await worker.fetch(new Request("https://example.com/api/debug/env"), {
+      ANTHROPIC_API_KEY: "anthropic-configured",
       GEMINI_API_KEY: "configured",
       ASSETS: { fetch: vi.fn(async () => new Response("asset")) },
     } as never, undefined);
@@ -11,21 +12,24 @@ describe("worker routing", () => {
     expect(response.status).toBe(200);
     const clone = response.clone();
     await expect(response.json()).resolves.toMatchObject({
-      hasKey: true,
+      hasAnthropicKey: true,
+      hasGeminiKey: true,
     });
     const json = await clone.json();
+    expect(json.keys).toContain("ANTHROPIC_API_KEY");
     expect(json.keys).toContain("GEMINI_API_KEY");
     expect(JSON.stringify(json)).not.toContain("configured");
+    expect(JSON.stringify(json)).not.toContain("anthropic-configured");
   });
 
-  it("returns a runtime-secret hint when /api/ai is hit without GEMINI_API_KEY", async () => {
+  it("returns a runtime-secret hint when selected provider key is missing", async () => {
     const response = await worker.fetch(
       new Request("https://example.com/api/ai", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           operation: "paper_mark",
-          model: "gemini-2.5-flash-lite",
+          model: "claude-sonnet-4-6",
           prompt: "mark this answer",
         }),
       }),
@@ -39,14 +43,14 @@ describe("worker routing", () => {
     await expect(response.json()).resolves.toMatchObject({
       ok: false,
       operation: "paper_mark",
+      provider: "anthropic",
       error: {
-        message: "GEMINI_API_KEY missing at runtime",
+        message: "ANTHROPIC_API_KEY missing at runtime. Check Cloudflare Worker runtime secrets, not build variables.",
       },
-      hint: "Check Cloudflare Worker runtime secrets, not build variables",
     });
   });
 
-  it("routes POST /api/ai through the Gemini proxy handler", async () => {
+  it("routes POST /api/ai through the provider-neutral AI proxy handler", async () => {
     const assetFetch = vi.fn(async () => new Response("asset"));
     const response = await worker.fetch(
       new Request("https://example.com/api/ai", {
@@ -54,12 +58,12 @@ describe("worker routing", () => {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           operation: "smoke_ping",
-          model: "gemini-2.5-flash-lite",
+          model: "claude-sonnet-4-6",
           prompt: "ping",
         }),
       }),
       {
-        GEMINI_API_KEY: "configured",
+        ANTHROPIC_API_KEY: "configured",
         ASSETS: { fetch: assetFetch },
       } as never,
       undefined,
@@ -70,6 +74,7 @@ describe("worker routing", () => {
     await expect(response.json()).resolves.toMatchObject({
       ok: true,
       operation: "smoke_ping",
+      provider: "anthropic",
     });
   });
 

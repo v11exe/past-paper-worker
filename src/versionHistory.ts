@@ -7,6 +7,17 @@ export type VersionHistoryEntry = {
 
 export const versionHistory: VersionHistoryEntry[] = [
   {
+    version: "v1.3.5",
+    title: "Claude Sonnet migration",
+    date: "2026-05-15",
+    changes: [
+      "Switched default processing and marking to Claude Sonnet.",
+      "Kept Gemini available as a fallback and Dev mode option.",
+      "Added model/provider labels after processing and marking.",
+      "Improved examiner-style marking prompts for stricter GCSE feedback.",
+    ],
+  },
+  {
     version: "v1.3.4",
     title: "Marking layout fix",
     date: "2026-05-15",

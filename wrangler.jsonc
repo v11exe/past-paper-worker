@@ -19,6 +19,6 @@
     "FEEDBACK_TO_EMAIL": "feedback@omair.uk"
   },
   "secrets": {
-    "required": ["GEMINI_API_KEY", "RESEND_API_KEY"]
+    "required": ["ANTHROPIC_API_KEY", "RESEND_API_KEY"]
   }
 }

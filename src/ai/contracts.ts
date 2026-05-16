@@ -16,6 +16,9 @@ export const aiProxyOperationSchema = z.enum([
 
 export type AIProxyOperation = z.infer<typeof aiProxyOperationSchema>;
 
+export const aiProviderIdSchema = z.enum(["anthropic", "gemini"]);
+export type AIProxyProviderId = z.infer<typeof aiProviderIdSchema>;
+
 export const structuredAiOperations = new Set<AIProxyOperation>([
   "page_inventory",
   "question_boundaries",
@@ -28,6 +31,7 @@ export const structuredAiOperations = new Set<AIProxyOperation>([
 
 export const aiProxyRequestSchema = z.object({
   operation: aiProxyOperationSchema,
+  provider: aiProviderIdSchema.optional(),
   model: z.string().min(1).max(120),
   prompt: z.string().min(1).max(120_000),
   temperature: z.number().min(0).max(2).optional(),
@@ -54,6 +58,7 @@ export const aiProxyErrorSchema = z.object({
   statusCode: z.number().int().nullable().optional(),
   blockedReason: z.string().nullable().optional(),
   rawPreview: z.string().nullable().optional(),
+  retryAfterMs: z.number().int().nullable().optional(),
 });
 
 export type AIProxyError = z.infer<typeof aiProxyErrorSchema>;
@@ -61,7 +66,9 @@ export type AIProxyError = z.infer<typeof aiProxyErrorSchema>;
 export const aiProxySuccessSchema = z.object({
   ok: z.literal(true),
   operation: aiProxyOperationSchema,
+  provider: aiProviderIdSchema,
   model: z.string(),
+  modelLabel: z.string().optional(),
   text: z.string(),
   usage: z.record(z.unknown()).optional(),
   finishReason: z.string().nullable().optional(),
@@ -70,6 +77,7 @@ export const aiProxySuccessSchema = z.object({
 export const aiProxyFailureSchema = z.object({
   ok: z.literal(false),
   operation: aiProxyOperationSchema.optional(),
+  provider: aiProviderIdSchema.nullable().optional(),
   model: z.string().nullable().optional(),
   error: aiProxyErrorSchema,
 });

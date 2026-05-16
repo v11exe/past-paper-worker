@@ -23,7 +23,7 @@ import {
   type PagePromptContext,
   type QuestionBoundaryPromptContext,
 } from "../ai/prompts";
-import { DEFAULT_AI_MODEL, FALLBACK_AI_MODELS, AIProviderError, aiStructuredJson } from "../ai/provider";
+import { DEFAULT_AI_MODEL, FALLBACK_AI_MODELS, GEMINI_FLASH_MODEL, AIProviderError, aiStructuredJson, modelLabelForModel, resolveAIModelConfig, type AIResultMetadata } from "../ai/provider";
 import { extractInlineOptions } from "./choiceParsing";
 import type {
   AppData,
@@ -323,8 +323,9 @@ function makeProgressReporter(onProgress: (update: ProcessingProgressUpdate) => 
   }
 
   function addPrompt(label: string, prompt: string, model: string, pageNumbers?: number[], imageCount?: number) {
-    diagnostics.promptStats.push({ label, charCount: prompt.length, pageNumbers, imageCount, model });
-    log(diagnostics.currentStage, "info", `${label} prompt prepared`, { promptChars: prompt.length, pageNumbers, imageCount, model });
+    const config = resolveAIModelConfig(model);
+    diagnostics.promptStats.push({ label, charCount: prompt.length, pageNumbers, imageCount, model, modelLabel: config.label, provider: config.provider });
+    log(diagnostics.currentStage, "info", `${label} prompt prepared`, { promptChars: prompt.length, pageNumbers, imageCount, model, modelLabel: config.label, provider: config.provider });
   }
 
   function addAIRequest(request: AIRequestDiagnostic) {
@@ -1094,8 +1095,8 @@ export function buildDeterministicProcessedPaperOutput(paper: PastPaper, paperPa
 function imageOnlyFailureMessage(stage: ProcessingStage) {
   return [
     `Image input failed while ${stage}.`,
-    "Likely cause: scanned/image-only paper and the selected Gemini vision call failed or the page images were not usable.",
-    "Recovery: run the Gemini smoke test, retry with a fallback model, or export diagnostics. The app will not invent questions from blank text.",
+    "Likely cause: scanned/image-only paper and the selected AI vision call failed or the page images were not usable.",
+    "Recovery: run the AI smoke test, retry with a fallback model, or export diagnostics. The app will not invent questions from blank text.",
   ].join("\n");
 }
 
@@ -1159,7 +1160,7 @@ function processingFailureMessage(stage: ProcessingStage, error: unknown) {
   }
   if (error instanceof AIProviderError && error.timedOut) {
     return [
-      `Gemini timed out while ${stage}.`,
+      `AI provider timed out while ${stage}.`,
       "Likely cause: large prompt, missing page images, unsupported image call shape, or a slow model.",
       "Suggested recovery: retry with chunked processing or switch to the fallback model. A diagnostic export is available from the processing panel.",
     ].join("\n");
@@ -1186,8 +1187,11 @@ async function structuredJsonWithTextFallback<S extends z.ZodTypeAny>(input: {
           id: createId("ai-request"),
           label: input.label,
           operation: input.options.operation,
+          provider: resolveAIModelConfig(input.options.model ?? DEFAULT_AI_MODEL).provider,
           model: input.options.model ?? DEFAULT_AI_MODEL,
+          modelLabel: modelLabelForModel(input.options.model ?? DEFAULT_AI_MODEL),
           fallbackFromModel: null,
+          fallbackFromProvider: null,
           promptChars: input.prompt.length,
           mediaCount,
           mediaBytes: input.options.media?.reduce((sum, item) => sum + item.length, 0) ?? 0,
@@ -2760,7 +2764,8 @@ export function applyMarkingGuardrails(
 }
 
 function retryMarkingModel(currentModel: string, fallbackModels: string[]) {
-  const ordered = ["gemini-2.5-flash", DEFAULT_AI_MODEL, ...fallbackModels].filter((model, index, list) => model !== currentModel && list.indexOf(model) === index);
+  if (resolveAIModelConfig(currentModel).provider !== "gemini") return null;
+  const ordered = [GEMINI_FLASH_MODEL.model, ...fallbackModels].filter((model, index, list) => model !== currentModel && list.indexOf(model) === index);
   return ordered[0] ?? null;
 }
 
@@ -2818,7 +2823,15 @@ function hasMarkSchemeSubstance(markSchemeText: string, label: string) {
   return compactLabel ? compactText.includes(compactLabel.slice(0, Math.min(3, compactLabel.length))) || text.length > 300 : text.length > 300;
 }
 
-function mapMarkOutput(answerId: string, questionId: string, questionMaxMarks: number, output: PaperMarkOutput, source: "ai" | "remark", version: number): PastPaperQuestionMark {
+function mapMarkOutput(
+  answerId: string,
+  questionId: string,
+  questionMaxMarks: number,
+  output: PaperMarkOutput,
+  source: "ai" | "remark",
+  version: number,
+  metadata?: AIResultMetadata | null,
+): PastPaperQuestionMark {
   const maxMarks = questionMaxMarks;
   return {
     id: createId("mark"),
@@ -2832,6 +2845,15 @@ function mapMarkOutput(answerId: string, questionId: string, questionMaxMarks: n
     missingPoints: output.missingPoints,
     markSchemeEvidence: output.markSchemeEvidence,
     markSchemeReference: output.markSchemeReference,
+    ...(metadata
+      ? {
+          provider: metadata.provider,
+          model: metadata.model,
+          modelLabel: metadata.modelLabel,
+          fallbackFromModel: metadata.fallbackFromModel,
+          fallbackFromProvider: metadata.fallbackFromModel ? resolveAIModelConfig(metadata.fallbackFromModel).provider : null,
+        }
+      : {}),
     accepted: source === "ai",
     createdAt: nowIso(),
   };
@@ -2907,6 +2929,7 @@ export async function markAnswerWithAI(
   }
   const primaryModel = options.model ?? DEFAULT_AI_MODEL;
   const fallbackModels = options.fallbackModels ?? [...FALLBACK_AI_MODELS];
+  let aiMetadata: AIResultMetadata | null = null;
 
   const prompt = buildPaperMarkingPrompt({
     subject: paper.subject,
@@ -2928,6 +2951,9 @@ export async function markAnswerWithAI(
     fallbackModels,
     normalizer: normalizePaperMarkOutput,
     debugLabel: `Marking question ${question.questionNumber}`,
+    onResultMetadata: (metadata) => {
+      aiMetadata = metadata;
+    },
   });
   if (output.awardedMarks === 0 && markOutputSignalsInsufficient(output) && hasMarkSchemeSubstance(markSchemeText, displayNumber || question.questionNumber)) {
     const retryModel = retryMarkingModel(primaryModel, fallbackModels);
@@ -2941,6 +2967,9 @@ export async function markAnswerWithAI(
           fallbackModels: fallbackModels.filter((model) => model !== retryModel),
           normalizer: normalizePaperMarkOutput,
           debugLabel: `Retry marking question ${question.questionNumber}`,
+          onResultMetadata: (metadata) => {
+            aiMetadata = metadata;
+          },
         },
       );
     }
@@ -2950,7 +2979,7 @@ export async function markAnswerWithAI(
       `Question ${displayNumber} could not be matched to a reliable mark-scheme row. Review the aligned mark scheme for this question instead of awarding a fabricated zero.`,
     );
   }
-  return mapMarkOutput(answer.id, question.id, maxMarks, applyMarkingGuardrails(output, question, answer, markSchemeText), source, version);
+  return mapMarkOutput(answer.id, question.id, maxMarks, applyMarkingGuardrails(output, question, answer, markSchemeText), source, version, aiMetadata);
 }
 
 export function createRemark(attemptId: string, answer: PastPaperAnswer, notes: string | null): PastPaperRemark {

@@ -14,7 +14,7 @@ export default defineConfig(async () => {
   const plugins = [react()];
   const nodeMajor = Number(process.versions.node.split(".")[0] ?? 0);
   const buildMeta = {
-    version: "v1.3.4",
+    version: "v1.3.5",
     updatedAt: new Date().toISOString(),
     commitHash: gitValue("git rev-parse --short HEAD") || null,
     commitMessage: gitValue("git log -1 --pretty=%s") || "Build metadata unavailable",

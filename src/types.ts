@@ -1,3 +1,5 @@
+import type { AIProviderId } from "./ai/providerTypes";
+
 export type ProcessingStage =
   | "uploading"
   | "extracting"
@@ -133,8 +135,11 @@ export type AIRequestDiagnostic = {
   id: string;
   label: string;
   operation: string;
+  provider?: AIProviderId | null;
   model: string;
+  modelLabel?: string | null;
   fallbackFromModel?: string | null;
+  fallbackFromProvider?: AIProviderId | null;
   promptChars: number;
   mediaCount: number;
   mediaBytes: number;
@@ -167,7 +172,7 @@ export type ProcessingDiagnostics = {
     thumbnailByteSize: number;
     mimeType: string;
   }>;
-  promptStats: Array<{ label: string; charCount: number; pageNumbers?: number[]; imageCount?: number; model: string }>;
+  promptStats: Array<{ label: string; charCount: number; pageNumbers?: number[]; imageCount?: number; model: string; modelLabel?: string | null; provider?: AIProviderId | null }>;
   aiRequests: AIRequestDiagnostic[];
   schemaErrors: Array<{ label: string; paths: string[]; issues: string[]; rawPreview: string; extractedJsonPreview: string }>;
   integrityFailures?: string[];
@@ -176,8 +181,9 @@ export type ProcessingDiagnostics = {
 
 export type AISmokeTestResult = {
   id: string;
-  provider: "gemini";
+  provider: AIProviderId;
   model: string;
+  modelLabel?: string | null;
   startedAt: string;
   endedAt: string;
   elapsedMs: number;
@@ -262,6 +268,11 @@ export type PastPaperQuestionMark = {
   missingPoints: string[];
   markSchemeEvidence: string | null;
   markSchemeReference: Record<string, unknown>;
+  provider?: AIProviderId;
+  model?: string;
+  modelLabel?: string;
+  fallbackFromModel?: string | null;
+  fallbackFromProvider?: AIProviderId | null;
   accepted: boolean;
   createdAt: string;
 };

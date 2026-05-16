@@ -980,7 +980,7 @@ describe("markAnswerWithAI", () => {
     expect(wrongCount.rationale).toContain("Expected 16");
   });
 
-  it("marks simple single-choice questions deterministically without calling Gemini", async () => {
+  it("marks simple single-choice questions deterministically without calling AI", async () => {
     let calls = 0;
     window.__AI_TEST_MOCK__ = {
       ai: {
@@ -1008,7 +1008,7 @@ describe("markAnswerWithAI", () => {
     expect(calls).toBe(0);
   });
 
-  it("marks acceptable numeric answers deterministically without calling Gemini", async () => {
+  it("marks acceptable numeric answers deterministically without calling AI", async () => {
     let calls = 0;
     window.__AI_TEST_MOCK__ = {
       ai: {
@@ -1035,7 +1035,7 @@ describe("markAnswerWithAI", () => {
     expect(calls).toBe(0);
   });
 
-  it("rejects malformed Gemini marking JSON with a clear parser error", async () => {
+  it("rejects malformed AI marking JSON with a clear parser error", async () => {
     window.__AI_TEST_MOCK__ = {
       ai: {
         chat: async () => "not valid json",
@@ -1045,8 +1045,8 @@ describe("markAnswerWithAI", () => {
     await expect(
       markAnswerWithAI(
         basePaper,
-        { ...question, maxMarks: 1, markSchemeData: { rows: [{ markPoint: "B0", marks: 1 }], evidence: "B0 correct answer only" } },
-        { ...answer, questionId: "q1d", responseText: "B0" } as PastPaperAnswer,
+        { ...question, maxMarks: 2, markSchemeData: { rows: [{ markPoint: "Explains why encryption protects data in transit", marks: 2 }], evidence: "Award up to 2 marks for explanation of encryption protecting data in transit." } },
+        { ...answer, questionId: "q1d", responseText: "It is safer." } as PastPaperAnswer,
         1,
       ),
     ).rejects.toThrow("AI returned invalid JSON");
@@ -1525,6 +1525,8 @@ describe("processPaperWithAI", () => {
         updatedAt: "2026-01-01T00:00:00.000Z",
       } as PastPaperAnswer,
       1,
+      "ai",
+      { model: "gemini-2.5-flash-lite", fallbackModels: ["gemini-2.5-flash"] },
     );
 
     expect(mark.awardedMarks).toBe(2);
@@ -1579,5 +1581,8 @@ describe("processPaperWithAI", () => {
     );
 
     expect(mark.awardedMarks).toBe(1);
+    expect(mark.provider).toBe("anthropic");
+    expect(mark.model).toBe("claude-sonnet-4-6");
+    expect(mark.modelLabel).toBe("Claude Sonnet 4.6");
   });
 });

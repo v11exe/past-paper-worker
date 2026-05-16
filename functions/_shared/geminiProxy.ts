@@ -6,17 +6,18 @@ import {
   type AIProxyRequest,
   type AIProxySuccessResponse,
 } from "../../src/ai/contracts";
+import { modelLabelForModel } from "../../src/ai/providerTypes";
 import { redactSensitiveText, redactSensitiveValue } from "../../src/ai/redaction";
 
 const GEMINI_API_ROOT = "https://generativelanguage.googleapis.com/v1beta/models";
 const MAX_REQUEST_BYTES = 9 * 1024 * 1024;
 const GOOGLE_KEY_PREFIX = ["AI", "za"].join("");
 
-type ProxyEnv = {
+export type GeminiProxyEnv = {
   GEMINI_API_KEY?: string;
 };
 
-type ProxyDeps = {
+export type ProxyDeps = {
   fetchImpl?: typeof fetch;
 };
 
@@ -30,11 +31,12 @@ function json(data: AIProxySuccessResponse | AIProxyFailureResponse, status = 20
   });
 }
 
-function failure(operation: AIProxyOperation, message: string, input: Partial<AIProxyError> = {}) {
+function failure(operation: AIProxyOperation, message: string, input: Partial<AIProxyError> & { model?: string | null } = {}) {
   const response: AIProxyFailureResponse = {
     ok: false,
     operation,
-    model: null,
+    provider: "gemini",
+    model: input.model ?? null,
     error: {
       type: input.type ?? "server",
       message: redactSensitiveText(message),
@@ -42,6 +44,7 @@ function failure(operation: AIProxyOperation, message: string, input: Partial<AI
       statusCode: typeof input.statusCode === "number" ? input.statusCode : null,
       blockedReason: typeof input.blockedReason === "string" ? input.blockedReason : null,
       rawPreview: typeof input.rawPreview === "string" ? redactSensitiveText(input.rawPreview) : null,
+      retryAfterMs: typeof input.retryAfterMs === "number" ? input.retryAfterMs : null,
     },
   };
   return response;
@@ -51,7 +54,9 @@ function success(operation: AIProxyOperation, model: string, text: string, finis
   const response: AIProxySuccessResponse = {
     ok: true,
     operation,
+    provider: "gemini",
     model,
+    modelLabel: modelLabelForModel(model),
     text: redactSensitiveText(text),
     finishReason,
     usage,
@@ -148,7 +153,7 @@ function geminiErrorFromStatus(status: number, message: string, rawPreview: stri
   } satisfies Partial<AIProxyError>;
 }
 
-async function runGeminiRequest(request: AIProxyRequest, env: ProxyEnv, deps: ProxyDeps = {}) {
+export async function runGeminiRequest(request: AIProxyRequest, env: GeminiProxyEnv, deps: ProxyDeps = {}) {
   const fetchImpl = deps.fetchImpl ?? fetch;
   const controller = new AbortController();
   const timeoutMs = request.timeoutMs ?? 75_000;
@@ -176,7 +181,7 @@ async function runGeminiRequest(request: AIProxyRequest, env: ProxyEnv, deps: Pr
         // Leave providerMessage as-is.
       }
       const mappedError = geminiErrorFromStatus(response.status, providerMessage, rawPreview);
-      return failure(request.operation, mappedError.message ?? providerMessage, mappedError);
+      return failure(request.operation, mappedError.message ?? providerMessage, { ...mappedError, model: request.model });
     }
 
     let responseJson: Record<string, unknown>;
@@ -187,6 +192,7 @@ async function runGeminiRequest(request: AIProxyRequest, env: ProxyEnv, deps: Pr
         type: "invalid_json",
         rawPreview,
         retryable: false,
+        model: request.model,
       });
     }
 
@@ -196,6 +202,7 @@ async function runGeminiRequest(request: AIProxyRequest, env: ProxyEnv, deps: Pr
         type: "safety",
         blockedReason: blockReason ?? finishReason ?? "SAFETY",
         rawPreview,
+        model: request.model,
       });
     }
     if (!text) {
@@ -203,6 +210,7 @@ async function runGeminiRequest(request: AIProxyRequest, env: ProxyEnv, deps: Pr
         type: "empty_response",
         rawPreview,
         retryable: true,
+        model: request.model,
       });
     }
     return success(request.operation, request.model, text, finishReason, usage);
@@ -211,19 +219,21 @@ async function runGeminiRequest(request: AIProxyRequest, env: ProxyEnv, deps: Pr
       return failure(request.operation, `Gemini request timed out after ${Math.round(timeoutMs / 1000)}s.`, {
         type: "timeout",
         retryable: true,
+        model: request.model,
       });
     }
     return failure(request.operation, "Network error while contacting Gemini.", {
       type: "network",
       retryable: true,
       rawPreview: error instanceof Error ? error.message : String(error),
+      model: request.model,
     });
   } finally {
     clearTimeout(timeoutId);
   }
 }
 
-async function smokeResponse(request: AIProxyRequest, env: ProxyEnv, deps: ProxyDeps) {
+async function smokeResponse(request: AIProxyRequest, env: GeminiProxyEnv, deps: ProxyDeps) {
   if (request.operation === "smoke_ping") {
     if (!env.GEMINI_API_KEY) {
       return failure(request.operation, "GEMINI_API_KEY missing at runtime. Check Cloudflare Worker runtime secrets, not build variables.", { type: "server", statusCode: 500 });
@@ -244,7 +254,7 @@ async function smokeResponse(request: AIProxyRequest, env: ProxyEnv, deps: Proxy
   return runGeminiRequest(request, env, deps);
 }
 
-export async function handleAiProxyRequest(request: Request, env: ProxyEnv, deps: ProxyDeps = {}) {
+export async function handleAiProxyRequest(request: Request, env: GeminiProxyEnv, deps: ProxyDeps = {}) {
   if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
 
   const contentLength = Number(request.headers.get("content-length") ?? 0);

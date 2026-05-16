@@ -1,12 +1,12 @@
-import { handleAiProxyRequest } from "../functions/_shared/geminiProxy";
+import { handleAiProxyRequest } from "../functions/_shared/aiProxy";
 import { handleFeedbackRequest } from "../functions/_shared/feedbackProxy";
-import type { AIProxyFailureResponse, AIProxyOperation } from "../src/ai/contracts";
 
 type AssetBinding = {
   fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
 };
 
 type WorkerEnv = {
+  ANTHROPIC_API_KEY?: string;
   GEMINI_API_KEY?: string;
   RESEND_API_KEY?: string;
   FEEDBACK_TO_EMAIL?: string;
@@ -36,49 +36,18 @@ function json(data: unknown, status = 200) {
   });
 }
 
-async function inferOperation(request: Request) {
-  try {
-    const body = await request.clone().json() as { operation?: unknown };
-    return typeof body.operation === "string" ? body.operation : "suggestions";
-  } catch {
-    return "suggestions";
-  }
-}
-
-async function missingRuntimeKeyResponse(request: Request) {
-  const operation = (await inferOperation(request)) as AIProxyOperation;
-  const hint = "Check Cloudflare Worker runtime secrets, not build variables";
-  const payload: AIProxyFailureResponse & { hint: string } = {
-    ok: false,
-    operation,
-    model: null,
-    error: {
-      type: "server",
-      message: "GEMINI_API_KEY missing at runtime",
-      retryable: false,
-      statusCode: 500,
-      blockedReason: null,
-      rawPreview: hint,
-    },
-    hint,
-  };
-  return json(payload, 500);
-}
-
 export default {
   async fetch(request: Request, env: WorkerEnv, ctx: unknown) {
     void ctx;
     const url = new URL(request.url);
     if (isDebugEnvRoute(url.pathname)) {
       return json({
-        hasKey: !!env.GEMINI_API_KEY,
+        hasAnthropicKey: !!env.ANTHROPIC_API_KEY,
+        hasGeminiKey: !!env.GEMINI_API_KEY,
         keys: Object.keys(env).sort(),
       });
     }
     if (isAiRoute(url.pathname)) {
-      if (!env.GEMINI_API_KEY) {
-        return missingRuntimeKeyResponse(request);
-      }
       return handleAiProxyRequest(request, env);
     }
     if (isFeedbackRoute(url.pathname)) {
