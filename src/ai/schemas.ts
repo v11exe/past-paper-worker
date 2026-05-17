@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   cleanChoiceGlyphs,
   extractInlineOptions as extractInlineChoiceOptions,
+  hasChoiceGlyphs,
   inferChoiceResponseType,
 } from "../lib/choiceParsing";
 import type { ChoiceExtractionQuality, ResponseType } from "../types";
@@ -691,8 +692,16 @@ export function normalizeProcessedPaperOutput(input: unknown): unknown {
       const normalizedOptions = normalizeStringArray(question.options);
       const rawPromptText = typeof question.promptText === "string" ? question.promptText : textFromUnknown(question.promptText);
       const cleanedPromptText = cleanChoiceGlyphs(rawPromptText);
-      const trustChoiceTypeHint = ["multiple_choice", "single_choice", "multi_select", "tick_box"].includes((originalResponseType ?? "").toLowerCase().replace(/[\s-]+/g, "_"));
-      const inlineOptions = extractInlineChoiceOptions(cleanedPromptText, trustChoiceTypeHint);
+      const choiceTypeHintPresent = ["multiple_choice", "single_choice", "multi_select", "tick_box"].includes((originalResponseType ?? "").toLowerCase().replace(/[\s-]+/g, "_"));
+      const trustChoiceTypeHint =
+        choiceTypeHintPresent &&
+        (
+          rawPromptText.includes("\n") ||
+          hasChoiceGlyphs(rawPromptText) ||
+          /(?:^|\s)(?:\(?[A-H]\)|[A-H][.)]|[A-H]\s*[-:])\s+\S/m.test(rawPromptText) ||
+          /(?:^|\s)A\s+\S[\s\S]*\sB\s+\S[\s\S]*\sC\s+\S/i.test(rawPromptText)
+        );
+      const inlineOptions = extractInlineChoiceOptions(rawPromptText, trustChoiceTypeHint);
       const recoveredOptions = inlineOptions.options.length >= 2 ? inlineOptions.options : [];
       const responseType = (baseResponseType === "unsupported"
         ? "unsupported"

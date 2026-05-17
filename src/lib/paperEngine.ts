@@ -1,17 +1,12 @@
 import {
   markSchemeRecoveryOutputSchema,
-  markSchemeAlignmentOutputSchema,
-  normalizeMarkSchemeAlignmentOutput,
   normalizePaperMarkOutput,
   normalizeProcessedPaperOutput,
   pageInventoryOutputSchema,
   paperMarkOutputSchema,
-  questionSupportValidationOutputSchema,
   processedPaperOutputSchema,
   questionBoundaryOutputSchema,
   questionExtractionOutputSchema,
-  visualInventoryOutputSchema,
-  type MarkSchemeAlignmentOutput,
   type MarkSchemeRecoveryOutput,
   type PaperMarkOutput,
   type ProcessedPaperOutput,
@@ -19,14 +14,11 @@ import {
   type QuestionExtractionOutput,
 } from "../ai/schemas";
 import {
-  buildMarkSchemeAlignmentPrompt,
   buildMarkSchemeRecoveryPrompt,
   buildPageInventoryPrompt,
   buildPaperMarkingPrompt,
   buildQuestionBoundaryPrompt,
   buildQuestionExtractionPrompt,
-  buildQuestionSupportValidationPrompt,
-  buildVisualInventoryPrompt,
   type PagePromptContext,
   type QuestionBoundaryPromptContext,
 } from "../ai/prompts";
@@ -44,7 +36,6 @@ import type {
   PastPaperQuestion,
   PastPaperQuestionMark,
   PastPaperRemark,
-  PaperVisualRegion,
   ProcessingDiagnostics,
   ProcessingStage,
   AIRequestDiagnostic,
@@ -58,11 +49,8 @@ export const processingStages = [
   "uploading",
   "extracting",
   "building page inventory",
-  "identifying visual regions",
   "identifying questions",
   "extracting question details",
-  "validating question support",
-  "building question display plans",
   "aligning mark scheme",
   "finalising",
   "marking answers",
@@ -78,11 +66,10 @@ type ProcessingProgressUpdate = {
 type ProcessPaperOptions = {
   model?: string;
   fallbackModels?: string[];
+  allowMarkSchemeRecovery?: boolean;
 };
 
 const MAX_EXTRACTION_PAGES_PER_CHUNK = 3;
-const MAX_VISUAL_INVENTORY_PAGES_PER_CHUNK = 4;
-const MAX_AI_MARK_SCHEME_ALIGNMENT_PROMPT_CHARS = 28_000;
 const QUESTION_EXTRACTION_FAILURE =
   "Question extraction appears incomplete or hallucinated. Metadata was read, but extracted questions did not match the paper.";
 const NEUTRAL_PLACEHOLDER_PATTERN = /__(?:[A-Z0-9]+_?)+__/;
@@ -727,14 +714,62 @@ function cleanAqaQuestionPromptArtifacts(text: string) {
 
 function inferDeterministicResponseType(promptText: string, maxMarks: number): PastPaperQuestion["responseType"] {
   const text = promptText.toLowerCase();
-  if (/\btick\s*\(\s*3\s*\)\s*one or more boxes?\b|\bone or more boxes?\b/.test(text)) return "multi_select";
-  if (/\btick\s*\(\s*3\s*\)\s*one box\b|\btick one box\b|\bchoose one\b|\bselect one\b/.test(text)) return "single_choice";
+  const extractedChoice = extractChoiceStructure(promptText);
+  if (extractedChoice.hasChoiceInstruction && extractedChoice.options.length >= 2) {
+    return inferChoiceResponseType(promptText, "single_choice");
+  }
   if (/\bdiscuss\b|\bjustify\b|\bevaluate\b|\bcompare\b|\bdescribe\b|\bexplain\b/.test(text) || maxMarks >= 5) return "long_text";
   return "short_text";
 }
 
 function mainQuestionLabelFromQuestionNumber(questionNumber: string) {
   return questionNumber.match(/^\d+/)?.[0] ?? questionNumber.replace(/\*$/, "");
+}
+
+function normalizeVisualLabel(kind: string, identifier: string) {
+  const baseKind = kind[0].toUpperCase() + kind.slice(1).toLowerCase();
+  return `${baseKind} ${identifier.toUpperCase()}`;
+}
+
+function extractVisualLabelMatches(promptText: string) {
+  const matches: Array<{ kind: string; label: string }> = [];
+  const pattern = /\b(Figure|Table|Diagram|Graph|Map)\s+([A-Z]?\d+[A-Z]?)\b|\b(Source)\s+([A-Z])\b/gi;
+  for (const match of promptText.matchAll(pattern)) {
+    const kind = (match[1] ?? match[3] ?? "").toLowerCase();
+    const identifier = match[2] ?? match[4] ?? "";
+    if (!kind || !identifier) continue;
+    matches.push({ kind, label: normalizeVisualLabel(kind, identifier) });
+  }
+  return matches;
+}
+
+export function buildVisualLabelPageIndex(paperPages: PagePromptContext[]) {
+  const index = new Map<string, number[]>();
+  for (const page of paperPages) {
+    for (const match of extractVisualLabelMatches(page.text)) {
+      const key = match.label.toLowerCase();
+      const pages = index.get(key) ?? [];
+      if (!pages.includes(page.pageNumber)) pages.push(page.pageNumber);
+      index.set(key, pages.sort((a, b) => a - b));
+    }
+  }
+  return index;
+}
+
+function bestVisualPageForQuestion(labelPages: number[], questionPages: number[]) {
+  if (!labelPages.length) return null;
+  for (const questionPage of questionPages) {
+    if (labelPages.includes(questionPage)) return questionPage;
+  }
+  for (const questionPage of questionPages) {
+    if (labelPages.includes(questionPage - 1)) return questionPage - 1;
+    if (labelPages.includes(questionPage + 1)) return questionPage + 1;
+  }
+  return [...labelPages].sort((a, b) => {
+    const distanceA = Math.min(...questionPages.map((page) => Math.abs(page - a)));
+    const distanceB = Math.min(...questionPages.map((page) => Math.abs(page - b)));
+    return distanceA - distanceB || a - b;
+  })[0] ?? labelPages[0] ?? null;
 }
 
 function buildDeterministicQuestion(
@@ -745,8 +780,16 @@ function buildDeterministicQuestion(
 ): QuestionExtractionOutput["questions"][number] | null {
   const cleanedPrompt = normalizeDeterministicPromptText(promptText);
   if (!cleanedPrompt || maxMarks <= 0) return null;
-  const unsupported = UNSUPPORTED_FORMAT_PATTERN.test(cleanedPrompt);
-  const responseType = unsupported ? "long_text" : inferDeterministicResponseType(cleanedPrompt, maxMarks);
+  const extractedChoice = extractChoiceStructure(cleanedPrompt);
+  const explicitChoiceQuestion = extractedChoice.hasChoiceInstruction;
+  const cleanChoiceOptions = extractedChoice.options.length >= 2 ? extractedChoice.options : [];
+  const unreliableChoiceQuestion = explicitChoiceQuestion && cleanChoiceOptions.length < 2;
+  const unsupported = UNSUPPORTED_FORMAT_PATTERN.test(cleanedPrompt) || unreliableChoiceQuestion;
+  const responseType = unsupported
+    ? "unsupported"
+    : explicitChoiceQuestion
+      ? inferChoiceResponseType(cleanedPrompt, "single_choice")
+      : inferDeterministicResponseType(cleanedPrompt, maxMarks);
   const mediaRefs = extractDeterministicMediaRefs(cleanedPrompt, pageReferences, questionNumber);
   let numberingPath = [...questionNumber.matchAll(/\d+|\([a-z]+\)|\([ivx]+\)|\d+\.\d+/gi)].map((match) => match[0]);
   if (questionNumber.includes(".") && /^\d+\.\d+$/.test(questionNumber)) {
@@ -767,16 +810,18 @@ function buildDeterministicQuestion(
       evidenceSnippet: cleanedPrompt.slice(0, 240),
       confidence: 92,
       extractionWarnings: unsupported ? ["Recovered from readable paper text as an unsupported question format."] : [],
+      ...(explicitChoiceQuestion ? { choiceExtractionQuality: extractedChoice.quality } : {}),
       ...(unsupported
         ? {
             unsupportedQuestionFormat: true,
-            unsupportedReason:
-              "This looks like a table, grid, matrix, or row-by-row checkbox question. The current answer UI only supports simple choices, written answers, and calculations.",
+            unsupportedReason: unreliableChoiceQuestion
+              ? "Multiple-choice options could not be extracted reliably."
+              : "This looks like a table, grid, matrix, or row-by-row checkbox question. The current answer UI only supports simple choices, written answers, and calculations.",
           }
         : {}),
     },
     convertedContent: {},
-    options: [],
+    options: cleanChoiceOptions,
     pageReferences: [...new Set(pageReferences)].sort((a, b) => a - b),
     mediaRefs,
     markSchemeRef: null,
@@ -784,26 +829,25 @@ function buildDeterministicQuestion(
   };
 }
 
-function extractDeterministicMediaRefs(promptText: string, pageReferences: number[], questionNumber: string) {
-  const matches = [...promptText.matchAll(/\b(Figure|Table|Diagram|Graph|Map|Source)\s+([A-Z]?\d+[A-Z]?)\b/gi)];
+function extractDeterministicMediaRefs(promptText: string, pageReferences: number[], questionNumber: string): MediaRef[] {
+  const matches = extractVisualLabelMatches(promptText);
   if (!matches.length) return [];
-  const pageNumber = [...new Set(pageReferences)].sort((a, b) => a - b)[0] ?? null;
   const seen = new Set<string>();
   return matches
     .map((match, index) => {
-      const kind = match[1].toLowerCase();
-      const label = `${match[1][0].toUpperCase()}${match[1].slice(1).toLowerCase()} ${match[2]}`;
+      const kind = match.kind.toLowerCase();
+      const label = match.label;
       const key = `${kind}:${label.toLowerCase()}`;
       if (seen.has(key)) return null;
       seen.add(key);
       return {
         id: `media-${questionNumber.replace(/[^a-z0-9]+/gi, "-").replace(/(^-|-$)/g, "").toLowerCase() || "question"}-${index + 1}`,
-        kind: kind === "figure" ? "diagram" : kind === "source" ? "source_extract" : kind,
+        kind: kind === "source" ? "source_extract" : kind,
         label,
         description: null,
         sourceAssetId: null,
-        pageNumber,
-        metadata: { inferredFromPrompt: true },
+        pageNumber: null,
+        metadata: { inferredFromPrompt: true, questionPages: [...new Set(pageReferences)].sort((a, b) => a - b) },
       };
     })
     .filter((item): item is NonNullable<typeof item> => Boolean(item));
@@ -1341,7 +1385,7 @@ function mergeUniqueOptions(...items: Array<string[] | undefined>) {
   return uniqueOptions(items.flatMap((item) => item ?? []));
 }
 
-function mergeMediaRefs(...items: Array<ProcessedPaperOutput["questions"][number]["mediaRefs"] | undefined>) {
+function mergeMediaRefs(...items: Array<ProcessedPaperOutput["questions"][number]["mediaRefs"] | undefined>): MediaRef[] {
   const seen = new Set<string>();
   return items.flatMap((item) => item ?? []).filter((item) => {
     const key = item.id || `${item.kind}:${item.label}:${item.pageNumber ?? ""}`;
@@ -1430,6 +1474,8 @@ function uniqueOptions(options: string[]) {
       return true;
     });
 }
+
+type MediaRef = ProcessedPaperOutput["questions"][number]["mediaRefs"][number];
 
 const SUPERSCRIPT_DIGITS: Record<string, string> = {
   "0": "⁰",
@@ -1539,6 +1585,81 @@ function buildDeterministicDisplayPlan(promptText: string) {
   };
 }
 
+export function resolveDeterministicMediaRefs(questions: ProcessedPaperOutput["questions"], paperPages: PagePromptContext[]): ProcessedPaperOutput["questions"] {
+  const labelPageIndex = buildVisualLabelPageIndex(paperPages);
+  const inheritedByMainQuestion = new Map<string, { ref: MediaRef; questionNumber: string }>();
+
+  return questions.map((question) => {
+    const mainQuestion = question.parentQuestionNumber ?? question.questionNumber.split(".")[0] ?? question.questionNumber;
+    const questionPages = [...new Set(question.pageReferences)].sort((a, b) => a - b);
+    const explicitRefs = mergeMediaRefs(question.mediaRefs, extractDeterministicMediaRefs(question.promptText, question.pageReferences, question.questionNumber));
+    const resolvedRefs: MediaRef[] = explicitRefs.flatMap<MediaRef>((ref, index) => {
+      const pages = labelPageIndex.get((ref.label ?? "").toLowerCase()) ?? [];
+      const preferredPage = bestVisualPageForQuestion(pages, questionPages);
+      if (preferredPage !== null) {
+        return [{
+          ...ref,
+          pageNumber: preferredPage,
+          metadata: {
+            ...ref.metadata,
+            fallback: false,
+            candidatePages: pages,
+          },
+        }];
+      }
+      const fallbackPage = questionPages[0] ?? null;
+      if (fallbackPage === null) return [];
+      return [{
+        ...ref,
+        id: `${ref.id || `media-${question.questionNumber}`}-fallback-${index + 1}`,
+        label: "Source page fallback",
+        description: ref.label,
+        pageNumber: fallbackPage,
+        metadata: {
+          ...ref.metadata,
+          fallback: true,
+          candidatePages: [],
+          requestedLabel: ref.label,
+        },
+      }];
+    });
+
+    const successfulExplicitRef = resolvedRefs.find(
+      (ref) => !(ref.metadata as Record<string, unknown> | undefined)?.fallback && typeof ref.pageNumber === "number",
+    );
+    if (successfulExplicitRef) {
+      inheritedByMainQuestion.set(mainQuestion, { ref: successfulExplicitRef, questionNumber: question.questionNumber });
+      return { ...question, mediaRefs: resolvedRefs };
+    }
+
+    const inherited = inheritedByMainQuestion.get(mainQuestion);
+    const canInherit =
+      inherited &&
+      !resolvedRefs.length &&
+      VAGUE_VISUAL_REFERENCE_PATTERN.test(question.promptText) &&
+      !extractVisualLabelMatches(question.promptText).length;
+    if (!canInherit) {
+      return { ...question, mediaRefs: resolvedRefs };
+    }
+
+    return {
+      ...question,
+      mediaRefs: [
+        ...resolvedRefs,
+        {
+          ...inherited.ref,
+          id: `media-${question.questionNumber.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}-inherited`,
+          metadata: {
+            ...inherited.ref.metadata,
+            inheritedFromQuestionNumber: inherited.questionNumber,
+            inferenceConfidence: 80,
+          },
+        },
+      ],
+    };
+  });
+}
+
 function deterministicAnswerPlan(question: Pick<PastPaperQuestion, "responseType" | "promptText" | "options" | "diagramMediaRefs">) {
   const extractedChoice = question.responseType === "single_choice" || question.responseType === "multi_select" ? extractChoiceStructure(question.promptText) : null;
   return {
@@ -1553,173 +1674,6 @@ function deterministicAnswerPlan(question: Pick<PastPaperQuestion, "responseType
   };
 }
 
-function deterministicVisualKind(label: string) {
-  const normalized = label.toLowerCase();
-  if (normalized.includes("table")) return "table" as const;
-  if (normalized.includes("graph")) return "graph" as const;
-  if (normalized.includes("map")) return "map" as const;
-  if (normalized.includes("source")) return "source_extract" as const;
-  if (normalized.includes("image") || normalized.includes("photo") || normalized.includes("photograph")) return "image" as const;
-  if (normalized.includes("diagram")) return "diagram" as const;
-  if (normalized.includes("figure")) return "figure" as const;
-  return "other" as const;
-}
-
-function deterministicVisualRegionsFromPages(paper: PastPaper, pages: PagePromptContext[]) {
-  const regions: PaperVisualRegion[] = [];
-  const seen = new Set<string>();
-  for (const page of pages) {
-    const matches = [...page.text.matchAll(/\b(Figure|Table|Diagram|Graph|Map|Source)\s+([A-Z]?\d+[A-Z]?)\b/gi)];
-    for (const match of matches) {
-      const label = `${match[1][0].toUpperCase()}${match[1].slice(1).toLowerCase()} ${match[2]}`;
-      const key = `${page.pageNumber}:${label.toLowerCase()}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      const start = match.index ?? 0;
-      const extractedText = cleanPromptText(page.text.slice(start, Math.min(page.text.length, start + 280)));
-      const kind = deterministicVisualKind(label);
-      regions.push({
-        id: `${paper.id}-visual-${regions.length + 1}`,
-        label,
-        kind,
-        pageNumber: page.pageNumber,
-        bbox: null,
-        confidence: 62,
-        title: null,
-        caption: extractedText || null,
-        extractedText: extractedText || null,
-        tableData: kind === "table" ? { columns: [], rows: [], notes: extractedText ? [extractedText] : [] } : null,
-        displayMode: kind === "table" ? "text_extract" : "full_page_fallback",
-        cropDataUrl: null,
-        source: "deterministic_text",
-      });
-    }
-  }
-  return regions;
-}
-
-async function cropVisualRegionFromScreenshot(screenshot: PaperPageScreenshot, bbox: NonNullable<PaperVisualRegion["bbox"]>) {
-  const pad = 0.03;
-  const x = Math.max(0, bbox.x - pad);
-  const y = Math.max(0, bbox.y - pad);
-  const width = Math.min(1 - x, bbox.width + pad * 2);
-  const height = Math.min(1 - y, bbox.height + pad * 2);
-  if (typeof document === "undefined" || typeof Image === "undefined") return screenshot.dataUrl;
-  try {
-    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
-      const instance = new Image();
-      instance.onload = () => resolve(instance);
-      instance.onerror = () => reject(new Error("Screenshot could not be loaded for cropping."));
-      instance.src = screenshot.dataUrl;
-    });
-    const canvas = document.createElement("canvas");
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return screenshot.dataUrl;
-    const sx = Math.round(image.width * x);
-    const sy = Math.round(image.height * y);
-    const sw = Math.max(1, Math.round(image.width * width));
-    const sh = Math.max(1, Math.round(image.height * height));
-    canvas.width = sw;
-    canvas.height = sh;
-    ctx.drawImage(image, sx, sy, sw, sh, 0, 0, sw, sh);
-    return canvas.toDataURL("image/webp", 0.92);
-  } catch {
-    return screenshot.dataUrl;
-  }
-}
-
-async function finalizeVisualRegions(paperAsset: PastPaperAsset | undefined, visualRegions: PaperVisualRegion[]) {
-  if (!paperAsset?.pageScreenshots?.length || !visualRegions.length) return visualRegions;
-  const byPage = new Map(paperAsset.pageScreenshots.map((screenshot) => [screenshot.pageNumber, screenshot] as const));
-  const resolved: PaperVisualRegion[] = [];
-  for (const region of visualRegions) {
-    if (region.bbox) {
-      const screenshot = byPage.get(region.pageNumber);
-      const cropDataUrl = screenshot ? await cropVisualRegionFromScreenshot(screenshot, region.bbox) : null;
-      resolved.push({
-        ...region,
-        cropDataUrl,
-        displayMode: region.kind === "table" && region.tableData?.columns.length ? "rendered_table" : "cropped_image",
-      });
-      continue;
-    }
-    resolved.push(region);
-  }
-  return resolved;
-}
-
-function resolveQuestionVisualRefs(questions: ProcessedPaperOutput["questions"], visualRegions: PaperVisualRegion[]) {
-  if (!visualRegions.length) return questions;
-  const byLabel = new Map(visualRegions.map((region) => [region.label.toLowerCase(), region] as const));
-  const groupedLastVisual = new Map<string, { region: PaperVisualRegion; questionNumber: string; pageNumber: number }>();
-
-  return questions.map((question) => {
-    const explicitRefs = mergeMediaRefs(question.mediaRefs);
-    const matchedRefs = explicitRefs.map((ref) => {
-      const region = byLabel.get(ref.label.toLowerCase());
-      if (!region) return ref;
-      return {
-        ...ref,
-        pageNumber: region.pageNumber,
-        metadata: {
-          ...ref.metadata,
-          visualRegionId: region.id,
-          bbox: region.bbox,
-          displayMode: region.displayMode,
-        },
-      };
-    });
-
-    const exactRegion = matchedRefs
-      .map((ref) => byLabel.get(ref.label.toLowerCase()))
-      .find((region): region is PaperVisualRegion => Boolean(region));
-    const familyKey = question.parentQuestionNumber ?? question.questionNumber.split(".")[0] ?? question.questionNumber;
-    if (exactRegion) {
-      groupedLastVisual.set(familyKey, { region: exactRegion, questionNumber: question.questionNumber, pageNumber: exactRegion.pageNumber });
-      return {
-        ...question,
-        mediaRefs: matchedRefs,
-      };
-    }
-
-    const inherited = groupedLastVisual.get(familyKey);
-    const questionPages = [...new Set(question.pageReferences)].sort((a, b) => a - b);
-    const canInherit =
-      inherited &&
-      VAGUE_VISUAL_REFERENCE_PATTERN.test(question.promptText) &&
-      !/\b(Figure|Table|Diagram|Graph|Map|Source)\s+[A-Z]?\d+[A-Z]?\b/i.test(question.promptText) &&
-      (!questionPages.length || Math.abs((questionPages[0] ?? inherited.pageNumber) - inherited.pageNumber) <= 1);
-    if (!canInherit) {
-      return {
-        ...question,
-        mediaRefs: matchedRefs,
-      };
-    }
-
-    return {
-      ...question,
-      mediaRefs: [
-        ...matchedRefs,
-        {
-          id: `media-${question.questionNumber.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}-inherited`,
-          kind: inherited.region.kind,
-          label: inherited.region.label,
-          description: inherited.region.caption,
-          sourceAssetId: null,
-          pageNumber: inherited.region.pageNumber,
-          metadata: {
-            visualRegionId: inherited.region.id,
-            bbox: inherited.region.bbox,
-            displayMode: inherited.region.displayMode,
-            inheritedFromQuestionNumber: inherited.questionNumber,
-            inferenceConfidence: 80,
-          },
-        },
-      ],
-    };
-  });
-}
-
 function deterministicSupportDecision(question: ProcessedPaperOutput["questions"][number]) {
   const choice = extractChoiceStructure(question.promptText);
   const explicitOptions = question.options.length ? question.options : choice.quality === "deterministic" ? choice.options : [];
@@ -1729,11 +1683,12 @@ function deterministicSupportDecision(question: ProcessedPaperOutput["questions"
   if (TABLE_COMPLETION_PATTERN.test(question.promptText) || WORD_BOX_PATTERN.test(question.promptText) || UNSUPPORTED_FORMAT_PATTERN.test(question.promptText)) {
     return { supported: false, responseType: "unsupported" as const, reason: "This question needs a table, word box, grid, or spatial interaction that the current UI cannot represent safely.", choiceQuality: choice.quality };
   }
-  if (question.responseType === "single_choice" || question.responseType === "multi_select") {
-    if (explicitOptions.length >= 2) {
+  const choiceQuestion = choice.hasChoiceInstruction || question.responseType === "single_choice" || question.responseType === "multi_select";
+  if (choiceQuestion) {
+    if (choice.hasChoiceInstruction && explicitOptions.length >= 2) {
       return {
         supported: true,
-        responseType: choice.quality === "deterministic" ? inferChoiceResponseType(question.promptText, question.responseType) : question.responseType,
+        responseType: inferChoiceResponseType(question.promptText, question.responseType === "multi_select" ? "multi_select" : "single_choice"),
         reason: "Choice options were extracted cleanly.",
         choiceQuality: explicitOptions.length >= 2 ? ("deterministic" as const) : choice.quality,
       };
@@ -1741,7 +1696,10 @@ function deterministicSupportDecision(question: ProcessedPaperOutput["questions"
     return {
       supported: false,
       responseType: "unsupported" as const,
-      reason: choice.quality === "ambiguous" ? "This multiple-choice layout was ambiguous, so it was kept unsupported instead of guessing." : "This choice question did not extract into a clean option list.",
+      reason:
+        choice.quality === "ambiguous"
+          ? "Multiple-choice options could not be extracted reliably."
+          : "Multiple-choice options could not be extracted reliably.",
       choiceQuality: choice.quality,
     };
   }
@@ -1811,7 +1769,8 @@ function applyDisplayPlans(output: ProcessedPaperOutput): ProcessedPaperOutput {
 }
 
 function reinterpretQuestionFormat(promptText: string, responseType: PastPaperQuestion["responseType"], options: string[]) {
-  const extractedChoice = responseType === "single_choice" || responseType === "multi_select" ? extractChoiceStructure(promptText, true) : null;
+  const trustChoiceTypeHint = options.length >= 2;
+  const extractedChoice = responseType === "single_choice" || responseType === "multi_select" ? extractChoiceStructure(promptText, trustChoiceTypeHint) : null;
   const extracted =
     extractedChoice?.quality === "deterministic"
       ? { promptText: cleanPromptText(extractedChoice.promptText), options: extractedChoice.options }
@@ -1871,7 +1830,7 @@ export function mapProcessedOutput(paper: PastPaper, output: ProcessedPaperOutpu
     processingStatus: "ready",
     processingError: null,
     processingDiagnostics: diagnostics ?? paper.processingDiagnostics ?? null,
-    visualRegions: output.visualRegions ?? paper.visualRegions ?? [],
+    visualRegions: output.visualRegions ?? [],
     questions,
     updatedAt,
   };
@@ -1918,31 +1877,6 @@ function normalizeSequentialSimpleQuestionNumbers(questions: QuestionExtractionO
       numberingPath: [main, sub],
     };
   });
-}
-
-function applyMarkSchemeAlignment(output: ProcessedPaperOutput, alignment: MarkSchemeAlignmentOutput): ProcessedPaperOutput {
-  const alignments = new Map(alignment.alignments.map((item) => [normalizeQuestionToken(item.questionNumber), item]));
-  return {
-    ...output,
-    questions: output.questions.map((question) => {
-      const match = questionNumberVariants(question).map((variant) => alignments.get(normalizeQuestionToken(variant))).find(Boolean);
-      if (!match) return question;
-      const alignedData = withValidatedAlignmentMetadata(question, match.markSchemeData, {
-        matchedQuestionNumber: match.matchedMarkSchemeQuestionNumber ?? null,
-        matchedPageNumbers: match.matchedPageNumbers ?? [],
-        matchedEvidenceText: match.matchedEvidenceText ?? "",
-        alignmentWarnings: match.alignmentWarnings ?? [],
-      });
-      const validation = validateMarkSchemeAlignment(question, alignedData);
-      const alignedMaxMarks = markSchemeMaxMarks(alignedData);
-      return {
-        ...question,
-        markSchemeRef: validation.quality === "wrong_section" || validation.quality === "missing" ? null : match.markSchemeRef,
-        markSchemeData: validation.quality === "wrong_section" || validation.quality === "missing" ? null : alignedData,
-        maxMarks: question.maxMarks > 0 ? question.maxMarks : alignedMaxMarks ?? question.maxMarks,
-      };
-    }),
-  };
 }
 
 function markSchemeMaxMarks(markSchemeData: Record<string, unknown> | null) {
@@ -2053,6 +1987,8 @@ const MARK_SCHEME_FRONT_MATTER_PATTERN =
   /\b(?:make sure that you have read and understood the mark scheme|if you are in any doubt about applying the mark scheme|need to get in touch|customer support centre)\b/i;
 const MARK_SCHEME_HEADER_PATTERN =
   /\b(?:Question\s+Answer(?:s)?(?:\s+Extra information)?\s+Mark(?:\s+Guidance)?(?:\s+AO\s*\/\s*Spec\.\s*Ref\.)?)\b/i;
+const AQA_MARK_SCHEME_ROW_MARKER =
+  /(?:^|[\n\r\s])(?:question\s*)?0?\s*\d(?:\s*\d)?\s*[.)/]\s*\d{1,2}(?=\s|[.)/:;-]|$)/gi;
 
 function markSchemeContentPages(pages: PagePromptContext[]) {
   const firstContentIndex = pages.findIndex((page) => MARK_SCHEME_HEADER_PATTERN.test(page.text));
@@ -2365,26 +2301,92 @@ function pageRange(start: number, end: number) {
   return Array.from({ length: end - start + 1 }, (_, index) => start + index);
 }
 
-export function extractExactAqaMarkSchemeRow(questionNumber: string, markSchemePages: PagePromptContext[]) {
+function isAqaDottedQuestionNumber(questionNumber: string) {
+  return /^\d+\.\d+$/.test(normalizeDisplayQuestionNumber(questionNumber).replace(/\*/g, ""));
+}
+
+function normalizeAqaDottedMarkSchemeQuestionNumber(value: string) {
+  const match = value.match(/0?\s*((?:\d\s*){1,2})\s*[.)/]\s*0?(\d{1,2})/i);
+  if (!match) return null;
+  return `${Number(normalizeAqaMainQuestionToken(match[1]))}.${Number(match[2])}`;
+}
+
+function aqaDottedMarkSchemeTargetRegex(questionNumber: string) {
+  const normalized = normalizeDisplayQuestionNumber(questionNumber).replace(/\*/g, "");
+  const match = normalized.match(/^(\d+)\.(\d+)$/);
+  if (!match) return null;
+  const mainPattern = match[1].split("").join("\\s*");
+  const subPattern = match[2].split("").join("\\s*");
+  return new RegExp(`(?:^|[\\n\\r\\s])(?:question\\s*)?0?\\s*${mainPattern}\\s*[.)/]\\s*0?\\s*${subPattern}(?=\\s|[.)/:;-]|$)`, "i");
+}
+
+function aqaMarkSchemeRowMarkers(text: string) {
+  return [...text.matchAll(AQA_MARK_SCHEME_ROW_MARKER)]
+    .map((match) => ({
+      marker: normalizeAqaDottedMarkSchemeQuestionNumber(match[0]),
+      index: match.index ?? 0,
+    }))
+    .filter((match): match is { marker: string; index: number } => Boolean(match.marker));
+}
+
+export function isGreedyOrWrongMarkSchemeSection(questionNumber: string, sectionText: string) {
+  const target = normalizeDisplayQuestionNumber(questionNumber).replace(/\*/g, "");
+  if (!isAqaDottedQuestionNumber(target)) return false;
+  const markers = aqaMarkSchemeRowMarkers(sectionText);
+  if (!markers.length) return false;
+  return markers.some((marker, index) => index > 0 && marker.marker !== target && marker.index > 80);
+}
+
+export function validateDeterministicMarkSchemeSection(questionNumber: string, maxMarks: number, sectionText: string) {
+  const openingText = cleanMarkSchemeSectionText(sectionText).slice(0, 160);
+  const targetRegex = aqaDottedMarkSchemeTargetRegex(questionNumber) ?? markSchemeExactSubquestionRegex(questionNumber);
+  if (!targetRegex.test(openingText)) {
+    return { ok: false, reason: "Exact question marker was not visible near the start of the extracted mark-scheme section." };
+  }
+  if (isGreedyOrWrongMarkSchemeSection(questionNumber, sectionText)) {
+    return { ok: false, reason: "The extracted mark-scheme section spilled into another question row." };
+  }
+  if (sectionText.length > (maxMarks <= 4 ? 1800 : 2600)) {
+    return { ok: false, reason: "The extracted mark-scheme section was too large to trust as one exact row." };
+  }
+  const compactText = cleanMarkSchemeSectionText(sectionText);
+  const remainder = compactText.replace(targetRegex, "").trim();
+  const looksLikeCompactExactRow =
+    compactText.length <= 220 &&
+    /\b\d{1,2}\s*$/.test(compactText) &&
+    /\b(?:[A-F0-9]{4,}|-?\d+(?:\.\d+)?|[A-Za-z]{3,})\b/.test(remainder);
+  if (!MARK_SCHEME_CONTENT_SIGNAL_PATTERN.test(sectionText) && !/^[-•]/m.test(sectionText) && !looksLikeCompactExactRow) {
+    return { ok: false, reason: "The extracted mark-scheme section did not contain enough visible marking signals." };
+  }
+  return { ok: true, reason: null };
+}
+
+export function extractAqaDottedMarkSchemeSection(questionNumber: string, markSchemePages: PagePromptContext[]) {
   const pages = markSchemeContentPages(markSchemePages);
   const combined = markSchemeTextWithMarkers(pages);
   if (!combined.trim()) return null;
-  const matcher = markSchemeExactSubquestionRegex(questionNumber);
+  const matcher = aqaDottedMarkSchemeTargetRegex(questionNumber);
+  if (!matcher) return null;
   const match = matcher.exec(combined);
   if (!match || match.index === undefined) return null;
-  const nextIndex = nextMarkSchemeQuestionIndex(combined, match.index + Math.max(1, match[0].length));
-  const endIndex = nextIndex > match.index ? nextIndex : Math.min(combined.length, match.index + 2200);
+  const subsequentRow = aqaMarkSchemeRowMarkers(combined).find((item) => item.index > match.index + Math.max(1, match[0].length));
+  const endIndex = subsequentRow?.index ?? Math.min(combined.length, match.index + 1800);
   const rawSection = combined.slice(match.index, endIndex).trim();
   const text = cleanMarkSchemeSectionText(rawSection);
   if (!text) return null;
   const startPage = markSchemePageNumberAt(combined, match.index);
   const endPage = markSchemePageNumberAt(combined, Math.max(match.index, endIndex - 1));
+  if (isGreedyOrWrongMarkSchemeSection(questionNumber, text)) return null;
   return {
     label: questionNumber,
     ref: `Mark scheme pages ${pageRange(startPage, endPage).join(", ")}, ${questionNumber}`,
     text,
     pageNumbers: pageRange(startPage, endPage),
   } satisfies DeterministicMarkSchemeSection;
+}
+
+export function extractExactAqaMarkSchemeRow(questionNumber: string, markSchemePages: PagePromptContext[]) {
+  return extractAqaDottedMarkSchemeSection(questionNumber, markSchemePages);
 }
 
 function buildDeterministicMarkSchemeSections(labels: string[], markSchemePages: PagePromptContext[]) {
@@ -2394,14 +2396,15 @@ function buildDeterministicMarkSchemeSections(labels: string[], markSchemePages:
 
   const sections = new Map<string, DeterministicMarkSchemeSection>();
   for (const label of labels) {
-    const exact = extractExactAqaMarkSchemeRow(label, pages);
+    if (!isAqaDottedQuestionNumber(label)) continue;
+    const exact = extractAqaDottedMarkSchemeSection(label, pages);
     if (exact) sections.set(label, exact);
   }
 
   const starts: Array<{ label: string; index: number }> = [];
   let cursor = 0;
   for (const label of labels) {
-    if (sections.has(label)) continue;
+    if (sections.has(label) || isAqaDottedQuestionNumber(label)) continue;
     const match = findMarkSchemeStartAfter(combined, label, cursor);
     if (!match) continue;
     starts.push({ label, index: match.index });
@@ -2751,7 +2754,14 @@ export function applyDeterministicMarkSchemeFallback(output: ProcessedPaperOutpu
     questions: output.questions.map((question) => {
       if (question.markSchemeData) return question;
       const section = sections.get(question.questionNumber);
-      if (!section) return applyDeterministicMarkSchemeToQuestion(question, markSchemePages);
+      if (!section) {
+        return isAqaDottedQuestionNumber(question.questionNumber) ? question : applyDeterministicMarkSchemeToQuestion(question, markSchemePages);
+      }
+      const sectionValidation = validateDeterministicMarkSchemeSection(question.questionNumber, question.maxMarks, section.text);
+      const tooBroadForShortQuestion = question.maxMarks <= 3 && section.pageNumbers.length > 2;
+      if (!sectionValidation.ok || tooBroadForShortQuestion) {
+        return question;
+      }
       const rules = extractMarkSchemeRuleNotes(section.text);
       const rows = extractDeterministicMarkSchemeRows(section.text, question.maxMarks).map((row, index) => ({
         markPoint: row.markPoint,
@@ -2799,10 +2809,11 @@ function applyMarkSchemeAlignmentValidation(output: ProcessedPaperOutput) {
       if (!question.markSchemeData) return question;
       const enriched = withValidatedAlignmentMetadata(question, question.markSchemeData);
       const validation = validateMarkSchemeAlignment(question, enriched);
+      const unusable = validation.quality === "wrong_section" || validation.quality === "missing" || validation.quality === "broad_parent";
       return {
         ...question,
-        markSchemeRef: validation.quality === "wrong_section" || validation.quality === "missing" ? null : question.markSchemeRef,
-        markSchemeData: validation.quality === "wrong_section" || validation.quality === "missing" ? null : enriched,
+        markSchemeRef: unusable ? null : question.markSchemeRef,
+        markSchemeData: unusable ? null : enriched,
       };
     }),
   };
@@ -2864,143 +2875,6 @@ function applyDeterministicMarkSchemeToQuestion<
   return question;
 }
 
-function mergeVisualRegions(deterministic: PaperVisualRegion[], fromAi: PaperVisualRegion[]) {
-  const merged = new Map<string, PaperVisualRegion>();
-  for (const region of deterministic) {
-    merged.set(`${region.pageNumber}:${region.label.toLowerCase()}`, region);
-  }
-  for (const region of fromAi) {
-    merged.set(`${region.pageNumber}:${region.label.toLowerCase()}`, region);
-  }
-  return [...merged.values()].sort((a, b) => a.pageNumber - b.pageNumber || a.label.localeCompare(b.label));
-}
-
-async function identifyVisualRegions(
-  paper: PastPaper,
-  paperPages: PagePromptContext[],
-  model: string,
-  fallbackModels: string[],
-  reporter: ReturnType<typeof makeProgressReporter>,
-) {
-  const paperAsset = paper.assets.find((asset) => asset.kind === "paper");
-  const deterministic = deterministicVisualRegionsFromPages(paper, paperPages);
-  const candidatePages = deterministic.length
-    ? paperPages.filter((page) => deterministic.some((region) => region.pageNumber === page.pageNumber))
-    : paperPages.filter((page) => /\b(Figure|Table|Diagram|Graph|Map|Source)\s+[A-Z]?\d+[A-Z]?\b/i.test(page.text));
-  if (!candidatePages.length || !paperAsset) {
-    return finalizeVisualRegions(paperAsset, deterministic);
-  }
-
-  let aiRegions: PaperVisualRegion[] = [];
-  for (let index = 0; index < candidatePages.length; index += MAX_VISUAL_INVENTORY_PAGES_PER_CHUNK) {
-    const chunk = candidatePages.slice(index, index + MAX_VISUAL_INVENTORY_PAGES_PER_CHUNK);
-    const media = screenshotDataUrls(paperAsset, chunk.map((page) => page.pageNumber), "full");
-    if (!media.length) continue;
-    const prompt = buildVisualInventoryPrompt({
-      title: paper.title,
-      subject: paper.subject,
-      pages: chunk,
-    });
-    reporter.addPrompt("Visual inventory", prompt, model, chunk.map((page) => page.pageNumber), media.length);
-    try {
-      const result = await aiStructuredJson(prompt, visualInventoryOutputSchema, {
-        operation: "visual_inventory",
-        model,
-        fallbackModels,
-        media,
-        debugLabel: `Visual inventory ${chunk[0]?.pageNumber ?? 1}`,
-      });
-      aiRegions = aiRegions.concat(result.visualRegions);
-    } catch (error) {
-      reporter.log("identifying visual regions", "warn", "Visual inventory fell back to deterministic regions.", {
-        error: error instanceof Error ? error.message : String(error),
-        pages: chunk.map((page) => page.pageNumber),
-      });
-    }
-  }
-
-  return finalizeVisualRegions(paperAsset, mergeVisualRegions(deterministic, aiRegions));
-}
-
-function shouldAskClaudeAboutSupport(question: ProcessedPaperOutput["questions"][number]) {
-  const choice = extractChoiceStructure(question.promptText);
-  return (
-    question.responseType === "single_choice" ||
-    question.responseType === "multi_select" ||
-    question.responseType === "unsupported" ||
-    choice.quality === "ambiguous" ||
-    question.mediaRefs.length > 0 ||
-    WORD_BOX_PATTERN.test(question.promptText) ||
-    GRAPH_COMPLETION_PATTERN.test(question.promptText) ||
-    TABLE_COMPLETION_PATTERN.test(question.promptText)
-  );
-}
-
-async function validateQuestionSupportWithClaude(
-  paper: PastPaper,
-  output: ProcessedPaperOutput,
-  model: string,
-  fallbackModels: string[],
-  reporter: ReturnType<typeof makeProgressReporter>,
-) {
-  const targets = output.questions.filter(shouldAskClaudeAboutSupport);
-  if (!targets.length) return output;
-
-  const prompt = buildQuestionSupportValidationPrompt({
-    title: output.title,
-    subject: paper.subject,
-    questions: targets.map((question) => ({
-      questionNumber: question.questionNumber,
-      promptText: question.promptText,
-      maxMarks: question.maxMarks,
-      responseType: question.responseType,
-      options: question.options,
-      pageReferences: question.pageReferences,
-      mediaRefs: question.mediaRefs.map((ref) => ({
-        label: ref.label,
-        kind: ref.kind,
-        pageNumber: ref.pageNumber,
-      })),
-    })),
-  });
-  reporter.addPrompt("Question support validation", prompt, model, [...new Set(targets.flatMap((question) => question.pageReferences))], 0);
-  try {
-    const result = await aiStructuredJson(prompt, questionSupportValidationOutputSchema, {
-      operation: "question_support_validation",
-      model,
-      fallbackModels,
-      debugLabel: "Question support validation",
-    });
-    const byNumber = new Map(result.questions.map((item) => [normalizeQuestionToken(item.questionNumber), item] as const));
-    return {
-      ...output,
-      questions: output.questions.map((question) => {
-        const validated = byNumber.get(normalizeQuestionToken(question.questionNumber));
-        if (!validated) return question;
-        return {
-          ...question,
-          responseType: validated.supported ? validated.responseType : "unsupported",
-          originalContent: {
-            ...question.originalContent,
-            ...(validated.supported ? {} : { unsupportedQuestionFormat: true, unsupportedReason: validated.reason }),
-            ...(validated.answerPlan ? { choiceExtractionQuality: validated.answerPlan.choiceExtractionQuality } : {}),
-          },
-          convertedContent: {
-            ...question.convertedContent,
-            ...(validated.displayPlan ? { displayPlan: validated.displayPlan } : {}),
-            ...(validated.answerPlan ? { answerPlan: validated.answerPlan } : {}),
-          },
-        };
-      }),
-    };
-  } catch (error) {
-    reporter.log("validating question support", "warn", "Question support validation fell back to deterministic interpretation.", {
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return output;
-  }
-}
-
 export async function processPaperWithAI(paper: PastPaper, onProgress: (update: ProcessingProgressUpdate) => void, options: ProcessPaperOptions = {}) {
   const paperAsset = paper.assets.find((asset) => asset.kind === "paper");
   const markSchemeAsset = paper.assets.find((asset) => asset.kind === "mark_scheme");
@@ -3033,16 +2907,11 @@ export async function processPaperWithAI(paper: PastPaper, onProgress: (update: 
       throw new Error("No readable paper text or page images were available. Question extraction cannot proceed without source content.");
     }
 
-    reporter.enterStage("identifying visual regions", 24, "Identifying labelled figures, tables, and graphs", {
-      pages: paperPages.length,
-      selectedModel: model,
-    });
-    const visualRegions = await identifyVisualRegions(paper, paperPages, model, fallbackModels, reporter);
-    reporter.completeStage("identifying visual regions");
+    const deterministicOutput = buildDeterministicProcessedPaperOutput(paper, paperPages);
+    let output: ProcessedPaperOutput;
 
-    let output = buildDeterministicProcessedPaperOutput(paper, paperPages);
-
-    if (output) {
+    if (deterministicOutput) {
+      output = deterministicOutput;
       const detectedStyle = detectDeterministicPaperStyle(paperPages);
       const preparedPages = detectedStyle ? prepareDeterministicPages(paperPages, detectedStyle) : [];
       reporter.enterStage("building page inventory", 28, "Using deterministic parser for readable paper text", {
@@ -3075,8 +2944,7 @@ export async function processPaperWithAI(paper: PastPaper, onProgress: (update: 
       });
       output = {
         ...output,
-        visualRegions,
-        questions: resolveQuestionVisualRefs(output.questions, visualRegions),
+        questions: resolveDeterministicMediaRefs(output.questions, paperPages),
       };
       reporter.completeStage("extracting question details");
     } else {
@@ -3206,23 +3074,12 @@ export async function processPaperWithAI(paper: PastPaper, onProgress: (update: 
         paperCode: inventory.paperCode ?? paper.paperCode,
         totalMarks: inventory.totalMarks ?? questions.reduce((sum, question) => sum + question.maxMarks, 0),
         durationMinutes: inventory.durationMinutes ?? paper.durationMinutes,
-        visualRegions,
-        questions: resolveQuestionVisualRefs(questions, visualRegions),
+        questions: resolveDeterministicMediaRefs(questions, paperPages),
       };
     }
 
-    reporter.enterStage("validating question support", 66, "Checking which questions are safely answerable in the current UI", {
-      questionCount: output.questions.length,
-    });
     output = applyDeterministicSupportValidation(output);
-    output = await validateQuestionSupportWithClaude(paper, output, model, fallbackModels, reporter);
-    reporter.completeStage("validating question support");
-
-    reporter.enterStage("building question display plans", 74, "Formatting question text for cleaner steps, notation, and equations", {
-      questionCount: output.questions.length,
-    });
     output = applyDisplayPlans(output);
-    reporter.completeStage("building question display plans");
 
     if (markSchemeAsset) {
       reporter.enterStage("aligning mark scheme", 82, "Aligning mark scheme separately", {
@@ -3243,100 +3100,6 @@ export async function processPaperWithAI(paper: PastPaper, onProgress: (update: 
               alignedQuestions: afterDeterministic,
             });
           }
-        }
-
-        const unresolvedQuestions = output.questions.filter((question) => !question.markSchemeData);
-        if (unresolvedQuestions.length) {
-          const alignmentPrompt = buildMarkSchemeAlignmentPrompt({
-            title: output.title,
-            subject: paper.subject,
-            questions: unresolvedQuestions.map((question) => ({
-              questionNumber: question.questionNumber,
-              promptText: question.promptText,
-              maxMarks: question.maxMarks,
-              pageReferences: question.pageReferences,
-            })),
-            markSchemePages,
-          });
-          const markSchemePageNumbers = markSchemePages.map((page) => page.pageNumber);
-          const markSchemeMedia = hasMeaningfulText(markSchemePages) ? [] : screenshotDataUrls(markSchemeAsset, markSchemePageNumbers, "full");
-          reporter.addPrompt("Mark scheme alignment", alignmentPrompt, model, markSchemePageNumbers, markSchemeMedia.length);
-          const shouldUseAiAlignment = alignmentPrompt.length <= MAX_AI_MARK_SCHEME_ALIGNMENT_PROMPT_CHARS || !readableMarkScheme;
-          if (shouldUseAiAlignment) {
-            try {
-              const alignment = await structuredJsonWithTextFallback({
-                prompt: alignmentPrompt,
-                schema: markSchemeAlignmentOutputSchema,
-                hasReadableText: readableMarkScheme,
-                label: "Mark scheme alignment",
-                stage: "aligning mark scheme",
-                reporter,
-                options: {
-                  operation: "mark_scheme_alignment",
-                  model,
-                  fallbackModels: alignmentPrompt.length > 24_000 ? [] : fallbackModels,
-                  media: markSchemeMedia,
-                  timeoutMs: 35_000,
-                  debugLabel: "Mark scheme alignment",
-                  normalizer: normalizeMarkSchemeAlignmentOutput,
-                  onRequestDiagnostic: reporter.addAIRequest,
-                  onSchemaError: reporter.addSchemaError,
-                },
-              });
-              output = applyMarkSchemeAlignment(output, alignment);
-              output = applyMarkSchemeAlignmentValidation(output);
-            } catch (error) {
-              reporter.log("aligning mark scheme", "warn", "Mark scheme alignment failed; questions were kept without fabricated mark-scheme data", {
-                error: error instanceof Error ? error.message : String(error),
-              });
-            }
-          } else {
-            reporter.log("aligning mark scheme", "warn", "Skipping AI mark-scheme alignment because the unresolved-question prompt is still too large", {
-              promptChars: alignmentPrompt.length,
-              maxPromptChars: MAX_AI_MARK_SCHEME_ALIGNMENT_PROMPT_CHARS,
-              unresolvedQuestions: unresolvedQuestions.length,
-            });
-          }
-        }
-
-        const questionableAlignments = output.questions.filter(
-          (item) => !item.markSchemeData || !isReliableAlignmentQuality(alignmentQualityFromMarkSchemeData(item.markSchemeData)),
-        );
-        if (questionableAlignments.length && questionableAlignments.length <= 8) {
-          const recoveredQuestions = await Promise.all(
-            questionableAlignments.map(async (item) => {
-              const recoveryQuestion = {
-                questionNumber: item.questionNumber,
-                parentQuestionNumber: item.parentQuestionNumber,
-                maxMarks: item.maxMarks,
-              };
-              try {
-                const recovery = await recoverMarkSchemeForQuestionWithClaude({
-                  paper,
-                  question: item as unknown as PastPaperQuestion,
-                  displayNumber: item.questionNumber,
-                  currentBadEvidence: item.markSchemeData,
-                  markSchemePages,
-                  model,
-                  fallbackModels,
-                });
-                const recovered = recoveredMarkSchemeDataFromClaude(recoveryQuestion, recovery);
-                const validation = validateMarkSchemeAlignment(recoveryQuestion, recovered);
-                if (!recovered || !isReliableAlignmentQuality(validation.quality)) return item;
-                return {
-                  ...item,
-                  markSchemeRef: recovery.markSchemeRef ?? item.markSchemeRef,
-                  markSchemeData: recovered,
-                };
-              } catch {
-                return item;
-              }
-            }),
-          );
-          output = {
-            ...output,
-            questions: output.questions.map((question) => recoveredQuestions.find((item) => item.questionNumber === question.questionNumber) ?? question),
-          };
         }
       } else {
         reporter.log("aligning mark scheme", "warn", "No readable mark-scheme pages were available for alignment");
@@ -3480,6 +3243,11 @@ function deterministicMarkSchemeQuestionForPaper(paper: PastPaper, question: Pas
   const sections = buildDeterministicMarkSchemeSections(labels, pages);
   const section = sections.get(displayNumber);
   if (!section) return applyDeterministicMarkSchemeToQuestion(question, pages, [displayNumber]);
+  const validation = validateDeterministicMarkSchemeSection(question.questionNumber, question.maxMarks, section.text);
+  const tooBroadForShortQuestion = question.maxMarks <= 3 && section.pageNumbers.length > 2;
+  if (!validation.ok || tooBroadForShortQuestion) {
+    return applyDeterministicMarkSchemeToQuestion(question, pages, [displayNumber]);
+  }
   const rules = extractMarkSchemeRuleNotes(section.text);
   const rows = extractDeterministicMarkSchemeRows(section.text, question.maxMarks).map((row, index) => ({
     markPoint: row.markPoint,
@@ -3597,8 +3365,18 @@ function recoveryCandidateMarkSchemePages(
     ...[...hintedPages].flatMap((page) => [page - 1, page, page + 1]),
   ]);
   const filtered = markSchemePages.filter((page) => pageNumbers.has(page.pageNumber));
-  if (filtered.length) return filtered;
-  return markSchemePages.slice(0, Math.min(markSchemePages.length, 10));
+  return filtered;
+}
+
+function trimRecoveryPagesToCharBudget(pages: PagePromptContext[], maxChars = 10_000) {
+  const selected: PagePromptContext[] = [];
+  let totalChars = 0;
+  for (const page of pages) {
+    if (selected.length && totalChars + page.text.length > maxChars) break;
+    selected.push(page);
+    totalChars += page.text.length;
+  }
+  return selected;
 }
 
 async function recoverMarkSchemeForQuestionWithClaude({
@@ -3618,9 +3396,23 @@ async function recoverMarkSchemeForQuestionWithClaude({
   model: string;
   fallbackModels: string[];
 }): Promise<MarkSchemeRecoveryOutput> {
-  const relevantPages = recoveryCandidateMarkSchemePages(question, markSchemePages, currentBadEvidence);
+  const relevantPages = trimRecoveryPagesToCharBudget(recoveryCandidateMarkSchemePages(question, markSchemePages, currentBadEvidence));
+  if (!relevantPages.length) {
+    return {
+      status: "not_found",
+      questionNumber: displayNumber,
+      matchedMarkSchemeQuestionNumber: null,
+      confidence: 0,
+      markSchemeRef: null,
+      pageNumbers: [],
+      rows: [],
+      evidence: "",
+      whyThisMatches: "",
+      whyRejectedPrevious: "",
+    };
+  }
   const markSchemeAsset = paper.assets.find((asset) => asset.kind === "mark_scheme");
-  const media = screenshotDataUrls(markSchemeAsset, relevantPages.map((page) => page.pageNumber), "full");
+  const media = hasMeaningfulText(relevantPages) ? [] : screenshotDataUrls(markSchemeAsset, relevantPages.map((page) => page.pageNumber), "full");
   const siblings = paper.questions
     .map((item) => displayQuestionNumberForPaper(paper, item))
     .filter((label) => label !== displayNumber)
@@ -3970,8 +3762,11 @@ export async function markAnswerWithAI(
   const primaryModel = options.model ?? DEFAULT_AI_MODEL;
   const fallbackModels = options.fallbackModels ?? [...FALLBACK_AI_MODELS];
   let recoveryResult: MarkSchemeRecoveryOutput | null = null;
+  const allowMarkSchemeRecovery = options.allowMarkSchemeRecovery !== false;
+  let recoveryAttempted = false;
 
-  if ((!markSchemeData || !isReliableAlignmentQuality(validation.quality)) && markSchemePages.length) {
+  if ((!markSchemeData || !isReliableAlignmentQuality(validation.quality)) && markSchemePages.length && allowMarkSchemeRecovery) {
+    recoveryAttempted = true;
     recoveryResult = await recoverMarkSchemeForQuestionWithClaude({
       paper,
       question,
@@ -3996,11 +3791,12 @@ export async function markAnswerWithAI(
     Boolean(markSchemeText) &&
     (hasStructuredRenderedMarkSchemeText(markSchemeText) || hasMarkSchemeSubstance(markSchemeText, displayNumber || question.questionNumber));
   if (!markSchemeData || !isReliableAlignmentQuality(validation.quality) || !markSchemeLooksUsable) {
-    throw new MarkSchemeAlignmentError("Could not safely align this question with the mark scheme. Diagnostics were sent for review.", {
+    throw new MarkSchemeAlignmentError("Could not safely align this question with the mark scheme.", {
       code: "mark_scheme_alignment_error",
       questionNumber: displayNumber || question.questionNumber,
       questionPrompt: question.promptText,
       pageReferences: question.pageReferences,
+      recoveryAttempted,
       currentBadEvidence: markSchemeData,
       rejectedEvidence:
         validation.quality === "wrong_section" || validation.quality === "broad_parent"
@@ -4079,11 +3875,12 @@ export async function markAnswerWithAI(
     }
   }
   if (output.awardedMarks === 0 && markOutputSignalsInsufficient(output) && hasMarkSchemeSubstance(markSchemeText, displayNumber || question.questionNumber)) {
-    throw new MarkSchemeAlignmentError("Could not safely align this question with the mark scheme. Diagnostics were sent for review.", {
+    throw new MarkSchemeAlignmentError("Could not safely align this question with the mark scheme.", {
       code: "mark_scheme_alignment_error",
       questionNumber: displayNumber,
       questionPrompt: question.promptText,
       pageReferences: question.pageReferences,
+      recoveryAttempted,
       currentBadEvidence: markSchemeData,
       recoveryResult,
       reason: "The marking model still reported insufficient aligned row evidence after recovery, so the answer was not forced to zero.",

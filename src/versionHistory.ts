@@ -7,6 +7,19 @@ export type VersionHistoryEntry = {
 
 export const versionHistory: VersionHistoryEntry[] = [
   {
+    version: "v1.4.1",
+    title: "Rollback and targeted parser fixes",
+    date: "2026-05-17",
+    changes: [
+      "Reverted the expensive v1.4.0 processing pipeline.",
+      "Restored fast deterministic paper processing.",
+      "Fixed greedy mark-scheme section matching.",
+      "Tightened multiple-choice parsing.",
+      "Fixed visual references to avoid random figure pages.",
+      "Kept Claude as the default marking model.",
+    ],
+  },
+  {
     version: "v1.4.0",
     title: "Alignment and question intelligence",
     date: "2026-05-16",

@@ -154,9 +154,9 @@ describe("v1.3 product shell", () => {
     await user.click(screen.getByRole("button", { name: /collapse sidebar/i }));
     expect(screen.queryByText("Chemistry")).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /v1.4.0 alignment and question intelligence/i }));
+    await user.click(screen.getByRole("button", { name: /v1.4.1 rollback and targeted parser fixes/i }));
     expect(await screen.findByRole("heading", { name: "Version history" })).toBeInTheDocument();
-    expect(screen.getByText("Improved mark-scheme row alignment.")).toBeInTheDocument();
+    expect(screen.getByText("Restored fast deterministic paper processing.")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Close version history" }));
 
     await user.click(screen.getByRole("button", { name: /credits/i }));

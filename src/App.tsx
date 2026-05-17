@@ -1850,7 +1850,7 @@ function UnsupportedSubjectDashboard({
           </article>
           <article className="feature-card">
             <strong>Legacy papers</strong>
-            <p>{legacyPapers.length ? `${legacyPapers.length} existing paper${legacyPapers.length === 1 ? "" : "s"} are stored for this subject, but v1.4.0 does not treat it as supported.` : "No papers stored for this subject yet."}</p>
+            <p>{legacyPapers.length ? `${legacyPapers.length} existing paper${legacyPapers.length === 1 ? "" : "s"} are stored for this subject, but v1.4.1 does not treat it as supported.` : "No papers stored for this subject yet."}</p>
           </article>
         </div>
       </section>
@@ -4247,6 +4247,11 @@ export function App() {
     await new Promise((resolve) => window.setTimeout(resolve, ms));
   }
 
+  function recoveryAlreadyAttempted(questionId: string) {
+    const existingIssue = selectedAttempt?.markingIssues?.find((issue) => issue.questionId === questionId && issue.type === "mark_scheme_alignment_error");
+    return issueMetadataRecord(existingIssue)?.recoveryAttempted === true;
+  }
+
   async function retryMarkQuestion(questionId: string) {
     if (!selectedPaper || !selectedAttempt) return;
     const question = selectedPaper.questions.find((item) => item.id === questionId);
@@ -4257,7 +4262,11 @@ export function App() {
     try {
       await ensureAIReadyForUserAction();
       const version = selectedAttempt.marks.filter((mark) => mark.questionId === question.id).length + 1;
-      const mark = await markAnswerWithAI(selectedPaper, question, answer, version, "ai", { model: aiModel, fallbackModels: FALLBACK_AI_MODELS.filter((model) => model !== aiModel) });
+      const mark = await markAnswerWithAI(selectedPaper, question, answer, version, "ai", {
+        model: aiModel,
+        fallbackModels: FALLBACK_AI_MODELS.filter((model) => model !== aiModel),
+        allowMarkSchemeRecovery: !recoveryAlreadyAttempted(question.id),
+      });
       patchAttempt(selectedAttempt.id, (attempt) => mergeAttemptMarkingState(attempt, { marks: [mark] }, selectedPaper));
       setStatus(`Marked question ${displayQuestionLabel(selectedPaper, question)} by ${mark.model ? aiModelShortLabel(mark.model, mark.modelLabel) : "local checks"}.`);
     } catch (reason) {
@@ -4274,23 +4283,16 @@ export function App() {
         { rawMessage, retryAfterMs },
       );
       if (issue.type === "mark_scheme_alignment_error") {
-        try {
-          const reportedAt = await sendAlignmentDiagnostic(question, answer, issue, reason);
-          issue = {
-            ...issue,
-            message: "Could not safely align this question with the mark scheme. Diagnostics were sent for review.",
-            reportedAt,
-            reportType: reportedAt ? "automatic_alignment" : null,
-            metadata:
-              reason instanceof MarkSchemeAlignmentError
-                ? reason.details
-                : reason && typeof reason === "object" && "details" in (reason as Record<string, unknown>)
-                  ? (((reason as Record<string, unknown>).details as Record<string, unknown>) ?? null)
-                  : null,
-          };
-        } catch {
-          // Keep the original issue message if reporting fails.
-        }
+        issue = {
+          ...issue,
+          message: "Could not safely align this question with the mark scheme.",
+          metadata:
+            reason instanceof MarkSchemeAlignmentError
+              ? reason.details
+              : reason && typeof reason === "object" && "details" in (reason as Record<string, unknown>)
+                ? (((reason as Record<string, unknown>).details as Record<string, unknown>) ?? null)
+                : null,
+        };
       }
       patchAttempt(selectedAttempt.id, (attempt) => mergeAttemptMarkingState(attempt, { issues: [issue] }, selectedPaper));
       setError(markingIssueLabel(issue) ?? rawMessage);
@@ -4349,7 +4351,11 @@ export function App() {
         while (!marked && attemptNumber < 3) {
           try {
             const version = selectedAttempt.marks.filter((mark) => mark.questionId === question.id).length + 1;
-            marks.push(await markAnswerWithAI(selectedPaper, question, answer, version, "ai", { model: aiModel, fallbackModels: FALLBACK_AI_MODELS.filter((model) => model !== aiModel) }));
+            marks.push(await markAnswerWithAI(selectedPaper, question, answer, version, "ai", {
+              model: aiModel,
+              fallbackModels: FALLBACK_AI_MODELS.filter((model) => model !== aiModel),
+              allowMarkSchemeRecovery: !recoveryAlreadyAttempted(question.id),
+            }));
             marked = true;
           } catch (reason) {
             attemptNumber += 1;
@@ -4374,23 +4380,16 @@ export function App() {
               { rawMessage, retryAfterMs: retryAfterMsFromError(reason) },
             );
             if (issue.type === "mark_scheme_alignment_error") {
-              try {
-                const reportedAt = await sendAlignmentDiagnostic(question, answer, issue, reason);
-                issue = {
-                  ...issue,
-                  message: "Could not safely align this question with the mark scheme. Diagnostics were sent for review.",
-                  reportedAt,
-                  reportType: reportedAt ? "automatic_alignment" : null,
-                  metadata:
-                    reason instanceof MarkSchemeAlignmentError
-                      ? reason.details
-                      : reason && typeof reason === "object" && "details" in (reason as Record<string, unknown>)
-                        ? (((reason as Record<string, unknown>).details as Record<string, unknown>) ?? null)
-                        : null,
-                };
-              } catch {
-                // Keep the local issue even if email reporting fails.
-              }
+              issue = {
+                ...issue,
+                message: "Could not safely align this question with the mark scheme.",
+                metadata:
+                  reason instanceof MarkSchemeAlignmentError
+                    ? reason.details
+                    : reason && typeof reason === "object" && "details" in (reason as Record<string, unknown>)
+                      ? (((reason as Record<string, unknown>).details as Record<string, unknown>) ?? null)
+                      : null,
+              };
             }
             issues.push(issue);
             marked = true;
@@ -4418,8 +4417,8 @@ export function App() {
       });
       setStatus(
         issues.length
-          ? issues.some((issue) => issue.type === "mark_scheme_alignment_error" && issue.reportedAt)
-            ? `Attempt marked with issues. ${issues.filter((issue) => issue.type === "mark_scheme_alignment_error").length} question${issues.filter((issue) => issue.type === "mark_scheme_alignment_error").length === 1 ? "" : "s"} need review, and diagnostics were sent for investigation.`
+          ? issues.some((issue) => issue.type === "mark_scheme_alignment_error")
+            ? `Attempt marked with issues. ${issues.filter((issue) => issue.type === "mark_scheme_alignment_error").length} question${issues.filter((issue) => issue.type === "mark_scheme_alignment_error").length === 1 ? "" : "s"} need review.`
             : `Attempt marked with issues. ${marks.length} answered question${marks.length === 1 ? "" : "s"} scored, ${issues.filter((issue) => issue.type === "transient_provider_error").length} waiting for retry.`
           : markingModelStatus(marks),
       );
@@ -4450,7 +4449,11 @@ export function App() {
 
     try {
       const version = selectedAttempt.marks.filter((mark) => mark.questionId === question.id).length + 1;
-      const proposed = await markAnswerWithAI(selectedPaper, question, answer, version, "remark", { model: aiModel, fallbackModels: FALLBACK_AI_MODELS.filter((model) => model !== aiModel) });
+      const proposed = await markAnswerWithAI(selectedPaper, question, answer, version, "remark", {
+        model: aiModel,
+        fallbackModels: FALLBACK_AI_MODELS.filter((model) => model !== aiModel),
+        allowMarkSchemeRecovery: !recoveryAlreadyAttempted(question.id),
+      });
       patchAttempt(selectedAttempt.id, (attempt) => ({
         ...attempt,
         marks: [...attempt.marks, proposed],
@@ -4681,56 +4684,6 @@ export function App() {
       attachmentName: `${selectedPaper.title.replace(/[^a-z0-9]+/gi, "-").toLowerCase() || "paper"}-${displayQuestionLabel(selectedPaper, question).replace(/[^a-z0-9]+/gi, "-").toLowerCase()}-question-report.json`,
     });
     return true;
-  }
-
-  async function sendAlignmentDiagnostic(question: PastPaperQuestion, answer: PastPaperAnswer, issue: PastPaperMarkingIssue, reason: unknown) {
-    if (!selectedPaper || !selectedAttempt) return null;
-    const existingReportedAt = [
-      ...(selectedAttempt.markingIssues ?? []),
-      issue,
-    ]
-      .filter((item) => item.questionId === question.id && item.type === "mark_scheme_alignment_error")
-      .map((item) => item.reportedAt)
-      .find((timestamp) => reportedWithinWindow(timestamp));
-    if (existingReportedAt) return null;
-
-    const details =
-      reason instanceof MarkSchemeAlignmentError
-        ? reason.details
-        : reason && typeof reason === "object" && "details" in (reason as Record<string, unknown>)
-          ? ((reason as Record<string, unknown>).details as Record<string, unknown>)
-          : null;
-    await sendDiagnosticEmailReport({
-      paper: selectedPaper,
-      question,
-      attempt: selectedAttempt,
-      title: `Mark scheme alignment issue: ${selectedPaper.title} ${displayQuestionLabel(selectedPaper, question)}`,
-      description: [
-        "A mark-scheme row could not be reliably aligned after deterministic and Claude recovery.",
-        "",
-        `Paper: ${selectedPaper.title}`,
-        `Question: ${displayQuestionLabel(selectedPaper, question)}`,
-        `Reason: ${issue.message}`,
-        `Previous evidence: ${JSON.stringify(details?.currentBadEvidence ?? null).slice(0, 2000)}`,
-        `Claude recovery status: ${details?.recoveryResult && typeof details.recoveryResult === "object" ? JSON.stringify(details.recoveryResult).slice(0, 1200) : "none"}`,
-      ].join("\n"),
-      metadata: {
-        reportType: "mark_scheme_alignment",
-        paperTitle: selectedPaper.title,
-        subject: selectedPaper.subject,
-        questionNumber: displayQuestionLabel(selectedPaper, question),
-        promptText: question.promptText,
-        studentAnswer: answerText(answer, question),
-        pageReferences: question.pageReferences,
-        mediaRefs: question.diagramMediaRefs,
-        currentBadEvidence: details?.currentBadEvidence ?? null,
-        rejectedEvidence: details?.rejectedEvidence ?? null,
-        recoveredSearchResult: details?.recoveryResult ?? null,
-        reason: details?.reason ?? issue.message,
-      },
-      attachmentName: `${selectedPaper.title.replace(/[^a-z0-9]+/gi, "-").toLowerCase() || "paper"}-${displayQuestionLabel(selectedPaper, question).replace(/[^a-z0-9]+/gi, "-").toLowerCase()}-alignment-issue.json`,
-    });
-    return nowIso();
   }
 
   function clearLocalDashboardData() {

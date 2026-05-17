@@ -4,9 +4,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   applyMarkingGuardrails,
   applyDeterministicMarkSchemeFallback,
+  buildVisualLabelPageIndex,
   buildDeterministicProcessedPaperOutput,
   computeAttemptScores,
   createMarkingIssue,
+  extractAqaDottedMarkSchemeSection,
   formatPercent,
   formatClock,
   isAnswerAttempted,
@@ -17,10 +19,12 @@ import {
   pageContextsForAsset,
   processPaperWithAI,
   questionSupportIssue,
+  resolveDeterministicMediaRefs,
   retryAfterMsFromError,
   startAttempt,
   supportedTotalMarksForPaper,
   unsupportedMarksForPaper,
+  validateDeterministicMarkSchemeSection,
   validateProcessedPaperIntegrity,
 } from "./paperEngine";
 import type { ProcessedPaperOutput } from "../ai/schemas";
@@ -544,6 +548,169 @@ describe("applyDeterministicMarkSchemeFallback", () => {
   });
 });
 
+describe("strict AQA mark-scheme extraction", () => {
+  const markSchemePages = [
+    {
+      pageNumber: 10,
+      charCount: 240,
+      hasScreenshot: false as const,
+      text:
+        "Question Answers Extra information Mark AO / Spec. Ref. 02.6 chlorine and potassium bromide 1 AO2 02.7 relative molecular mass increases and boiling point increases 1 AO1 03.1 sodium chloride 1 AO1 03.2 giant ionic lattice 1 AO1",
+    },
+  ];
+
+  it("extracts only the exact dotted row for Q2.7", () => {
+    const section = extractAqaDottedMarkSchemeSection("2.7", markSchemePages);
+
+    expect(section).not.toBeNull();
+    expect(section?.text).toContain("02.7 relative molecular mass increases and boiling point increases 1 AO1");
+    expect(section?.text).not.toContain("03.1 sodium chloride");
+    expect(section?.text).not.toContain("03.2 giant ionic lattice");
+  });
+
+  it("rejects wrong-section evidence instead of aligning Q4.3 to Q7 rows", () => {
+    const wrongPages = [
+      {
+        pageNumber: 18,
+        charCount: 180,
+        hasScreenshot: false as const,
+        text: "07.3 diffusion 1 AO1 07.4 osmosis 1 AO1 07.5 active transport 1 AO1",
+      },
+    ];
+
+    expect(extractAqaDottedMarkSchemeSection("4.3", wrongPages)).toBeNull();
+  });
+
+  it("rejects giant short-answer sections as greedy", () => {
+    const giantSection = `02.7 relative molecular mass increases and boiling point increases 1 AO1 ${"award one mark ".repeat(220)}`;
+
+    expect(validateDeterministicMarkSchemeSection("2.7", 2, giantSection)).toEqual({
+      ok: false,
+      reason: "The extracted mark-scheme section was too large to trust as one exact row.",
+    });
+  });
+
+  it("accepts compact OCR exact-answer rows", () => {
+    expect(validateDeterministicMarkSchemeSection("1(f)", 1, "1 (f) 00010001 1")).toEqual({
+      ok: true,
+      reason: null,
+    });
+  });
+});
+
+describe("deterministic visual references", () => {
+  const pages = [
+    {
+      pageNumber: 4,
+      charCount: 140,
+      hasScreenshot: false as const,
+      text: "Question 2.1 Figure 3 shows the apparatus used in the experiment.",
+    },
+    {
+      pageNumber: 9,
+      charCount: 180,
+      hasScreenshot: false as const,
+      text: "Figure 3 Apparatus used in the experiment with labels and measurements.",
+    },
+    {
+      pageNumber: 10,
+      charCount: 120,
+      hasScreenshot: false as const,
+      text: "Table 1 Results for the experiment.",
+    },
+  ];
+
+  it("indexes figure labels by the page where they actually appear", () => {
+    const index = buildVisualLabelPageIndex(pages);
+
+    expect(index.get("figure 3")).toEqual([4, 9]);
+    expect(index.get("table 1")).toEqual([10]);
+  });
+
+  it("maps a figure reference to the labelled source page instead of a random question page", () => {
+    const resolved = resolveDeterministicMediaRefs(
+      [
+        {
+          ...validQuestion,
+          questionNumber: "2.1",
+          numberingPath: ["2.1"],
+          promptText: "Use Figure 3 to explain the result.",
+          pageReferences: [4],
+          mediaRefs: [],
+        },
+      ],
+      pages,
+    );
+
+    expect(resolved[0].mediaRefs[0]).toMatchObject({
+      label: "Figure 3",
+      pageNumber: 4,
+    });
+    expect((resolved[0].mediaRefs[0]?.metadata as Record<string, unknown>).fallback).toBe(false);
+  });
+
+  it("uses an explicit fallback label when the figure cannot be found", () => {
+    const resolved = resolveDeterministicMediaRefs(
+      [
+        {
+          ...validQuestion,
+          questionNumber: "2.2",
+          numberingPath: ["2.2"],
+          promptText: "Use Figure 99 to explain the result.",
+          pageReferences: [4],
+          mediaRefs: [],
+        },
+      ],
+      pages,
+    );
+
+    expect(resolved[0].mediaRefs[0]).toMatchObject({
+      label: "Source page fallback",
+      pageNumber: 4,
+    });
+    expect((resolved[0].mediaRefs[0]?.metadata as Record<string, unknown>).fallback).toBe(true);
+  });
+
+  it("inherits a previous figure only within the same main question", () => {
+    const resolved = resolveDeterministicMediaRefs(
+      [
+        {
+          ...validQuestion,
+          questionNumber: "2.1",
+          numberingPath: ["2.1"],
+          promptText: "Use Figure 3 to explain the method.",
+          pageReferences: [4],
+          mediaRefs: [],
+        },
+        {
+          ...validQuestion,
+          questionNumber: "2.2",
+          numberingPath: ["2.2"],
+          promptText: "Use the results to calculate the value.",
+          pageReferences: [4],
+          mediaRefs: [],
+        },
+        {
+          ...validQuestion,
+          questionNumber: "3.1",
+          numberingPath: ["3.1"],
+          promptText: "Use the results to explain the conclusion.",
+          pageReferences: [4],
+          mediaRefs: [],
+        },
+      ],
+      pages,
+    );
+
+    expect(resolved[1].mediaRefs[0]).toMatchObject({
+      label: "Figure 3",
+      pageNumber: 4,
+    });
+    expect((resolved[1].mediaRefs[0]?.metadata as Record<string, unknown>).inheritedFromQuestionNumber).toBe("2.1");
+    expect(resolved[2].mediaRefs).toEqual([]);
+  });
+});
+
 describe("pageContextsForAsset", () => {
   it("reconstructs page-level contexts from legacy whole-document PDF text", () => {
     const pages = pageContextsForAsset({
@@ -597,7 +764,7 @@ describe("markAnswerWithAI", () => {
 
   it("refuses to mark when no markSchemeData exists", async () => {
     await expect(markAnswerWithAI(basePaper, question, answer, 1)).rejects.toThrow(
-      "Could not safely align this question with the mark scheme. Diagnostics were sent for review.",
+      "Could not safely align this question with the mark scheme.",
     );
   });
 
@@ -957,7 +1124,7 @@ describe("markAnswerWithAI", () => {
         { ...answer, responseText: "RAM" } as PastPaperAnswer,
         1,
       ),
-    ).rejects.toThrow("Could not safely align this question with the mark scheme. Diagnostics were sent for review.");
+    ).rejects.toThrow("Could not safely align this question with the mark scheme.");
   });
 
   it("treats OCR exact-answer rows like B0 and 16 as the real answer, not as concatenated footer text", async () => {
@@ -1267,6 +1434,41 @@ describe("processPaperWithAI", () => {
     expect(processed.questions).toHaveLength(1);
     expect(processed.questions[0].questionNumber).toBe("1(a)");
     expect(processed.questions[0].promptText).toContain("Computers represent data");
+  });
+
+  it("keeps readable deterministic AQA processing off the AI path", async () => {
+    let aiCalls = 0;
+    window.__AI_TEST_MOCK__ = {
+      ai: {
+        chat: async () => {
+          aiCalls += 1;
+          return "{}";
+        },
+      },
+    };
+    const pageTexts = [
+      {
+        pageNumber: 1,
+        text: "For Examiner's Use Question Mark TOTAL Time allowed: 1 hour 45 minutes Materials Instructions Answer all questions Centre number Candidate number Surname Forename GCSE CHEMISTRY Foundation Tier",
+        charCount: 197,
+        hasScreenshot: false as const,
+      },
+      {
+        pageNumber: 2,
+        text: "Do not write outside the box 0 1 This question is about fuels. 0 1 . 1 State one use of hydrogen. [1 mark]",
+        charCount: 113,
+        hasScreenshot: false as const,
+      },
+    ];
+    const paper = buildPdfPaper("aqa deterministic", "Chemistry", pageTexts);
+
+    const processed = await processPaperWithAI(paper, () => undefined, { fallbackModels: [] });
+
+    expect(processed.processingStatus).toBe("ready");
+    expect(processed.questions.map((question) => question.questionNumber)).toEqual(["1.1"]);
+    expect(processed.processingDiagnostics?.promptStats ?? []).toEqual([]);
+    expect(processed.processingDiagnostics?.aiRequests ?? []).toEqual([]);
+    expect(aiCalls).toBe(0);
   });
 
   it("processes the real OCR computer science paper deterministically with the correct order and total", async () => {
