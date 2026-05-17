@@ -3,9 +3,13 @@ import { z } from "zod";
 export const aiProxyOperationSchema = z.enum([
   "suggestions",
   "page_inventory",
+  "visual_inventory",
   "question_boundaries",
   "question_extraction",
+  "question_support_validation",
+  "question_display_plan",
   "mark_scheme_alignment",
+  "mark_scheme_recovery",
   "paper_mark",
   "smoke_ping",
   "smoke_text",
@@ -21,9 +25,13 @@ export type AIProxyProviderId = z.infer<typeof aiProviderIdSchema>;
 
 export const structuredAiOperations = new Set<AIProxyOperation>([
   "page_inventory",
+  "visual_inventory",
   "question_boundaries",
   "question_extraction",
+  "question_support_validation",
+  "question_display_plan",
   "mark_scheme_alignment",
+  "mark_scheme_recovery",
   "paper_mark",
   "smoke_extraction",
   "smoke_marking",

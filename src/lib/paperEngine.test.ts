@@ -596,7 +596,9 @@ describe("markAnswerWithAI", () => {
   } as PastPaperAnswer;
 
   it("refuses to mark when no markSchemeData exists", async () => {
-    await expect(markAnswerWithAI(basePaper, question, answer, 1)).rejects.toThrow("no aligned mark scheme");
+    await expect(markAnswerWithAI(basePaper, question, answer, 1)).rejects.toThrow(
+      "Could not safely align this question with the mark scheme. Diagnostics were sent for review.",
+    );
   });
 
   it("marks when aligned markSchemeData exists", async () => {
@@ -955,7 +957,7 @@ describe("markAnswerWithAI", () => {
         { ...answer, responseText: "RAM" } as PastPaperAnswer,
         1,
       ),
-    ).rejects.toThrow("could not be matched to a reliable mark-scheme row");
+    ).rejects.toThrow("Could not safely align this question with the mark scheme. Diagnostics were sent for review.");
   });
 
   it("treats OCR exact-answer rows like B0 and 16 as the real answer, not as concatenated footer text", async () => {

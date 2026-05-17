@@ -106,6 +106,29 @@ export function buildPageInventoryPrompt(input: {
   ].join("\n\n");
 }
 
+export function buildVisualInventoryPrompt(input: {
+  title: string;
+  subject: string;
+  pages: PagePromptContext[];
+}) {
+  return [
+    "Identify labelled visual regions from an exam paper.",
+    "Find every labelled Figure, Table, graph, diagram, map, photograph, source extract or visual required by questions.",
+    "Use page screenshots when attached. Do not invent labels or locations that are not visible.",
+    "For each visual region, return the label, kind, pageNumber, approximate bounding box in normalized page coordinates, caption/title, extracted text, and table data if it is a table.",
+    "Do not include answer lines, blank working areas, generic page backgrounds, or decorative headers and footers.",
+    "Return JSON only. No markdown. No commentary.",
+    `Title: ${input.title}`,
+    `Subject: ${input.subject}`,
+    "Output shape:",
+    '{"visualRegions":[{"id":"visual-1","label":"Figure 3","kind":"figure","pageNumber":2,"bbox":{"x":0.1,"y":0.2,"width":0.6,"height":0.3},"confidence":85,"title":"caption title or null","caption":"visible caption or null","extractedText":"visible text inside the region or null","tableData":null,"displayMode":"cropped_image","cropDataUrl":null,"source":"claude_visual_inventory"}]}',
+    "Image-page map:",
+    imageMapBlock(input.pages),
+    "Pages:",
+    pagesBlock(input.pages, 1600),
+  ].join("\n\n");
+}
+
 export function buildQuestionBoundaryPrompt(input: {
   title: string;
   subject: string;
@@ -177,6 +200,55 @@ export function buildQuestionExtractionPrompt(input: {
   ].join("\n\n");
 }
 
+export function buildQuestionSupportValidationPrompt(input: {
+  title: string;
+  subject: string;
+  questions: Array<{
+    questionNumber: string;
+    promptText: string;
+    maxMarks: number;
+    responseType: string;
+    options: string[];
+    pageReferences: number[];
+    mediaRefs: Array<{ label: string; kind: string; pageNumber: number | null }>;
+  }>;
+}) {
+  return [
+    "Validate whether each extracted exam question is safely answerable in the current UI.",
+    "Classify each item as supported or unsupported without inventing missing visual layout, options, or word-box content.",
+    "Unsupported if the task needs a graph to complete, a table to complete, missing keywords from a word box, diagram labelling, drawing, matching lines, ranking/order in a table, row-by-row checkbox tables, or spatial layout that cannot be represented as plain input fields.",
+    "Supported if it is a plain written answer, numeric answer, clean single-choice question, or clean multi-select question.",
+    "For multiple choice, do not treat ordinary capital letters as options unless there is explicit choice instruction and a clear option structure.",
+    "Return JSON only. No markdown. No commentary.",
+    `Title: ${input.title}`,
+    `Subject: ${input.subject}`,
+    "Output shape:",
+    '{"questions":[{"questionNumber":"1.1","supported":true,"responseType":"short_text","reason":"plain written answer","displayPlan":{"blocks":[{"type":"paragraph","text":"Question text"}],"notationWarnings":[],"confidence":80},"answerPlan":{"kind":"plain_text","supported":true,"choiceExtractionQuality":"none","requiresVisual":false,"notes":[]}}]}',
+    "Questions:",
+    clipped(JSON.stringify(input.questions), 16000),
+  ].join("\n\n");
+}
+
+export function buildQuestionDisplayPlanPrompt(input: {
+  title: string;
+  subject: string;
+  questions: Array<{ questionNumber: string; promptText: string }>;
+}) {
+  return [
+    "Convert raw exam question wording into a clean display plan without changing the meaning.",
+    "Formatting is display-only. Do not rewrite the question, change marks, or add content that is not visible.",
+    "Use ordered_steps for numbered methods, bullets for bullet lists, and equation blocks for chemistry or maths expressions when helpful.",
+    "Keep notation readable. Preserve powers, units, ions, arrows, and equations carefully.",
+    "Return JSON only. No markdown. No commentary.",
+    `Title: ${input.title}`,
+    `Subject: ${input.subject}`,
+    "Output shape:",
+    '{"questions":[{"questionNumber":"1.1","supported":true,"responseType":"short_text","reason":"display only","displayPlan":{"blocks":[{"type":"paragraph","text":"Question text"}],"notationWarnings":[],"confidence":80},"answerPlan":{"kind":"plain_text","supported":true,"choiceExtractionQuality":"none","requiresVisual":false,"notes":[]}}]}',
+    "Questions:",
+    clipped(JSON.stringify(input.questions), 14000),
+  ].join("\n\n");
+}
+
 export function buildMarkSchemeAlignmentPrompt(input: {
   title: string;
   subject: string;
@@ -190,12 +262,15 @@ export function buildMarkSchemeAlignmentPrompt(input: {
     `Title: ${input.title}`,
     `Subject: ${input.subject}`,
     "Output shape:",
-    `{"alignments":[{"questionNumber":"${QUESTION_NUMBER_PLACEHOLDER}","markSchemeRef":"__VISIBLE_MARK_SCHEME_REFERENCE__","markSchemeData":{"source":"visible_mark_scheme_row","questionNumber":"${QUESTION_NUMBER_PLACEHOLDER}","maxMarks":1,"rows":[{"markPoint":"__VISIBLE_MARKING_POINT__","accept":["__ALSO_ACCEPT_VISIBLE_TEXT__"],"doNotAccept":["__DO_NOT_ACCEPT_VISIBLE_TEXT__"],"ignore":["__IGNORE_VISIBLE_TEXT__"],"guidance":"__EXAMINER_GUIDANCE_VISIBLE_TEXT__","marks":1}],"points":["__VISIBLE_MARKING_POINT__"],"evidence":"__FULL_VISIBLE_ROW_OR_SECTION__"}}]}`,
+    `{"alignments":[{"questionNumber":"${QUESTION_NUMBER_PLACEHOLDER}","markSchemeRef":"__VISIBLE_MARK_SCHEME_REFERENCE__","alignmentQuality":"exact","alignmentConfidence":90,"matchedMarkSchemeQuestionNumber":"${QUESTION_NUMBER_PLACEHOLDER}","matchedPageNumbers":[1],"matchedEvidenceText":"__VISIBLE_MATCHED_ROW__","alignmentWarnings":[],"markSchemeData":{"source":"visible_mark_scheme_row","questionNumber":"${QUESTION_NUMBER_PLACEHOLDER}","maxMarks":1,"rows":[{"markPoint":"__VISIBLE_MARKING_POINT__","accept":["__ALSO_ACCEPT_VISIBLE_TEXT__"],"doNotAccept":["__DO_NOT_ACCEPT_VISIBLE_TEXT__"],"ignore":["__IGNORE_VISIBLE_TEXT__"],"guidance":"__EXAMINER_GUIDANCE_VISIBLE_TEXT__","marks":1}],"points":["__VISIBLE_MARKING_POINT__"],"evidence":"__FULL_VISIBLE_ROW_OR_SECTION__"}}]}`,
     "The placeholder strings are not content. Never copy them into the output.",
     "Use only supplied mark-scheme text. If a question has no readable mark-scheme content, return markSchemeRef:null and markSchemeData:null for that question.",
     "Interpret mark-scheme tables like an examiner: keep the exact row/section used, separate marking points, allow/also-accept alternatives, do-not-accept exclusions, ignore notes, and examiner guidance.",
     "First infer the exam board/style. OCR mark schemes often use Question / Answer / Mark / Guidance rows. AQA mark schemes often use Question / Answers / Extra information / Mark / AO rows. Preserve the row text from the correct exam-board structure.",
     "Align by question number, subquestion number, page references, wording, and mark totals. Do not align a row to the wrong question just because the number is nearby.",
+    "A match is exact only if the same subquestion number is visible, or the row is clearly inside the correct parent section and the wording plus marks strongly match.",
+    "If you can only identify the main parent question but not the exact subquestion row, use alignmentQuality broad_parent and explain that in alignmentWarnings.",
+    "If visible evidence points to another question number, use alignmentQuality wrong_section and keep markSchemeData null.",
     "If attached mark-scheme images are supplied, use only visible marking text from those images.",
     "Image-page map:",
     imageMapBlock(input.markSchemePages),
@@ -203,6 +278,44 @@ export function buildMarkSchemeAlignmentPrompt(input: {
     clipped(JSON.stringify(input.questions), 10000),
     "Mark scheme text:",
     pagesBlock(input.markSchemePages, 3500),
+  ].join("\n\n");
+}
+
+export function buildMarkSchemeRecoveryPrompt(input: {
+  title: string;
+  subject: string;
+  questionNumber: string;
+  parentQuestionNumber: string | null;
+  promptText: string;
+  maxMarks: number;
+  pageReferences?: number[];
+  currentBadEvidence: string | null;
+  nearbyQuestionNumbers?: string[];
+  markSchemePages: PagePromptContext[];
+}) {
+  const pageReferences = input.pageReferences ?? [];
+  const nearbyQuestionNumbers = input.nearbyQuestionNumbers ?? [];
+  return [
+    "Recover the exact mark-scheme row for one exam question from the supplied mark scheme.",
+    "Treat the source mark scheme as authoritative. Do not invent evidence. If the exact row cannot be found reliably, return not_found or ambiguous.",
+    "Use the exact question number, parent question number, prompt wording, marks, and nearby question numbers to identify the correct row.",
+    "If previous evidence appears to belong to another question number, explain why it was rejected.",
+    "Return JSON only. No markdown. No commentary.",
+    `Title: ${input.title}`,
+    `Subject: ${input.subject}`,
+    `Question number: ${input.questionNumber}`,
+    `Parent question number: ${input.parentQuestionNumber ?? "none"}`,
+    `Prompt text: ${input.promptText}`,
+    `Max marks: ${input.maxMarks}`,
+    `Paper page references: ${pageReferences.length ? pageReferences.join(", ") : "none"}`,
+    `Current suspected or rejected evidence: ${input.currentBadEvidence ?? "none"}`,
+    `Nearby question numbers: ${nearbyQuestionNumbers.length ? nearbyQuestionNumbers.join(", ") : "none"}`,
+    "Output shape:",
+    `{"status":"found","questionNumber":"${input.questionNumber}","matchedMarkSchemeQuestionNumber":"${input.questionNumber}","confidence":85,"markSchemeRef":"Mark scheme page 3, row ${input.questionNumber}","pageNumbers":[3],"rows":[{"markPoint":"__VISIBLE_MARK_POINT__","accept":[],"doNotAccept":[],"ignore":[],"guidance":"","marks":1}],"evidence":"__EXACT_VISIBLE_ROW_OR_SECTION__","whyThisMatches":"__SHORT_REASON__","whyRejectedPrevious":"__SHORT_REASON__"}`,
+    "Image-page map:",
+    imageMapBlock(input.markSchemePages),
+    "Mark scheme text:",
+    pagesBlock(input.markSchemePages, 3600),
   ].join("\n\n");
 }
 

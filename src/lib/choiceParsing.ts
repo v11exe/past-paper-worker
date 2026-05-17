@@ -1,4 +1,4 @@
-import type { ResponseType } from "../types";
+import type { ChoiceExtractionQuality, ResponseType } from "../types";
 
 const REAL_CHOICE_GLYPHS =
   /[\u2610\u2611\u2612\u2713\u2714\u2715\u2716\u2717\u25a1\u25a0\u25a2\u25a3\u25ef\u25cb\u25cf\u25c9\u2b1c\u2b1b\u2705\u274e\ud83d\udd32\ud83d\udd33\ud83d\uddf9]/gu;
@@ -17,6 +17,12 @@ export type InlineChoiceExtraction = {
   options: string[];
 };
 
+export type ChoiceExtractionResult = InlineChoiceExtraction & {
+  quality: ChoiceExtractionQuality;
+  hasChoiceInstruction: boolean;
+  hasChoiceGlyphs: boolean;
+};
+
 export function cleanChoiceGlyphs(text: string) {
   return text
     .replace(REAL_CHOICE_GLYPHS, " ")
@@ -24,6 +30,17 @@ export function cleanChoiceGlyphs(text: string) {
     .replace(/\b(?:checkbox|tickbox)\b/gi, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+export function hasChoiceInstruction(text: string) {
+  CHOICE_INSTRUCTION_PATTERN.lastIndex = 0;
+  return CHOICE_INSTRUCTION_PATTERN.test(text);
+}
+
+export function hasChoiceGlyphs(text: string) {
+  REAL_CHOICE_GLYPHS.lastIndex = 0;
+  MOJIBAKE_CHOICE_GLYPHS.lastIndex = 0;
+  return REAL_CHOICE_GLYPHS.test(text) || MOJIBAKE_CHOICE_GLYPHS.test(text) || /\b(?:checkbox|tickbox|lozenge)\b/i.test(text);
 }
 
 function cleanPromptBeforeOptions(value: string, fallback: string) {
@@ -89,14 +106,26 @@ function lineSeparatedOptions(text: string, fallbackPrompt: string) {
   return { promptText, options };
 }
 
-export function extractInlineOptions(promptText: string): InlineChoiceExtraction {
+export function extractInlineOptions(promptText: string, trustChoiceTypeHint = false): InlineChoiceExtraction {
+  const result = extractChoiceStructure(promptText, trustChoiceTypeHint);
+  return { promptText: result.promptText, options: result.options };
+}
+
+export function extractChoiceStructure(promptText: string, trustChoiceTypeHint = false): ChoiceExtractionResult {
   const cleaned = cleanChoiceGlyphs(promptText.replace(/\r/g, "\n"));
   const withLines = promptText.replace(/\r/g, "\n");
   const fallbackPrompt = MULTI_SELECT_HINT_PATTERN.test(cleaned) ? "Choose the correct answers." : "Choose the correct answer.";
-  if (!cleaned) return { promptText, options: [] };
+  const choiceInstruction = hasChoiceInstruction(withLines);
+  const choiceGlyphs = hasChoiceGlyphs(promptText);
+  if (!cleaned) return { promptText, options: [], quality: "none", hasChoiceInstruction: choiceInstruction, hasChoiceGlyphs: choiceGlyphs };
 
   const lineExtraction = lineSeparatedOptions(withLines, fallbackPrompt);
-  if (lineExtraction) return lineExtraction;
+  if (lineExtraction) {
+    if (choiceInstruction || choiceGlyphs || trustChoiceTypeHint) {
+      return { ...lineExtraction, quality: "deterministic", hasChoiceInstruction: choiceInstruction, hasChoiceGlyphs: choiceGlyphs };
+    }
+    return { promptText: cleanChoiceGlyphs(promptText), options: [], quality: "ambiguous", hasChoiceInstruction: choiceInstruction, hasChoiceGlyphs: choiceGlyphs };
+  }
 
   const normalized = cleaned.replace(/[ \t]+/g, " ").trim();
   const labelledPattern = /(?:^|\s)(?:\(?([A-H])\)|([A-H])\.|([A-H])\s*[-:])\s+([\s\S]*?)(?=(?:\s+(?:\(?[A-H]\)|[A-H]\.|[A-H]\s*[-:])\s+)|$)/g;
@@ -110,26 +139,37 @@ export function extractInlineOptions(promptText: string): InlineChoiceExtraction
       return copy;
     });
     const extraction = buildExtraction(normalized, matches, 1, 2, fallbackPrompt);
-    if (extraction) return extraction;
+    if (extraction && (choiceInstruction || choiceGlyphs || trustChoiceTypeHint)) {
+      return { ...extraction, quality: "deterministic", hasChoiceInstruction: choiceInstruction, hasChoiceGlyphs: choiceGlyphs };
+    }
+    if (extraction) {
+      return { promptText: cleanChoiceGlyphs(promptText), options: [], quality: "ambiguous", hasChoiceInstruction: choiceInstruction, hasChoiceGlyphs: choiceGlyphs };
+    }
   }
 
   const barePattern = /(?:^|\s)([A-D])\s+([\s\S]*?)(?=(?:\s+[A-D]\s+)|$)/g;
   const bareMatches = [...normalized.matchAll(barePattern)];
-  if (bareMatches.length >= 3) {
+  if (bareMatches.length >= 3 && (choiceInstruction || trustChoiceTypeHint)) {
     const extraction = buildExtraction(normalized, bareMatches, 1, 2, fallbackPrompt);
-    if (extraction) return extraction;
+    if (extraction) return { ...extraction, quality: "deterministic", hasChoiceInstruction: choiceInstruction, hasChoiceGlyphs: choiceGlyphs };
   }
 
   const letterRun = /(?:^|\s)((?:[A-H]\s+){1,}[A-H])$/i.exec(normalized);
-  if (letterRun && /\b(?:tick|choose|select|shade|circle)\b/i.test(normalized.slice(0, letterRun.index))) {
+  if (letterRun && (/\b(?:tick|choose|select|shade|circle)\b/i.test(normalized.slice(0, letterRun.index)) || trustChoiceTypeHint)) {
     const options = letterRun[1].split(/\s+/).map((label) => label.toUpperCase());
     if (labelsAreSequential(options.map((label) => `${label}. option`))) {
       const promptText = cleanChoiceGlyphs(normalized.slice(0, letterRun.index)).trim() || fallbackPrompt;
-      return { promptText, options };
+      return { promptText, options, quality: "deterministic", hasChoiceInstruction: choiceInstruction, hasChoiceGlyphs: choiceGlyphs };
     }
   }
 
-  return { promptText: cleanChoiceGlyphs(promptText), options: [] };
+  return {
+    promptText: cleanChoiceGlyphs(promptText),
+    options: [],
+    quality: labelledMatches.length >= 2 || bareMatches.length >= 3 ? "ambiguous" : "none",
+    hasChoiceInstruction: choiceInstruction,
+    hasChoiceGlyphs: choiceGlyphs,
+  };
 }
 
 export function inferChoiceResponseType(text: string, fallback: ResponseType = "single_choice"): ResponseType {

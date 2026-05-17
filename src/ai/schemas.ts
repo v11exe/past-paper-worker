@@ -4,7 +4,7 @@ import {
   extractInlineOptions as extractInlineChoiceOptions,
   inferChoiceResponseType,
 } from "../lib/choiceParsing";
-import type { ResponseType } from "../types";
+import type { ChoiceExtractionQuality, ResponseType } from "../types";
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -97,11 +97,12 @@ function normalizeIntegerArray(value: unknown) {
     .filter((item): item is number => item !== null);
 }
 
-const supportedResponseTypes = new Set(["long_text", "short_text", "numeric", "single_choice", "multi_select"]);
+const normalizedResponseTypes = new Set(["long_text", "short_text", "numeric", "single_choice", "multi_select", "unsupported"]);
 
 function normalizeResponseType(value: unknown) {
   const raw = typeof value === "string" ? value.trim().toLowerCase().replace(/[\s-]+/g, "_") : "";
-  if (supportedResponseTypes.has(raw)) return raw;
+  if (normalizedResponseTypes.has(raw)) return raw;
+  if (raw.includes("unsupported")) return "unsupported";
   if (raw.includes("calculation") || raw.includes("calculate") || raw.includes("math") || raw.includes("numeric")) return "numeric";
   if (raw.includes("multi_select") || raw.includes("multiple_answer") || raw.includes("checkbox") || raw.includes("check_box") || raw.includes("tick_boxes")) return "multi_select";
   if (raw.includes("single") || raw.includes("multiple_choice") || raw.includes("choice") || raw.includes("tick_box") || raw.includes("tick")) return "single_choice";
@@ -116,6 +117,12 @@ function booleanFromUnknown(value: unknown) {
   if (typeof value === "boolean") return value;
   if (typeof value === "string") return /^(?:true|yes|unsupported)$/i.test(value.trim());
   return false;
+}
+
+function normalizeChoiceExtractionQuality(value: unknown): ChoiceExtractionQuality {
+  const raw = typeof value === "string" ? value.trim().toLowerCase().replace(/[\s-]+/g, "_") : "";
+  if (raw === "deterministic" || raw === "claude_confirmed" || raw === "ambiguous") return raw;
+  return "none";
 }
 
 function normalizeOriginalContent(value: unknown): Record<string, unknown> {
@@ -134,6 +141,7 @@ function normalizeOriginalContent(value: unknown): Record<string, unknown> {
     ...record,
     ...(unsupportedQuestionFormat ? { unsupportedQuestionFormat: true } : {}),
     ...(unsupportedReason ? { unsupportedReason } : {}),
+    ...(record.choiceExtractionQuality ? { choiceExtractionQuality: normalizeChoiceExtractionQuality(record.choiceExtractionQuality) } : {}),
   };
 }
 
@@ -189,6 +197,103 @@ function normalizeMediaRefs(value: unknown, questionNumber: string) {
   return refs.map((item, index) => normalizeMediaRef(item, index, questionNumber)).filter((item): item is NonNullable<typeof item> => item !== null);
 }
 
+function normalizeBbox(value: unknown) {
+  if (!isPlainRecord(value)) return null;
+  const x = numberOrFallback(value.x, Number.NaN);
+  const y = numberOrFallback(value.y, Number.NaN);
+  const width = numberOrFallback(value.width, Number.NaN);
+  const height = numberOrFallback(value.height, Number.NaN);
+  if (![x, y, width, height].every(Number.isFinite)) return null;
+  const clamp = (input: number) => Math.max(0, Math.min(1, input));
+  return {
+    x: clamp(x),
+    y: clamp(y),
+    width: clamp(width),
+    height: clamp(height),
+  };
+}
+
+function normalizeTableData(value: unknown) {
+  if (!isPlainRecord(value)) return null;
+  const columns = normalizeStringArray(value.columns);
+  const rows = Array.isArray(value.rows)
+    ? value.rows.map((row) => (Array.isArray(row) ? row.map((cell) => textFromUnknown(cell)) : [])).filter((row) => row.length)
+    : [];
+  const notes = normalizeStringArray(value.notes);
+  if (!columns.length && !rows.length) return null;
+  return {
+    columns,
+    rows,
+    ...(notes.length ? { notes } : {}),
+  };
+}
+
+function normalizeDisplayBlock(value: unknown) {
+  const record = normalizeRecord(value);
+  const type = stringOrFallback(record.type, "paragraph");
+  if (type === "ordered_steps" || type === "bullets") {
+    return {
+      type,
+      items: normalizeStringArray(record.items),
+    };
+  }
+  if (type === "equation") {
+    const format = stringOrFallback(record.format, "plain");
+    return {
+      type,
+      text: textFromUnknown(record.text),
+      format: format === "chemistry" || format === "math" ? format : "plain",
+    };
+  }
+  if (type === "inline" || type === "warning" || type === "paragraph") {
+    return {
+      type,
+      text: textFromUnknown(record.text),
+    };
+  }
+  return {
+    type: "paragraph",
+    text: textFromUnknown(record.text || value),
+  };
+}
+
+function normalizeDisplayPlan(value: unknown) {
+  if (!isPlainRecord(value)) return null;
+  const blocks = Array.isArray(value.blocks) ? value.blocks.map(normalizeDisplayBlock).filter(Boolean) : [];
+  if (!blocks.length) return null;
+  return {
+    blocks,
+    notationWarnings: normalizeStringArray(value.notationWarnings),
+    confidence: Math.max(0, Math.min(100, numberOrFallback(value.confidence, 70))),
+  };
+}
+
+function normalizeAnswerPlan(value: unknown) {
+  if (!isPlainRecord(value)) return null;
+  const kind = stringOrFallback(value.kind, "plain_text");
+  return {
+    kind:
+      kind === "numeric" || kind === "single_choice" || kind === "multi_select" || kind === "unsupported"
+        ? kind
+        : "plain_text",
+    supported: booleanFromUnknown(value.supported ?? true),
+    choiceExtractionQuality: normalizeChoiceExtractionQuality(value.choiceExtractionQuality),
+    requiresVisual: booleanFromUnknown(value.requiresVisual),
+    notes: normalizeStringArray(value.notes),
+  };
+}
+
+function normalizeConvertedContent(value: unknown) {
+  const record = normalizeRecord(value);
+  const displayPlan = normalizeDisplayPlan(record.displayPlan);
+  const answerPlan = normalizeAnswerPlan(record.answerPlan);
+  return {
+    ...record,
+    ...(displayPlan ? { displayPlan } : {}),
+    ...(answerPlan ? { answerPlan } : {}),
+  };
+}
+
 export const paperMediaRefOutputSchema = z.object({
   id: z.string().default("media"),
   kind: z.string().default("media"),
@@ -199,13 +304,66 @@ export const paperMediaRefOutputSchema = z.object({
   metadata: z.record(z.unknown()).default({}),
 });
 
+export const paperVisualBoundingBoxOutputSchema = z.object({
+  x: z.number().min(0).max(1),
+  y: z.number().min(0).max(1),
+  width: z.number().min(0).max(1),
+  height: z.number().min(0).max(1),
+});
+
+export const paperVisualRegionOutputSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  kind: z.enum(["figure", "diagram", "graph", "table", "map", "source_extract", "image", "other"]),
+  pageNumber: z.number().int().min(1),
+  bbox: paperVisualBoundingBoxOutputSchema.nullable().default(null),
+  confidence: z.number().min(0).max(100),
+  title: z.string().nullable().default(null),
+  caption: z.string().nullable().default(null),
+  extractedText: z.string().nullable().default(null),
+  tableData: z
+    .object({
+      columns: z.array(z.string()).default([]),
+      rows: z.array(z.array(z.string())).default([]),
+      notes: z.array(z.string()).default([]).optional(),
+    })
+    .nullable()
+    .optional(),
+  displayMode: z.enum(["rendered_table", "cropped_image", "full_page_fallback", "text_extract"]),
+  cropDataUrl: z.string().nullable().optional(),
+  source: z.enum(["claude_visual_inventory", "deterministic_text", "manual_report"]),
+});
+
+export const questionDisplayBlockOutputSchema = z.union([
+  z.object({ type: z.literal("paragraph"), text: z.string() }),
+  z.object({ type: z.literal("ordered_steps"), items: z.array(z.string()) }),
+  z.object({ type: z.literal("bullets"), items: z.array(z.string()) }),
+  z.object({ type: z.literal("equation"), text: z.string(), format: z.enum(["plain", "chemistry", "math"]) }),
+  z.object({ type: z.literal("inline"), text: z.string() }),
+  z.object({ type: z.literal("warning"), text: z.string() }),
+]);
+
+export const questionDisplayPlanOutputSchema = z.object({
+  blocks: z.array(questionDisplayBlockOutputSchema).default([]),
+  notationWarnings: z.array(z.string()).default([]),
+  confidence: z.number().min(0).max(100).default(70),
+});
+
+export const questionAnswerPlanOutputSchema = z.object({
+  kind: z.enum(["plain_text", "numeric", "single_choice", "multi_select", "unsupported"]).default("plain_text"),
+  supported: z.boolean().default(true),
+  choiceExtractionQuality: z.enum(["none", "deterministic", "claude_confirmed", "ambiguous"]).default("none"),
+  requiresVisual: z.boolean().default(false).optional(),
+  notes: z.array(z.string()).default([]).optional(),
+});
+
 export const paperQuestionOutputSchema = z.object({
   questionNumber: z.string(),
   parentQuestionNumber: z.string().nullable(),
   numberingPath: z.array(z.string()),
   promptText: z.string(),
   maxMarks: z.number().int().min(0),
-  responseType: z.enum(["long_text", "short_text", "numeric", "single_choice", "multi_select"]),
+  responseType: z.enum(["long_text", "short_text", "numeric", "single_choice", "multi_select", "unsupported"]),
   originalFormat: z.string(),
   convertedFormat: z.string().nullable(),
   originalContent: z.record(z.unknown()).default({}),
@@ -228,6 +386,7 @@ export const processedPaperOutputSchema = z.object({
   paperCode: z.string().nullable(),
   totalMarks: z.number().int().nullable(),
   durationMinutes: z.number().int().nullable(),
+  visualRegions: z.array(paperVisualRegionOutputSchema).default([]).optional(),
   questions: z.array(paperQuestionOutputSchema),
 });
 
@@ -270,14 +429,61 @@ export const questionExtractionOutputSchema = z.object({
   questions: z.array(paperQuestionOutputSchema),
 });
 
+export const visualInventoryOutputSchema = z.object({
+  visualRegions: z.array(paperVisualRegionOutputSchema).default([]),
+});
+
 export const markSchemeAlignmentOutputSchema = z.object({
   alignments: z.array(
     z.object({
       questionNumber: z.string(),
       markSchemeRef: z.string().nullable(),
       markSchemeData: z.record(z.unknown()).nullable(),
+      alignmentQuality: z.enum(["exact", "nearby", "broad_parent", "wrong_section", "missing"]).optional(),
+      alignmentConfidence: z.number().min(0).max(100).optional(),
+      matchedMarkSchemeQuestionNumber: z.string().nullable().optional(),
+      matchedPageNumbers: z.array(z.number().int()).default([]).optional(),
+      matchedEvidenceText: z.string().default("").optional(),
+      alignmentWarnings: z.array(z.string()).default([]).optional(),
     }),
   ),
+});
+
+export const questionSupportValidationOutputSchema = z.object({
+  questions: z.array(
+    z.object({
+      questionNumber: z.string(),
+      supported: z.boolean(),
+      responseType: z.enum(["short_text", "long_text", "numeric", "single_choice", "multi_select", "unsupported"]),
+      reason: z.string(),
+      displayPlan: questionDisplayPlanOutputSchema.optional(),
+      answerPlan: questionAnswerPlanOutputSchema.optional(),
+    }),
+  ),
+});
+
+export const markSchemeRecoveryOutputSchema = z.object({
+  status: z.enum(["found", "not_found", "ambiguous"]),
+  questionNumber: z.string(),
+  matchedMarkSchemeQuestionNumber: z.string().nullable().default(null),
+  confidence: z.number().min(0).max(100).default(0),
+  markSchemeRef: z.string().nullable().default(null),
+  pageNumbers: z.array(z.number().int()).default([]),
+  rows: z
+    .array(
+      z.object({
+        markPoint: z.string(),
+        accept: z.array(z.string()).default([]),
+        doNotAccept: z.array(z.string()).default([]),
+        ignore: z.array(z.string()).default([]),
+        guidance: z.string().default(""),
+        marks: z.number().int().min(0).default(1),
+      }),
+    )
+    .default([]),
+  evidence: z.string().default(""),
+  whyThisMatches: z.string().default(""),
+  whyRejectedPrevious: z.string().default(""),
 });
 
 export const paperMarkOutputSchema = z.object({
@@ -294,7 +500,10 @@ export type ProcessedPaperOutput = z.infer<typeof processedPaperOutputSchema>;
 export type PageInventoryOutput = z.infer<typeof pageInventoryOutputSchema>;
 export type QuestionBoundaryOutput = z.infer<typeof questionBoundaryOutputSchema>;
 export type QuestionExtractionOutput = z.infer<typeof questionExtractionOutputSchema>;
+export type VisualInventoryOutput = z.infer<typeof visualInventoryOutputSchema>;
 export type MarkSchemeAlignmentOutput = z.infer<typeof markSchemeAlignmentOutputSchema>;
+export type QuestionSupportValidationOutput = z.infer<typeof questionSupportValidationOutputSchema>;
+export type MarkSchemeRecoveryOutput = z.infer<typeof markSchemeRecoveryOutputSchema>;
 export type PaperMarkOutput = z.infer<typeof paperMarkOutputSchema>;
 
 function normalizeMarkSchemeRow(value: unknown) {
@@ -313,7 +522,8 @@ function normalizeMarkSchemeRow(value: unknown) {
 
 function normalizeMarkSchemeData(value: unknown) {
   if (value === null || value === undefined) return null;
-  const data = Array.isArray(value) ? { rows: value } : isPlainRecord(value) ? value : { evidence: textFromUnknown(value), points: normalizeStringArray(value) };
+  if (!Array.isArray(value) && !isPlainRecord(value)) return null;
+  const data = Array.isArray(value) ? { rows: value } : value;
   const rowsSource = Array.isArray(data.rows)
     ? data.rows
     : Array.isArray(data.markSchemeRows)
@@ -332,7 +542,27 @@ function normalizeMarkSchemeData(value: unknown) {
     rows,
     points: normalizeStringArray(data.points).length ? normalizeStringArray(data.points) : rows.map((row) => row.markPoint).filter(Boolean),
     evidence: textFromUnknown(data.evidence) || rows.map((row) => row.markPoint).filter(Boolean).join("\n"),
+    alignmentQuality:
+      (() => {
+        const raw = textFromUnknown(data.alignmentQuality).toLowerCase();
+        return raw === "exact" || raw === "nearby" || raw === "broad_parent" || raw === "wrong_section" || raw === "missing" ? raw : undefined;
+      })(),
+    alignmentConfidence: Math.max(0, Math.min(100, numberOrFallback(data.alignmentConfidence, 0))),
+    alignedQuestionNumber: textFromUnknown(data.alignedQuestionNumber || data.questionNumber),
+    alignedParentQuestionNumber: nullableString(data.alignedParentQuestionNumber),
+    matchedMarkSchemeQuestionNumber: nullableString(data.matchedMarkSchemeQuestionNumber),
+    matchedPageNumbers: normalizeIntegerArray(data.matchedPageNumbers ?? data.pageNumbers),
+    matchedEvidenceText: textFromUnknown(data.matchedEvidenceText || data.evidence),
+    alignmentWarnings: normalizeStringArray(data.alignmentWarnings),
   };
+}
+
+function normalizeVisiblePromptText(promptText: string) {
+  return cleanChoiceGlyphs(promptText)
+    .replace(/\s*(?:[[(]\s*\d+\s*(?:marks?)?\s*[\])]|\[\s*\d+\s*])/gi, "")
+    .replace(/\s+/g, " ")
+    .replace(/\s+([?.!,;:])/g, "$1")
+    .trim();
 }
 
 export function normalizeMarkSchemeAlignmentOutput(input: unknown): unknown {
@@ -355,6 +585,12 @@ export function normalizeMarkSchemeAlignmentOutput(input: unknown): unknown {
         questionNumber,
         markSchemeRef: nullableString(record.markSchemeRef ?? record.reference ?? record.pageRef ?? record.ref),
         markSchemeData,
+        alignmentQuality: textFromUnknown(record.alignmentQuality) || undefined,
+        alignmentConfidence: Math.max(0, Math.min(100, numberOrFallback(record.alignmentConfidence, 0))),
+        matchedMarkSchemeQuestionNumber: nullableString(record.matchedMarkSchemeQuestionNumber),
+        matchedPageNumbers: normalizeIntegerArray(record.matchedPageNumbers),
+        matchedEvidenceText: textFromUnknown(record.matchedEvidenceText),
+        alignmentWarnings: normalizeStringArray(record.alignmentWarnings),
       };
     }),
   };
@@ -410,19 +646,57 @@ export function normalizeProcessedPaperOutput(input: unknown): unknown {
 
   return {
     ...input,
+    visualRegions: Array.isArray(input.visualRegions)
+      ? input.visualRegions
+          .map((region) => {
+            const record = normalizeRecord(region);
+            const bbox = normalizeBbox(record.bbox);
+            const tableData = normalizeTableData(record.tableData);
+            const kind = stringOrFallback(record.kind, "other");
+            const displayMode = stringOrFallback(record.displayMode, tableData ? "rendered_table" : bbox ? "cropped_image" : "full_page_fallback");
+            return {
+              id: stringOrFallback(record.id, "visual-region"),
+              label: stringOrFallback(record.label, "Visual region"),
+              kind:
+                kind === "figure" || kind === "diagram" || kind === "graph" || kind === "table" || kind === "map" || kind === "source_extract" || kind === "image"
+                  ? kind
+                  : "other",
+              pageNumber: Math.max(1, numberOrFallback(record.pageNumber, 1)),
+              bbox,
+              confidence: Math.max(0, Math.min(100, numberOrFallback(record.confidence, 70))),
+              title: nullableString(record.title),
+              caption: nullableString(record.caption),
+              extractedText: nullableString(record.extractedText),
+              tableData,
+              displayMode:
+                displayMode === "rendered_table" || displayMode === "cropped_image" || displayMode === "text_extract" ? displayMode : "full_page_fallback",
+              cropDataUrl: nullableString(record.cropDataUrl),
+              source:
+                stringOrFallback(record.source, "deterministic_text") === "claude_visual_inventory"
+                  ? "claude_visual_inventory"
+                  : stringOrFallback(record.source, "deterministic_text") === "manual_report"
+                    ? "manual_report"
+                    : "deterministic_text",
+            };
+          })
+          .filter((region) => region.label)
+      : [],
     questions: input.questions.map((question) => {
       if (!isPlainRecord(question)) return question;
       const questionNumber = normalizeQuestionNumberText(stringOrFallback(question.questionNumber, "question"));
       const originalResponseType = typeof question.responseType === "string" ? question.responseType.trim() : null;
       const baseResponseType = normalizeResponseType(question.responseType) as ResponseType;
       const originalContent = normalizeOriginalContent(question.originalContent);
-      const convertedContent = normalizeRecord(question.convertedContent);
+      const convertedContent = normalizeConvertedContent(question.convertedContent);
       const normalizedOptions = normalizeStringArray(question.options);
       const rawPromptText = typeof question.promptText === "string" ? question.promptText : textFromUnknown(question.promptText);
       const cleanedPromptText = cleanChoiceGlyphs(rawPromptText);
-      const inlineOptions = extractInlineOptions(cleanedPromptText);
+      const trustChoiceTypeHint = ["multiple_choice", "single_choice", "multi_select", "tick_box"].includes((originalResponseType ?? "").toLowerCase().replace(/[\s-]+/g, "_"));
+      const inlineOptions = extractInlineChoiceOptions(cleanedPromptText, trustChoiceTypeHint);
       const recoveredOptions = inlineOptions.options.length >= 2 ? inlineOptions.options : [];
-      const responseType = (recoveredOptions.length && !["numeric", "short_text", "long_text"].includes(baseResponseType)
+      const responseType = (baseResponseType === "unsupported"
+        ? "unsupported"
+        : recoveredOptions.length && !["numeric", "short_text", "long_text", "unsupported"].includes(baseResponseType)
         ? inferChoiceResponseType(cleanedPromptText, baseResponseType)
         : recoveredOptions.length && (/\b(?:tick|choose|select|shade|circle)\b/i.test(cleanedPromptText) || /\?[^\n]*\bA\b[\s\S]*\bB\b/i.test(cleanedPromptText))
           ? inferChoiceResponseType(cleanedPromptText, baseResponseType)
@@ -436,7 +710,7 @@ export function normalizeProcessedPaperOutput(input: unknown): unknown {
           ? normalizeQuestionNumberText(nullableString(question.parentQuestionNumber) ?? "")
           : question.parentQuestionNumber,
         numberingPath: normalizeStringArray(question.numberingPath).map(normalizeQuestionNumberText),
-        promptText: options.length && recoveredOptions.length ? inlineOptions.promptText : cleanedPromptText,
+        promptText: options.length && recoveredOptions.length ? normalizeVisiblePromptText(inlineOptions.promptText) : normalizeVisiblePromptText(cleanedPromptText),
         maxMarks: visibleMaxMarks ?? numberOrFallback(question.maxMarks, 0),
         responseType,
         originalFormat: stringOrFallback(question.originalFormat, originalResponseType ?? "text"),
@@ -445,7 +719,12 @@ export function normalizeProcessedPaperOutput(input: unknown): unknown {
             ? originalResponseType
             : nullableString(question.convertedFormat),
         originalContent: recoveredOptions.length
-          ? { ...originalContent, inlineOptionsSource: rawPromptText, extractionWarnings: [...normalizeStringArray(originalContent.extractionWarnings), "Multiple-choice options were recovered from inline question text."] }
+          ? {
+              ...originalContent,
+              inlineOptionsSource: rawPromptText,
+              choiceExtractionQuality: normalizeChoiceExtractionQuality(originalContent.choiceExtractionQuality || "deterministic"),
+              extractionWarnings: [...normalizeStringArray(originalContent.extractionWarnings), "Multiple-choice options were recovered from inline question text."],
+            }
           : originalContent,
         convertedContent:
           originalResponseType && originalResponseType.toLowerCase().replace(/[\s-]+/g, "_") !== responseType
@@ -475,8 +754,7 @@ export function normalizeProcessedPaperOutput(input: unknown): unknown {
             : isPlainRecord(originalContent)
               ? normalizeStringArray(originalContent.extractionWarnings)
               : [],
-        markSchemeData:
-          question.markSchemeData === null || question.markSchemeData === undefined ? null : isPlainRecord(question.markSchemeData) ? question.markSchemeData : null,
+        markSchemeData: normalizeMarkSchemeData(question.markSchemeData),
       };
     }),
   };

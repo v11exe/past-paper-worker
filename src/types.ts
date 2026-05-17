@@ -4,8 +4,11 @@ export type ProcessingStage =
   | "uploading"
   | "extracting"
   | "building page inventory"
+  | "identifying visual regions"
   | "identifying questions"
   | "extracting question details"
+  | "validating question support"
+  | "building question display plans"
   | "aligning mark scheme"
   | "finalising"
   | "marking answers"
@@ -13,8 +16,61 @@ export type ProcessingStage =
 
 export type ProcessingStatus = "unprocessed" | "processing" | "ready" | "failed";
 export type JobStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
-export type ResponseType = "long_text" | "short_text" | "numeric" | "single_choice" | "multi_select";
+export type ResponseType = "long_text" | "short_text" | "numeric" | "single_choice" | "multi_select" | "unsupported";
 export type AttemptStatus = "in_progress" | "submitted" | "marked" | "saved";
+export type ChoiceExtractionQuality = "none" | "deterministic" | "claude_confirmed" | "ambiguous";
+export type MarkSchemeAlignmentQuality = "exact" | "nearby" | "broad_parent" | "wrong_section" | "missing";
+
+export type QuestionDisplayBlock =
+  | { type: "paragraph"; text: string }
+  | { type: "ordered_steps"; items: string[] }
+  | { type: "bullets"; items: string[] }
+  | { type: "equation"; text: string; format: "plain" | "chemistry" | "math" }
+  | { type: "inline"; text: string }
+  | { type: "warning"; text: string };
+
+export type QuestionDisplayPlan = {
+  blocks: QuestionDisplayBlock[];
+  notationWarnings: string[];
+  confidence: number;
+};
+
+export type QuestionAnswerPlan = {
+  kind: "plain_text" | "numeric" | "single_choice" | "multi_select" | "unsupported";
+  supported: boolean;
+  choiceExtractionQuality?: ChoiceExtractionQuality;
+  requiresVisual?: boolean;
+  notes?: string[];
+};
+
+export type PaperVisualBoundingBox = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+export type PaperVisualRegion = {
+  id: string;
+  label: string;
+  kind: "figure" | "diagram" | "graph" | "table" | "map" | "source_extract" | "image" | "other";
+  pageNumber: number;
+  bbox: PaperVisualBoundingBox | null;
+  confidence: number;
+  title: string | null;
+  caption: string | null;
+  extractedText: string | null;
+  tableData?:
+    | {
+        columns: string[];
+        rows: string[][];
+        notes?: string[];
+      }
+    | null;
+  displayMode: "rendered_table" | "cropped_image" | "full_page_fallback" | "text_extract";
+  cropDataUrl?: string | null;
+  source: "claude_visual_inventory" | "deterministic_text" | "manual_report";
+};
 
 export type PaperPageText = {
   pageNumber: number;
@@ -236,6 +292,7 @@ export type PastPaper = {
   processingError: string | null;
   processingDiagnostics?: ProcessingDiagnostics | null;
   assets: PastPaperAsset[];
+  visualRegions?: PaperVisualRegion[];
   questions: PastPaperQuestion[];
   jobs: PastPaperProcessingJob[];
   createdAt: string;
@@ -296,6 +353,9 @@ export type PastPaperMarkingIssue = {
   message: string;
   rawMessage?: string | null;
   retryAfterMs?: number | null;
+  reportedAt?: string | null;
+  reportType?: "automatic_alignment" | "user_question_report" | "automatic_question_report" | null;
+  metadata?: Record<string, unknown> | null;
   createdAt: string;
 };
 

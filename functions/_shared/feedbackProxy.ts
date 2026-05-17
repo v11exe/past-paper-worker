@@ -32,6 +32,8 @@ const requestSchema = z.object({
   email: z.string(),
   title: z.string(),
   description: z.string(),
+  systemGenerated: z.boolean().optional(),
+  metadata: z.record(z.unknown()).optional(),
   website: z.string().optional(),
   context: z
     .object({
@@ -84,6 +86,8 @@ type SanitizedPayload = {
   email: string;
   title: string;
   description: string;
+  systemGenerated: boolean;
+  metadata: Record<string, unknown> | null;
   attachments: SanitizedAttachment[];
   context: { path: string; userAgent: string; timestamp: string; appVersion?: string };
 };
@@ -170,6 +174,14 @@ function attachmentSummary(attachments: SanitizedAttachment[]) {
   ];
 }
 
+function metadataSummary(metadata: Record<string, unknown> | null) {
+  if (!metadata) return [];
+  const serialized = JSON.stringify(metadata, null, 2);
+  if (!serialized) return [];
+  const clipped = serialized.length > 20_000 ? `${serialized.slice(0, 20_000)}\n[clipped ${serialized.length - 20_000} chars]` : serialized;
+  return ["", "Metadata:", clipped];
+}
+
 function attachmentTypeAllowed(filename: string, contentType: string) {
   const allowedExtensions = supportedAttachmentTypes.get(contentType.toLowerCase());
   if (!allowedExtensions) return false;
@@ -237,6 +249,8 @@ function validateAndSanitizePayload(raw: unknown) {
   const userAgent = collapseWhitespace(payload.context?.userAgent ?? "");
   const timestamp = collapseWhitespace(payload.context?.timestamp ?? "");
   const appVersion = collapseWhitespace(payload.context?.appVersion ?? "");
+  const systemGenerated = Boolean(payload.systemGenerated);
+  const metadata = payload.metadata && typeof payload.metadata === "object" && !Array.isArray(payload.metadata) ? payload.metadata : null;
 
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { ok: false as const, error: "Feedback could not be sent. Please try again." };
   if (title.length < 3 || title.length > 120) return { ok: false as const, error: "Feedback could not be sent. Please try again." };
@@ -257,6 +271,8 @@ function validateAndSanitizePayload(raw: unknown) {
       email,
       title,
       description,
+      systemGenerated,
+      metadata,
       attachments: attachments.attachments,
       context: {
         path,
@@ -273,7 +289,7 @@ function clientIp(request: Request) {
 }
 
 function submissionFingerprint(payload: SanitizedPayload) {
-  return [payload.type, payload.email, payload.title.toLowerCase(), payload.description.slice(0, 120).toLowerCase()].join("|");
+  return [payload.type, payload.email, payload.title.toLowerCase(), payload.description.slice(0, 120).toLowerCase(), payload.systemGenerated ? "system" : "user"].join("|");
 }
 
 function enforceRateLimit(request: Request, payload: SanitizedPayload, now: number) {
@@ -305,6 +321,7 @@ function enforceRateLimit(request: Request, payload: SanitizedPayload, now: numb
 function plainTextBody(payload: SanitizedPayload) {
   return [
     `Feedback type: ${feedbackTypeLabels[payload.type]}`,
+    `System generated: ${payload.systemGenerated ? "yes" : "no"}`,
     `Reply-to email: ${payload.email}`,
     `Title: ${payload.title}`,
     "",
@@ -315,6 +332,7 @@ function plainTextBody(payload: SanitizedPayload) {
     `User agent: ${payload.context.userAgent}`,
     `Submitted at: ${payload.context.timestamp}`,
     `App version: ${payload.context.appVersion || "unknown"}`,
+    ...metadataSummary(payload.metadata),
     ...attachmentSummary(payload.attachments),
   ].join("\n");
 }
@@ -344,6 +362,7 @@ function htmlBody(payload: SanitizedPayload) {
     <div style="font-family:Arial,sans-serif;color:#111;line-height:1.5">
       <h2>Revision feedback</h2>
       <p><strong>Feedback type:</strong> ${escapeHtml(feedbackTypeLabels[payload.type])}</p>
+      <p><strong>System generated:</strong> ${payload.systemGenerated ? "yes" : "no"}</p>
       <p><strong>Reply-to email:</strong> ${escapeHtml(payload.email)}</p>
       <p><strong>Title:</strong> ${escapeHtml(payload.title)}</p>
       <p><strong>Description:</strong><br>${escapeHtml(payload.description).replace(/\n/g, "<br>")}</p>
@@ -352,6 +371,13 @@ function htmlBody(payload: SanitizedPayload) {
       <p><strong>User agent:</strong> ${escapeHtml(payload.context.userAgent)}</p>
       <p><strong>Submitted at:</strong> ${escapeHtml(payload.context.timestamp)}</p>
       <p><strong>App version:</strong> ${escapeHtml(payload.context.appVersion || "unknown")}</p>
+      ${
+        payload.metadata
+          ? `<p><strong>Metadata:</strong></p><pre style="white-space:pre-wrap;background:#f5f5f5;padding:12px;border-radius:8px">${escapeHtml(
+              JSON.stringify(payload.metadata, null, 2).slice(0, 20000),
+            )}</pre>`
+          : ""
+      }
       ${attachments}
     </div>
   `.trim();
@@ -365,7 +391,7 @@ async function sendViaResend(env: FeedbackEnv, payload: SanitizedPayload, fetchI
     from: fromEmail,
     to: [toEmail],
     reply_to: payload.email,
-    subject: `[Revision Feedback] ${feedbackTypeLabels[payload.type]}: ${payload.title}`,
+    subject: payload.systemGenerated ? `[Past Paper Worker] ${payload.title}` : `[Revision Feedback] ${feedbackTypeLabels[payload.type]}: ${payload.title}`,
     text: plainTextBody(payload),
     html: htmlBody(payload),
     ...(payload.attachments.length

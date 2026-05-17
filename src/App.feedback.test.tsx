@@ -62,6 +62,10 @@ function seedData(data: AppData) {
 function clearUiStorage() {
   [
     "past-paper-worker:feedback-draft:v1",
+    "past-paper-worker:selected-subjects:v1.4.0",
+    "past-paper-worker:onboarding-completed:v1.4.0",
+    "past-paper-worker:active-subject:v1.4.0",
+    "past-paper-worker:sidebar-collapsed:v1.4.0",
     "past-paper-worker:selected-subjects:v1.3.5",
     "past-paper-worker:onboarding-completed:v1.3.5",
     "past-paper-worker:active-subject:v1.3.5",

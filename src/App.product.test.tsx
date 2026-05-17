@@ -9,6 +9,10 @@ import type { AppData, PastPaper, PastPaperAttempt, PastPaperQuestion } from "./
 function clearUiStorage() {
   [
     "past-paper-worker:feedback-draft:v1",
+    "past-paper-worker:selected-subjects:v1.4.0",
+    "past-paper-worker:onboarding-completed:v1.4.0",
+    "past-paper-worker:active-subject:v1.4.0",
+    "past-paper-worker:sidebar-collapsed:v1.4.0",
     "past-paper-worker:selected-subjects:v1.3.5",
     "past-paper-worker:onboarding-completed:v1.3.5",
     "past-paper-worker:active-subject:v1.3.5",
@@ -150,9 +154,9 @@ describe("v1.3 product shell", () => {
     await user.click(screen.getByRole("button", { name: /collapse sidebar/i }));
     expect(screen.queryByText("Chemistry")).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /v1.3.5 claude sonnet migration/i }));
+    await user.click(screen.getByRole("button", { name: /v1.4.0 alignment and question intelligence/i }));
     expect(await screen.findByRole("heading", { name: "Version history" })).toBeInTheDocument();
-    expect(screen.getByText("Tightened supported-subject handling.")).toBeInTheDocument();
+    expect(screen.getByText("Improved mark-scheme row alignment.")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Close version history" }));
 
     await user.click(screen.getByRole("button", { name: /credits/i }));

@@ -85,7 +85,19 @@ function buildGeminiBody(request: AIProxyRequest) {
     })),
     { text: request.prompt },
   ];
-  const expectsJson = ["page_inventory", "question_boundaries", "question_extraction", "mark_scheme_alignment", "paper_mark", "smoke_extraction", "smoke_marking"].includes(request.operation);
+  const expectsJson = [
+    "page_inventory",
+    "question_boundaries",
+    "question_extraction",
+    "visual_inventory",
+    "question_support_validation",
+    "question_display_plan",
+    "mark_scheme_alignment",
+    "mark_scheme_recovery",
+    "paper_mark",
+    "smoke_extraction",
+    "smoke_marking",
+  ].includes(request.operation);
   return {
     contents: [{ role: "user", parts }],
     generationConfig: {

@@ -38,6 +38,8 @@ type FeedbackRequestBody = {
   email: string;
   title: string;
   description: string;
+  systemGenerated?: boolean;
+  metadata?: Record<string, unknown>;
   website?: string;
   context: {
     path: string;
@@ -61,6 +63,14 @@ type FeedbackResponse = {
 type FeedbackSubmissionContext = {
   path: string;
   appVersion?: string;
+};
+
+type DiagnosticReportInput = {
+  title: string;
+  description: string;
+  context: FeedbackSubmissionContext;
+  metadata?: Record<string, unknown>;
+  attachments?: FeedbackAttachment[];
 };
 
 const FEEDBACK_STORAGE_KEY = "past-paper-worker:feedback-draft:v1";
@@ -332,6 +342,60 @@ export async function submitFeedback(
       appVersion: context.appVersion ?? appMeta.version,
     },
     ...(cleaned.type === "bug_report" && attachments.length
+      ? {
+          attachments: attachments.map((file) => ({
+            filename: normalizeFilename(file.filename),
+            contentType: file.contentType.trim().toLowerCase(),
+            sizeBytes: file.sizeBytes,
+            contentBase64: file.contentBase64,
+          })),
+        }
+      : {}),
+  };
+
+  const response = await fetchImpl("/api/feedback", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  let body: FeedbackResponse | null = null;
+  try {
+    body = (await response.json()) as FeedbackResponse;
+  } catch {
+    body = null;
+  }
+
+  if (!response.ok || !body?.ok) {
+    throw new Error(body?.error || "Feedback could not be sent. Please try again.");
+  }
+}
+
+export async function buildJsonFeedbackAttachment(filename: string, payload: unknown): Promise<FeedbackAttachment> {
+  const file = new File([JSON.stringify(payload, null, 2)], filename, { type: "application/json" });
+  const [attachment] = await filesToFeedbackAttachments([file]);
+  if (!attachment) throw new Error("Diagnostic attachment could not be created.");
+  return attachment;
+}
+
+export async function submitDiagnosticReport(input: DiagnosticReportInput, fetchImpl: typeof fetch = fetch) {
+  const attachments = input.attachments ?? [];
+  const payload: FeedbackRequestBody = {
+    type: "bug_report",
+    email: "feedback@omair.uk",
+    title: input.title,
+    description: input.description,
+    systemGenerated: true,
+    metadata: input.metadata ?? {},
+    context: {
+      path: input.context.path,
+      userAgent: navigator.userAgent,
+      timestamp: new Date().toISOString(),
+      appVersion: input.context.appVersion ?? appMeta.version,
+    },
+    ...(attachments.length
       ? {
           attachments: attachments.map((file) => ({
             filename: normalizeFilename(file.filename),

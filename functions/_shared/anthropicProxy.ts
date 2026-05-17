@@ -50,7 +50,19 @@ function success(operation: AIProxyOperation, provider: "anthropic", model: stri
 }
 
 function systemPromptForOperation(operation: AIProxyOperation) {
-  const jsonOnly = ["page_inventory", "question_boundaries", "question_extraction", "mark_scheme_alignment", "paper_mark", "smoke_extraction", "smoke_marking"].includes(operation);
+  const jsonOnly = [
+    "page_inventory",
+    "question_boundaries",
+    "question_extraction",
+    "visual_inventory",
+    "question_support_validation",
+    "question_display_plan",
+    "mark_scheme_alignment",
+    "mark_scheme_recovery",
+    "paper_mark",
+    "smoke_extraction",
+    "smoke_marking",
+  ].includes(operation);
   const base = [
     "You are the secure AI provider for Past Paper Worker.",
     "Follow the user prompt exactly and keep output grounded in the supplied source content.",

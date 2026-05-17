@@ -49,6 +49,7 @@ import { currentVersionEntry, versionHistory } from "./versionHistory";
 import { extractFileAssetContent } from "./lib/fileText";
 import {
   FEEDBACK_TYPE_OPTIONS,
+  buildJsonFeedbackAttachment,
   clearFeedbackDraft,
   emptyFeedbackDraft,
   filesToFeedbackAttachments,
@@ -56,6 +57,7 @@ import {
   formatFileSize,
   loadFeedbackDraft,
   saveFeedbackDraft,
+  submitDiagnosticReport,
   submitFeedback,
   validateFeedbackDraft,
   type FeedbackAttachment,
@@ -75,6 +77,7 @@ import {
   formatPercent,
   isAnswerAttempted,
   isMarkingErrorMark,
+  MarkSchemeAlignmentError,
   isTransientMarkingError,
   displayQuestionNumberForPaper,
   markAnswerWithAI,
@@ -100,6 +103,7 @@ import type {
   PastPaperQuestion,
   PastPaperQuestionMark,
   PaperPageScreenshot,
+  PaperVisualRegion,
   ProcessingStage,
   ProcessingDiagnostics,
   AISmokeTestResult,
@@ -171,11 +175,17 @@ type RuntimeEnvStatus = {
 type AppView = "landing" | "onboarding" | "app";
 
 const PREFERENCES_STORAGE_KEY = "past-paper-worker:preferences:v1";
-const SELECTED_SUBJECTS_STORAGE_KEY = "past-paper-worker:selected-subjects:v1.3.5";
-const ONBOARDING_COMPLETE_STORAGE_KEY = "past-paper-worker:onboarding-completed:v1.3.5";
-const ACTIVE_SUBJECT_STORAGE_KEY = "past-paper-worker:active-subject:v1.3.5";
-const SIDEBAR_COLLAPSED_STORAGE_KEY = "past-paper-worker:sidebar-collapsed:v1.3.5";
+const SELECTED_SUBJECTS_STORAGE_KEY = "past-paper-worker:selected-subjects:v1.4.0";
+const ONBOARDING_COMPLETE_STORAGE_KEY = "past-paper-worker:onboarding-completed:v1.4.0";
+const ACTIVE_SUBJECT_STORAGE_KEY = "past-paper-worker:active-subject:v1.4.0";
+const SIDEBAR_COLLAPSED_STORAGE_KEY = "past-paper-worker:sidebar-collapsed:v1.4.0";
 const LEGACY_UI_STORAGE_KEYS = {
+  selectedSubjects: "past-paper-worker:selected-subjects:v1.3.5",
+  onboardingComplete: "past-paper-worker:onboarding-completed:v1.3.5",
+  activeSubject: "past-paper-worker:active-subject:v1.3.5",
+  sidebarCollapsed: "past-paper-worker:sidebar-collapsed:v1.3.5",
+} as const;
+const OLDER_LEGACY_UI_STORAGE_KEYS = {
   selectedSubjects: "past-paper-worker:selected-subjects:v1.3.4",
   onboardingComplete: "past-paper-worker:onboarding-completed:v1.3.4",
   activeSubject: "past-paper-worker:active-subject:v1.3.4",
@@ -190,6 +200,7 @@ const LANDING_PHRASES = [
   "Your papers stay local.",
   "Developed by Rayaan Omair.",
 ] as const;
+const DIAGNOSTIC_REPORT_DEDUPE_MS = 24 * 60 * 60 * 1000;
 
 const defaultPreferences: AppPreferences = {
   themeMode: "dark",
@@ -240,9 +251,10 @@ function isSelectableSubject(value: string): value is SelectableSubject {
   return selectableSubjects.includes(value as SelectableSubject);
 }
 
-function readBooleanStorage(key: string, fallback = false, legacyKey?: string) {
+function readBooleanStorage(key: string, fallback = false, legacyKeys: string[] = []) {
   try {
-    const value = window.localStorage.getItem(key) ?? (legacyKey ? window.localStorage.getItem(legacyKey) : null);
+    const legacyValue = legacyKeys.map((legacyKey) => window.localStorage.getItem(legacyKey)).find((value) => value !== null) ?? null;
+    const value = window.localStorage.getItem(key) ?? legacyValue;
     if (value === null) return fallback;
     return value === "true";
   } catch {
@@ -264,7 +276,10 @@ function normalizeSelectedSubjects(subjects: string[]): SelectableSubject[] {
 
 function loadSelectedSubjects(data?: AppData): SelectableSubject[] {
   try {
-    const raw = window.localStorage.getItem(SELECTED_SUBJECTS_STORAGE_KEY) ?? window.localStorage.getItem(LEGACY_UI_STORAGE_KEYS.selectedSubjects);
+    const raw =
+      window.localStorage.getItem(SELECTED_SUBJECTS_STORAGE_KEY) ??
+      window.localStorage.getItem(LEGACY_UI_STORAGE_KEYS.selectedSubjects) ??
+      window.localStorage.getItem(OLDER_LEGACY_UI_STORAGE_KEYS.selectedSubjects);
     if (raw) {
       const parsed = JSON.parse(raw) as unknown;
       if (Array.isArray(parsed)) {
@@ -292,7 +307,10 @@ function saveSelectedSubjects(subjects: SelectableSubject[]) {
 
 function loadActiveSubject(subjects: SelectableSubject[]) {
   try {
-    const raw = window.localStorage.getItem(ACTIVE_SUBJECT_STORAGE_KEY) ?? window.localStorage.getItem(LEGACY_UI_STORAGE_KEYS.activeSubject);
+    const raw =
+      window.localStorage.getItem(ACTIVE_SUBJECT_STORAGE_KEY) ??
+      window.localStorage.getItem(LEGACY_UI_STORAGE_KEYS.activeSubject) ??
+      window.localStorage.getItem(OLDER_LEGACY_UI_STORAGE_KEYS.activeSubject);
     if (raw && subjects.includes(raw as SelectableSubject)) return raw as SelectableSubject;
   } catch {
     // Non-critical local preference.
@@ -408,6 +426,12 @@ function marksLabel(marks: number) {
   return `${marks} ${marks === 1 ? "mark" : "marks"}`;
 }
 
+function reportedWithinWindow(timestamp: string | null | undefined, windowMs = DIAGNOSTIC_REPORT_DEDUPE_MS) {
+  if (!timestamp) return false;
+  const time = Date.parse(timestamp);
+  return Number.isFinite(time) && Date.now() - time < windowMs;
+}
+
 function sourcePagesLabel(question: PastPaperQuestion) {
   const mediaPages = question.diagramMediaRefs.map((ref) => ref.pageNumber).filter((page): page is number => typeof page === "number");
   const pages = [...new Set([...(question.pageReferences ?? []), ...(question.imagePageReferences ?? []), ...mediaPages])].sort((a, b) => a - b);
@@ -421,21 +445,38 @@ function questionSourcePageNumbers(question: PastPaperQuestion) {
 }
 
 function relevantQuestionMediaRefs(question: PastPaperQuestion) {
-  const promptMentionsFigure = /\b(figure|diagram|graph|map|source|image|photo|photograph|flowchart|table)\b/i.test(question.promptText);
   return question.diagramMediaRefs.filter((ref) => {
     const label = ref.label?.trim() ?? "";
-    if (!label || label === "Media reference") return false;
+    const metadata = ref.metadata && typeof ref.metadata === "object" ? (ref.metadata as Record<string, unknown>) : {};
+    if ((!label || label === "Media reference") && !metadata.visualRegionId) return false;
     const kind = String(ref.kind ?? "").toLowerCase();
     const refMentionsFigure = /\b(figure|diagram|graph|map|source|image|photo|photograph|flowchart|table)\b/i.test(`${label} ${ref.description ?? ""} ${kind}`);
-    return promptMentionsFigure && refMentionsFigure;
+    return refMentionsFigure || Boolean(metadata.visualRegionId);
   });
+}
+
+function questionVisualRegions(paper: PastPaper, question: PastPaperQuestion) {
+  const registry = paper.visualRegions ?? [];
+  const byId = new Map(registry.map((region) => [region.id, region] as const));
+  const byLabel = new Map(registry.map((region) => [region.label.toLowerCase(), region] as const));
+  return relevantQuestionMediaRefs(question)
+    .map((ref) => {
+      const metadata = ref.metadata && typeof ref.metadata === "object" ? (ref.metadata as Record<string, unknown>) : {};
+      const visualRegionId = typeof metadata.visualRegionId === "string" ? metadata.visualRegionId : null;
+      return (visualRegionId ? byId.get(visualRegionId) : null) ?? byLabel.get((ref.label ?? "").toLowerCase()) ?? null;
+    })
+    .filter((region): region is PaperVisualRegion => Boolean(region));
 }
 
 function questionSourceScreenshots(paper: PastPaper, question: PastPaperQuestion): PaperPageScreenshot[] {
   const paperAsset = paper.assets.find((asset) => asset.kind === "paper");
   const mediaRefs = relevantQuestionMediaRefs(question);
-  if (!paperAsset?.pageScreenshots?.length || !mediaRefs.length) return [];
-  const pageNumbers = new Set(mediaRefs.map((ref) => ref.pageNumber).filter((page): page is number => typeof page === "number"));
+  const visualRegions = questionVisualRegions(paper, question);
+  if (!paperAsset?.pageScreenshots?.length || (!mediaRefs.length && !visualRegions.length)) return [];
+  const pageNumbers = new Set([
+    ...mediaRefs.map((ref) => ref.pageNumber).filter((page): page is number => typeof page === "number"),
+    ...visualRegions.map((region) => region.pageNumber),
+  ]);
   return paperAsset.pageScreenshots.filter((screenshot) => pageNumbers.has(screenshot.pageNumber) && screenshot.dataUrl);
 }
 
@@ -610,9 +651,37 @@ function attemptReviewStats(paper: PastPaper, attempt: PastPaperAttempt | null) 
   };
 }
 
-function markSchemeDataText(question: PastPaperQuestion | null) {
-  if (!question?.markSchemeData) return "No aligned mark-scheme row is stored for this question.";
-  const data = question.markSchemeData;
+function issueMetadataRecord(issue: PastPaperMarkingIssue | null | undefined) {
+  return issue?.metadata && typeof issue.metadata === "object" ? (issue.metadata as Record<string, unknown>) : null;
+}
+
+function rejectedEvidenceFromIssue(issue: PastPaperMarkingIssue | null | undefined) {
+  const metadata = issueMetadataRecord(issue);
+  if (!metadata?.rejectedEvidence || typeof metadata.rejectedEvidence !== "object") return null;
+  return metadata.rejectedEvidence as Record<string, unknown>;
+}
+
+function markSchemePanelData(question: PastPaperQuestion | null, issue?: PastPaperMarkingIssue | null) {
+  if (question?.markSchemeData) {
+    return {
+      kind: "aligned" as const,
+      data: question.markSchemeData,
+    };
+  }
+  const rejectedEvidence = rejectedEvidenceFromIssue(issue);
+  if (rejectedEvidence) {
+    return {
+      kind: "rejected" as const,
+      data: rejectedEvidence,
+    };
+  }
+  return null;
+}
+
+function markSchemeDataText(question: PastPaperQuestion | null, issue?: PastPaperMarkingIssue | null) {
+  const panel = markSchemePanelData(question, issue);
+  if (!panel) return "No aligned mark-scheme row is stored for this question.";
+  const data = panel.data;
   const rows = Array.isArray(data.rows) ? data.rows : [];
   const rowText = rows
     .map((row, index) => {
@@ -629,32 +698,58 @@ function markSchemeDataText(question: PastPaperQuestion | null) {
         .join("\n");
     })
     .join("\n\n");
-  const evidence = typeof data.evidence === "string" ? data.evidence : "";
+  const evidence =
+    typeof data.evidence === "string"
+      ? data.evidence
+      : typeof data.matchedEvidenceText === "string"
+        ? data.matchedEvidenceText
+        : "";
   const points = Array.isArray(data.points) ? data.points.join("\n") : "";
-  return [rowText, evidence ? `Evidence:\n${evidence}` : null, points && !rowText ? `Points:\n${points}` : null].filter(Boolean).join("\n\n") || JSON.stringify(data, null, 2);
+  const warnings =
+    Array.isArray(data.alignmentWarnings) && data.alignmentWarnings.length
+      ? `Warnings:\n${data.alignmentWarnings.filter((item): item is string => typeof item === "string").join("\n")}`
+      : null;
+  return [rowText, evidence ? `Evidence:\n${evidence}` : null, points && !rowText ? `Points:\n${points}` : null, warnings].filter(Boolean).join("\n\n") || JSON.stringify(data, null, 2);
 }
 
-function MarkSchemeDataPanel({ question, onCopy }: { question: PastPaperQuestion | null; onCopy: () => void }) {
-  if (!question?.markSchemeData) {
+function MarkSchemeDataPanel({
+  question,
+  issue,
+  onCopy,
+}: {
+  question: PastPaperQuestion | null;
+  issue?: PastPaperMarkingIssue | null;
+  onCopy: () => void;
+}) {
+  const panel = markSchemePanelData(question, issue);
+  if (!panel) {
     return (
       <div className="mark-scheme-row-panel mark-scheme-row-panel--structured">
         <p>No aligned mark-scheme row is stored for this question.</p>
       </div>
     );
   }
-  const data = question.markSchemeData;
+  const data = panel.data;
   const rows = Array.isArray(data.rows) ? data.rows : [];
-  const evidence = typeof data.evidence === "string" ? data.evidence.trim() : "";
+  const evidence =
+    typeof data.evidence === "string"
+      ? data.evidence.trim()
+      : typeof data.matchedEvidenceText === "string"
+        ? data.matchedEvidenceText.trim()
+        : "";
   const points = Array.isArray(data.points) ? data.points.filter((point): point is string => typeof point === "string" && point.trim().length > 0) : [];
+  const warnings = Array.isArray(data.alignmentWarnings)
+    ? data.alignmentWarnings.filter((warning): warning is string => typeof warning === "string" && warning.trim().length > 0)
+    : [];
   return (
     <div className="mark-scheme-row-panel mark-scheme-row-panel--structured">
       <div className="mark-scheme-row-panel__header">
         <div>
-          <span className="eyebrow">Aligned mark scheme</span>
+          <span className="eyebrow">{panel.kind === "rejected" ? "Rejected evidence" : "Aligned mark scheme"}</span>
           <strong>{rows.length ? `${rows.length} source row${rows.length === 1 ? "" : "s"}` : "Source evidence"}</strong>
         </div>
         <button className="secondary-button" type="button" onClick={onCopy}>
-          <Copy size={16} /> Copy row
+          <Copy size={16} /> Copy evidence
         </button>
       </div>
       {rows.length ? (
@@ -723,6 +818,12 @@ function MarkSchemeDataPanel({ question, onCopy }: { question: PastPaperQuestion
             </span>
           ))}
         </div>
+      ) : null}
+      {warnings.length ? (
+        <section className="raw-evidence-details">
+          <strong>{panel.kind === "rejected" ? "Why this was rejected" : "Alignment notes"}</strong>
+          <p>{warnings.join(" ")}</p>
+        </section>
       ) : null}
       {evidence ? (
         <details className="raw-evidence-details">
@@ -795,6 +896,7 @@ function PaperWorkspaceV133({
   const skippedCount = attempt?.answers.filter((answer) => answer.skipped).length ?? 0;
   const blankCount = reviewStats?.blank ?? Math.max(0, paper.questions.length - answeredCount - skippedCount);
   const latestIssue = reviewQuestion ? latestMarkingIssue(attempt, reviewQuestion.id) : null;
+  const reviewEvidence = markSchemePanelData(reviewQuestion, latestIssue);
 
   return (
     <div className="paper-workspace-v133">
@@ -975,8 +1077,8 @@ function PaperWorkspaceV133({
               <strong>Question {displayQuestionLabel(paper, reviewQuestion)}</strong>
               <span>{marksLabel(reviewQuestion.maxMarks)}</span>
             </div>
-            <p className="question-prompt">{cleanVisiblePrompt(reviewQuestion.promptText)}</p>
-            <QuestionSourceImages paper={paper} question={reviewQuestion} defaultCollapsed={false} />
+            <QuestionPromptRenderer question={reviewQuestion} />
+            <QuestionVisuals paper={paper} question={reviewQuestion} defaultCollapsed={false} />
             <div className="paper-answer-box">
               <span className="eyebrow">Your answer</span>
               <p>{answerText(reviewAnswer, reviewQuestion)}</p>
@@ -1018,13 +1120,13 @@ function PaperWorkspaceV133({
               <button className="secondary-button" onClick={onExportDiagnostics}>
                 <Download size={16} /> Export diagnostics
               </button>
-              {reviewQuestion.markSchemeData ? (
+              {reviewEvidence ? (
                 <button className="secondary-button" onClick={onToggleMarkScheme}>
-                  <ListChecks size={16} /> {markSchemeDetailsOpen ? "Hide mark scheme row" : "Show mark scheme row"}
+                  <ListChecks size={16} /> {markSchemeDetailsOpen ? `Hide ${reviewEvidence.kind === "rejected" ? "rejected evidence" : "mark scheme row"}` : `Show ${reviewEvidence.kind === "rejected" ? "rejected evidence" : "mark scheme row"}`}
                 </button>
               ) : null}
             </div>
-            {markSchemeDetailsOpen ? <MarkSchemeDataPanel question={reviewQuestion} onCopy={onCopyMarkScheme} /> : null}
+            {markSchemeDetailsOpen ? <MarkSchemeDataPanel question={reviewQuestion} issue={latestIssue} onCopy={onCopyMarkScheme} /> : null}
             {attempt.remarks.filter((remark) => remark.questionId === reviewQuestion.id).length ? (
               <div className="paper-history-list">
                 {attempt.remarks.filter((remark) => remark.questionId === reviewQuestion.id).map((remark) => {
@@ -1126,6 +1228,18 @@ function diagnosticBundle(paper: PastPaper, attempts: PastPaperAttempt[] = []) {
       supportIssue: questionSupportIssue(question),
       extractionWarnings: question.extractionWarnings ?? [],
     })),
+    visualRegions: (paper.visualRegions ?? []).map((region) => ({
+      id: region.id,
+      label: region.label,
+      kind: region.kind,
+      pageNumber: region.pageNumber,
+      bbox: region.bbox,
+      confidence: region.confidence,
+      displayMode: region.displayMode,
+      caption: region.caption,
+      extractedTextPreview: region.extractedText?.slice(0, 600) ?? null,
+      tableRows: region.tableData?.rows.length ?? 0,
+    })),
     attempts: attempts
       .filter((attempt) => attempt.paperId === paper.id)
       .map((attempt) => ({
@@ -1156,6 +1270,20 @@ function diagnosticBundle(paper: PastPaper, attempts: PastPaperAttempt[] = []) {
           accepted: mark.accepted,
           rationale: mark.rationale,
           markSchemeEvidence: mark.markSchemeEvidence,
+          provider: mark.provider ?? null,
+          model: mark.model ?? null,
+          modelLabel: mark.modelLabel ?? null,
+        })),
+        markingIssues: (attempt.markingIssues ?? []).map((issue) => ({
+          questionId: issue.questionId,
+          type: issue.type,
+          message: issue.message,
+          rawMessage: issue.rawMessage ?? null,
+          retryAfterMs: issue.retryAfterMs ?? null,
+          reportedAt: issue.reportedAt ?? null,
+          reportType: issue.reportType ?? null,
+          metadata: issue.metadata ?? null,
+          createdAt: issue.createdAt,
         })),
       })),
     assets: paper.assets.map((asset) => ({
@@ -1722,7 +1850,7 @@ function UnsupportedSubjectDashboard({
           </article>
           <article className="feature-card">
             <strong>Legacy papers</strong>
-            <p>{legacyPapers.length ? `${legacyPapers.length} existing paper${legacyPapers.length === 1 ? "" : "s"} are stored for this subject, but v1.3.5 does not treat it as supported.` : "No papers stored for this subject yet."}</p>
+            <p>{legacyPapers.length ? `${legacyPapers.length} existing paper${legacyPapers.length === 1 ? "" : "s"} are stored for this subject, but v1.4.0 does not treat it as supported.` : "No papers stored for this subject yet."}</p>
           </article>
         </div>
       </section>
@@ -2044,10 +2172,13 @@ const stageProgressRanges: Record<ProcessingStage, [number, number]> = {
   uploading: [0, 10],
   extracting: [10, 22],
   "building page inventory": [22, 38],
-  "identifying questions": [38, 52],
-  "extracting question details": [52, 78],
-  "aligning mark scheme": [78, 90],
-  finalising: [90, 100],
+  "identifying visual regions": [38, 48],
+  "identifying questions": [48, 60],
+  "extracting question details": [60, 78],
+  "validating question support": [78, 84],
+  "building question display plans": [84, 88],
+  "aligning mark scheme": [88, 94],
+  finalising: [94, 100],
   "marking answers": [8, 96],
   "remarking question": [8, 96],
 };
@@ -2065,8 +2196,11 @@ function processingStatusMessages(paper: PastPaper, job: PastPaperProcessingJob 
     uploading: ["Preparing files for extraction", "Checking document metadata"],
     extracting: [`Reading page ${currentPage} of ${pageCount}`, "Separating paper text from mark scheme text"],
     "building page inventory": [`Scanning page ${currentPage} of ${pageCount}`, "Building a compact page inventory", "Checking figures, tables, and source pages"],
+    "identifying visual regions": [`Inspecting page ${currentPage} for figures and tables`, "Locating graphs, source extracts, and cropped visuals", "Preparing reusable visual references"],
     "identifying questions": [`Finding question boundaries on page ${currentPage}`, "Looking for subquestions and mark allocations", "Mapping question ranges to source pages"],
     "extracting question details": [`Reading question ${currentQuestion}`, latestPrompt?.pageNumbers?.length ? `Extracting pages ${latestPrompt.pageNumbers.join(", ")}` : "Extracting question wording", "Checking options, marks, and source figures"],
+    "validating question support": [`Checking question ${currentQuestion} for supported answer types`, "Filtering out graph, table, and layout-only tasks", "Confirming multiple-choice options are real"],
+    "building question display plans": [`Formatting question ${currentQuestion} for readable display`, "Preserving steps, notation, and scientific symbols"],
     "aligning mark scheme": ["Reading mark scheme rows", "Matching answers to question numbers", "Checking accept and do-not-accept guidance"],
     finalising: ["Running source-grounding checks", "Checking extracted marks against paper metadata", "Preparing the paper dashboard"],
     "marking answers": [`Marking answered question ${currentQuestion}`, "Applying aligned mark scheme rows"],
@@ -3092,20 +3226,151 @@ function ConfidenceSkipModal({
   );
 }
 
-function QuestionSourceImages({ paper, question, defaultCollapsed = false }: { paper: PastPaper; question: PastPaperQuestion; defaultCollapsed?: boolean }) {
+function basicCleanPrompt(promptText: string) {
+  return cleanChoiceGlyphs(promptText)
+    .replace(/\s*(?:[[(]\s*\d+\s*(?:marks?)?\s*[\])]|\[\s*\d+\s*])/gi, "")
+    .replace(/^\s*(?:question\s*)?\d+\s*(?:[.)/-]\s*)?/i, "")
+    .replace(/^\s*(?:\([a-z]\)|[a-z][.)])\s*/i, "")
+    .replace(/^\s*(?:\([ivx]+\)|[ivx]+[.)])\s*/i, "")
+    .replace(/\s+/g, " ")
+    .replace(/\s+([?.!,;:])/g, "$1")
+    .trim();
+}
+
+function cleanVisiblePrompt(promptText: string) {
+  const cleaned = basicCleanPrompt(promptText);
+  const extracted = extractInlineOptions(cleaned);
+  return extracted.options.length ? extracted.promptText : cleaned;
+}
+
+function displayPlanForQuestion(question: PastPaperQuestion) {
+  const convertedContent = question.convertedContent && typeof question.convertedContent === "object" ? (question.convertedContent as Record<string, unknown>) : {};
+  const plan = convertedContent.displayPlan;
+  if (!plan || typeof plan !== "object") return null;
+  const blocks = Array.isArray((plan as { blocks?: unknown[] }).blocks) ? ((plan as { blocks: unknown[] }).blocks as Array<Record<string, unknown>>) : [];
+  return blocks.length ? (plan as { blocks: Array<Record<string, unknown>> }) : null;
+}
+
+function QuestionPromptRenderer({ question }: { question: PastPaperQuestion }) {
+  const plan = displayPlanForQuestion(question);
+  if (!plan) return <p className="question-prompt">{cleanVisiblePrompt(question.promptText)}</p>;
+
+  return (
+    <div className="question-prompt-renderer">
+      {plan.blocks.map((block, index) => {
+        if (block.type === "ordered_steps" && Array.isArray(block.items)) {
+          return (
+            <ol key={`block-${index}`} className="question-prompt-list question-prompt-list--ordered">
+              {block.items.map((item) => (
+                <li key={`${index}-${item}`}>{String(item)}</li>
+              ))}
+            </ol>
+          );
+        }
+        if (block.type === "bullets" && Array.isArray(block.items)) {
+          return (
+            <ul key={`block-${index}`} className="question-prompt-list">
+              {block.items.map((item) => (
+                <li key={`${index}-${item}`}>{String(item)}</li>
+              ))}
+            </ul>
+          );
+        }
+        if (block.type === "equation") {
+          return <pre key={`block-${index}`} className="question-prompt question-prompt--equation">{String(block.text ?? "")}</pre>;
+        }
+        if (block.type === "warning") {
+          return <p key={`block-${index}`} className="muted-copy">{String(block.text ?? "")}</p>;
+        }
+        return <p key={`block-${index}`} className="question-prompt">{String(block.text ?? "")}</p>;
+      })}
+    </div>
+  );
+}
+
+function renderVisualRegion(region: PaperVisualRegion, question: PastPaperQuestion) {
+  if (region.displayMode === "rendered_table" && region.tableData) {
+    const header = region.tableData.columns;
+    return (
+      <section key={region.id} className="question-source-media__card">
+        <div className="question-source-media__header">
+          <span className="eyebrow">{region.label}</span>
+          <span>Page {region.pageNumber}</span>
+        </div>
+        {region.caption ? <p className="muted-copy">{region.caption}</p> : null}
+        <div className="question-source-table-wrap">
+          <table className="question-source-table">
+            {header.length ? (
+              <thead>
+                <tr>
+                  {header.map((column) => (
+                    <th key={column}>{column}</th>
+                  ))}
+                </tr>
+              </thead>
+            ) : null}
+            <tbody>
+              {region.tableData.rows.map((row, rowIndex) => (
+                <tr key={`${region.id}-row-${rowIndex}`}>
+                  {row.map((cell, cellIndex) => (
+                    <td key={`${region.id}-${rowIndex}-${cellIndex}`}>{cell}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    );
+  }
+
+  if (region.displayMode === "text_extract" && region.extractedText) {
+    return (
+      <section key={region.id} className="question-source-media__card">
+        <div className="question-source-media__header">
+          <span className="eyebrow">{region.label}</span>
+          <span>Page {region.pageNumber}</span>
+        </div>
+        {region.caption ? <p className="muted-copy">{region.caption}</p> : null}
+        <p className="question-prompt">{region.extractedText}</p>
+      </section>
+    );
+  }
+
+  const imageSrc = region.cropDataUrl;
+  if (!imageSrc) return null;
+  return (
+    <figure key={region.id} className="source-page-shot source-page-shot--cropped">
+      <img src={imageSrc} alt={`${region.label} for question ${question.questionNumber}`} />
+      <figcaption>
+        <span>{region.label}</span>
+        <button className="chip-button" type="button" onClick={() => window.open(imageSrc, "_blank", "noopener,noreferrer")}>
+          <Eye size={14} /> Zoom
+        </button>
+      </figcaption>
+    </figure>
+  );
+}
+
+function QuestionVisuals({ paper, question, defaultCollapsed = false }: { paper: PastPaper; question: PastPaperQuestion; defaultCollapsed?: boolean }) {
   const screenshots = questionSourceScreenshots(paper, question);
   const mediaRefs = relevantQuestionMediaRefs(question);
-  if (!screenshots.length && !mediaRefs.length) return null;
+  const visualRegions = questionVisualRegions(paper, question);
+  if (!screenshots.length && !mediaRefs.length && !visualRegions.length) return null;
+
+  const regionPageNumbers = new Set(visualRegions.map((region) => region.pageNumber));
+  const fallbackScreenshots = screenshots.filter((shot) => !regionPageNumbers.has(shot.pageNumber) || !visualRegions.some((region) => region.pageNumber === shot.pageNumber && region.cropDataUrl));
 
   const content = (
     <>
       <div className="question-source-media__header">
         <span className="eyebrow">Source figures</span>
-        {screenshots.length ? <span>{screenshots.map((shot) => `Page ${shot.pageNumber}`).join(", ")}</span> : null}
+        <span>{[...new Set([...visualRegions.map((region) => `Page ${region.pageNumber}`), ...fallbackScreenshots.map((shot) => `Page ${shot.pageNumber}`)])].join(", ")}</span>
       </div>
-      {screenshots.length ? (
+      {visualRegions.length ? <div className="question-source-media__stack">{visualRegions.map((region) => renderVisualRegion(region, question))}</div> : null}
+      {fallbackScreenshots.length ? (
         <div className="question-source-media__strip">
-          {screenshots.map((shot) => (
+          {fallbackScreenshots.map((shot) => (
             <figure key={`${shot.pageNumber}-${shot.width}-${shot.height}`} className="source-page-shot">
               <img src={shot.dataUrl} alt={`Source page ${shot.pageNumber} for question ${question.questionNumber}`} />
               <figcaption>Page {shot.pageNumber}</figcaption>
@@ -3130,7 +3395,7 @@ function QuestionSourceImages({ paper, question, defaultCollapsed = false }: { p
     <details className="question-source-media" aria-label="Source figures and page images">
       <summary>
         <span>Source figures</span>
-        <small>{screenshots.length ? screenshots.map((shot) => `Page ${shot.pageNumber}`).join(", ") : `${mediaRefs.length} refs`}</small>
+        <small>{visualRegions.length ? `${visualRegions.length} visual${visualRegions.length === 1 ? "" : "s"}` : fallbackScreenshots.length ? fallbackScreenshots.map((shot) => `Page ${shot.pageNumber}`).join(", ") : `${mediaRefs.length} refs`}</small>
       </summary>
       {content}
     </details>
@@ -3139,23 +3404,6 @@ function QuestionSourceImages({ paper, question, defaultCollapsed = false }: { p
       {content}
     </div>
   );
-}
-
-function basicCleanPrompt(promptText: string) {
-  return cleanChoiceGlyphs(promptText)
-    .replace(/\s*(?:[[(]\s*\d+\s*(?:marks?)?\s*[\])]|\[\s*\d+\s*])/gi, "")
-    .replace(/^\s*(?:question\s*)?\d+\s*(?:[.)/-]\s*)?/i, "")
-    .replace(/^\s*(?:\([a-z]\)|[a-z][.)])\s*/i, "")
-    .replace(/^\s*(?:\([ivx]+\)|[ivx]+[.)])\s*/i, "")
-    .replace(/\s+/g, " ")
-    .replace(/\s+([?.!,;:])/g, "$1")
-    .trim();
-}
-
-function cleanVisiblePrompt(promptText: string) {
-  const cleaned = basicCleanPrompt(promptText);
-  const extracted = extractInlineOptions(cleaned);
-  return extracted.options.length ? extracted.promptText : cleaned;
 }
 
 function AnswerInput({ question, answer, onChange }: { question: PastPaperQuestion; answer: PastPaperAnswer; onChange: (patch: Partial<PastPaperAnswer>) => void }) {
@@ -3255,9 +3503,19 @@ export function App() {
   const [preferences, setPreferences] = useState<AppPreferences>(() => loadPreferences());
   const [selectedSubjects, setSelectedSubjects] = useState<SelectableSubject[]>(() => loadSelectedSubjects(data));
   const [currentView, setCurrentView] = useState<AppView>("landing");
-  const [onboardingComplete, setOnboardingComplete] = useState(() => readBooleanStorage(ONBOARDING_COMPLETE_STORAGE_KEY, data.papers.length > 0, LEGACY_UI_STORAGE_KEYS.onboardingComplete));
+  const [onboardingComplete, setOnboardingComplete] = useState(() =>
+    readBooleanStorage(ONBOARDING_COMPLETE_STORAGE_KEY, data.papers.length > 0, [
+      LEGACY_UI_STORAGE_KEYS.onboardingComplete,
+      OLDER_LEGACY_UI_STORAGE_KEYS.onboardingComplete,
+    ]),
+  );
   const [activeSubject, setActiveSubject] = useState<SelectableSubject | null>(() => loadActiveSubject(loadSelectedSubjects(data)));
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => readBooleanStorage(SIDEBAR_COLLAPSED_STORAGE_KEY, defaultPreferences.sidebarDefault === "collapsed", LEGACY_UI_STORAGE_KEYS.sidebarCollapsed));
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() =>
+    readBooleanStorage(SIDEBAR_COLLAPSED_STORAGE_KEY, defaultPreferences.sidebarDefault === "collapsed", [
+      LEGACY_UI_STORAGE_KEYS.sidebarCollapsed,
+      OLDER_LEGACY_UI_STORAGE_KEYS.sidebarCollapsed,
+    ]),
+  );
   const [postOnboardingAction, setPostOnboardingAction] = useState<"upload" | null>(null);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
 
@@ -3413,6 +3671,8 @@ export function App() {
   const reviewAnswer = selectedAttempt?.answers.find((answer) => answer.questionId === reviewQuestion?.id) ?? null;
   const reviewSupportIssue = reviewQuestion ? questionSupportIssue(reviewQuestion) : null;
   const reviewMark = reviewQuestion ? latestAcceptedMark(selectedAttempt, reviewQuestion.id) : null;
+  const reviewLatestIssue = reviewQuestion ? latestMarkingIssue(selectedAttempt, reviewQuestion.id) : null;
+  const reviewEvidence = markSchemePanelData(reviewQuestion, reviewLatestIssue);
   const displayScores = selectedPaper && selectedAttempt ? displayAttemptScores(selectedPaper, selectedAttempt) : selectedAttempt;
 
   useEffect(() => {
@@ -3910,7 +4170,15 @@ export function App() {
     setStatus("Question unskipped.");
   }
 
-  function reportUnsupportedQuestion(question: PastPaperQuestion) {
+  async function reportUnsupportedQuestion(question: PastPaperQuestion) {
+    const reportedAt = nowIso();
+    let sent = false;
+    try {
+      sent = await sendUnsupportedQuestionDiagnostic(question);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Question report could not be sent.");
+      return;
+    }
     patchPaper(question.paperId, (paper) => ({
       ...paper,
       questions: paper.questions.map((item) =>
@@ -3919,7 +4187,8 @@ export function App() {
               ...item,
               originalContent: {
                 ...item.originalContent,
-                unsupportedReportedAt: nowIso(),
+                unsupportedReportedAt: reportedAt,
+                interpretationReportSentAt: sent ? reportedAt : (item.originalContent as Record<string, unknown>)?.interpretationReportSentAt ?? null,
               },
               extractionWarnings: [...(item.extractionWarnings ?? []), "User reported this unsupported-format classification for review."],
             }
@@ -3927,8 +4196,7 @@ export function App() {
       ),
       updatedAt: nowIso(),
     }));
-    const label = selectedPaper ? displayQuestionLabel(selectedPaper, question) : question.questionNumber;
-    setStatus(`Reported question ${label} for format review.`);
+    pushToast("success", "Question report sent for review.");
   }
 
   function submitAttempt() {
@@ -3995,7 +4263,7 @@ export function App() {
     } catch (reason) {
       const retryAfterMs = retryAfterMsFromError(reason);
       const rawMessage = reason instanceof Error ? reason.message : String(reason);
-      const issue = createMarkingIssue(
+      let issue = createMarkingIssue(
         question.id,
         isTransientMarkingError(reason) ? "transient_provider_error" : "mark_scheme_alignment_error",
         isTransientMarkingError(reason)
@@ -4005,6 +4273,25 @@ export function App() {
           : rawMessage,
         { rawMessage, retryAfterMs },
       );
+      if (issue.type === "mark_scheme_alignment_error") {
+        try {
+          const reportedAt = await sendAlignmentDiagnostic(question, answer, issue, reason);
+          issue = {
+            ...issue,
+            message: "Could not safely align this question with the mark scheme. Diagnostics were sent for review.",
+            reportedAt,
+            reportType: reportedAt ? "automatic_alignment" : null,
+            metadata:
+              reason instanceof MarkSchemeAlignmentError
+                ? reason.details
+                : reason && typeof reason === "object" && "details" in (reason as Record<string, unknown>)
+                  ? (((reason as Record<string, unknown>).details as Record<string, unknown>) ?? null)
+                  : null,
+          };
+        } catch {
+          // Keep the original issue message if reporting fails.
+        }
+      }
       patchAttempt(selectedAttempt.id, (attempt) => mergeAttemptMarkingState(attempt, { issues: [issue] }, selectedPaper));
       setError(markingIssueLabel(issue) ?? rawMessage);
     } finally {
@@ -4076,18 +4363,36 @@ export function App() {
               await waitForRetryDelay(retryAfterMs);
               continue;
             }
-            issues.push(
-              createMarkingIssue(
-                question.id,
-                isTransientMarkingError(reason) ? "transient_provider_error" : "mark_scheme_alignment_error",
-                isTransientMarkingError(reason)
-                  ? retryAfterMsFromError(reason)
-                    ? `AI provider quota limit reached. This answer was not marked. Retry in about ${Math.max(1, Math.round((retryAfterMsFromError(reason) ?? 0) / 1000))} seconds.`
-                    : "AI provider quota limit reached. This answer was not marked yet."
-                  : rawMessage,
-                { rawMessage, retryAfterMs: retryAfterMsFromError(reason) },
-              ),
+            let issue = createMarkingIssue(
+              question.id,
+              isTransientMarkingError(reason) ? "transient_provider_error" : "mark_scheme_alignment_error",
+              isTransientMarkingError(reason)
+                ? retryAfterMsFromError(reason)
+                  ? `AI provider quota limit reached. This answer was not marked. Retry in about ${Math.max(1, Math.round((retryAfterMsFromError(reason) ?? 0) / 1000))} seconds.`
+                  : "AI provider quota limit reached. This answer was not marked yet."
+                : rawMessage,
+              { rawMessage, retryAfterMs: retryAfterMsFromError(reason) },
             );
+            if (issue.type === "mark_scheme_alignment_error") {
+              try {
+                const reportedAt = await sendAlignmentDiagnostic(question, answer, issue, reason);
+                issue = {
+                  ...issue,
+                  message: "Could not safely align this question with the mark scheme. Diagnostics were sent for review.",
+                  reportedAt,
+                  reportType: reportedAt ? "automatic_alignment" : null,
+                  metadata:
+                    reason instanceof MarkSchemeAlignmentError
+                      ? reason.details
+                      : reason && typeof reason === "object" && "details" in (reason as Record<string, unknown>)
+                        ? (((reason as Record<string, unknown>).details as Record<string, unknown>) ?? null)
+                        : null,
+                };
+              } catch {
+                // Keep the local issue even if email reporting fails.
+              }
+            }
+            issues.push(issue);
             marked = true;
           }
         }
@@ -4113,7 +4418,9 @@ export function App() {
       });
       setStatus(
         issues.length
-          ? `Attempt marked with issues. ${marks.length} answered question${marks.length === 1 ? "" : "s"} scored, ${issues.filter((issue) => issue.type === "transient_provider_error").length} waiting for retry.`
+          ? issues.some((issue) => issue.type === "mark_scheme_alignment_error" && issue.reportedAt)
+            ? `Attempt marked with issues. ${issues.filter((issue) => issue.type === "mark_scheme_alignment_error").length} question${issues.filter((issue) => issue.type === "mark_scheme_alignment_error").length === 1 ? "" : "s"} need review, and diagnostics were sent for investigation.`
+            : `Attempt marked with issues. ${marks.length} answered question${marks.length === 1 ? "" : "s"} scored, ${issues.filter((issue) => issue.type === "transient_provider_error").length} waiting for retry.`
           : markingModelStatus(marks),
       );
     } catch (reason) {
@@ -4290,6 +4597,142 @@ export function App() {
     return `${page}#${appMode}`;
   }
 
+  async function sendDiagnosticEmailReport({
+    paper,
+    question,
+    attempt,
+    title,
+    description,
+    metadata,
+    attachmentName,
+  }: {
+    paper: PastPaper;
+    question: PastPaperQuestion;
+    attempt?: PastPaperAttempt | null;
+    title: string;
+    description: string;
+    metadata: Record<string, unknown>;
+    attachmentName: string;
+  }) {
+    const attachment = await buildJsonFeedbackAttachment(attachmentName, {
+      ...diagnosticBundle(paper, data.attempts),
+      question: {
+        id: question.id,
+        questionNumber: question.questionNumber,
+        promptText: question.promptText,
+        responseType: question.responseType,
+        options: question.options,
+        pageReferences: question.pageReferences,
+        mediaRefs: question.diagramMediaRefs,
+        markSchemeRef: question.markSchemeRef,
+        markSchemeData: question.markSchemeData,
+      },
+      attempt: attempt
+        ? {
+            id: attempt.id,
+            status: attempt.status,
+            answers: attempt.answers.filter((item) => item.questionId === question.id),
+            marks: attempt.marks.filter((item) => item.questionId === question.id),
+            issues: (attempt.markingIssues ?? []).filter((item) => item.questionId === question.id),
+          }
+        : null,
+      metadata,
+    });
+    await submitDiagnosticReport({
+      title,
+      description,
+      metadata,
+      attachments: [attachment],
+      context: { path: feedbackContextPath(), appVersion: appMeta.version },
+    });
+  }
+
+  async function sendUnsupportedQuestionDiagnostic(question: PastPaperQuestion) {
+    if (!selectedPaper) return false;
+    const existingReportedAt =
+      question.originalContent && typeof question.originalContent === "object" && typeof (question.originalContent as Record<string, unknown>).unsupportedReportedAt === "string"
+        ? String((question.originalContent as Record<string, unknown>).unsupportedReportedAt)
+        : null;
+    if (reportedWithinWindow(existingReportedAt)) return false;
+    const supportIssue = questionSupportIssue(question);
+    await sendDiagnosticEmailReport({
+      paper: selectedPaper,
+      question,
+      attempt: selectedAttempt,
+      title: `Question interpretation issue: ${selectedPaper.title} ${displayQuestionLabel(selectedPaper, question)}`,
+      description: [
+        "A question interpretation or unsupported-format report was sent from the app.",
+        "",
+        `Paper: ${selectedPaper.title}`,
+        `Question: ${displayQuestionLabel(selectedPaper, question)}`,
+        `Reason: ${supportIssue?.reason ?? "Unsupported question format"}`,
+      ].join("\n"),
+      metadata: {
+        reportType: "question_interpretation",
+        paperTitle: selectedPaper.title,
+        subject: selectedPaper.subject,
+        questionNumber: displayQuestionLabel(selectedPaper, question),
+        promptText: question.promptText,
+        responseType: question.responseType,
+        supportReason: supportIssue?.reason ?? null,
+        options: question.options,
+        visualRefs: question.diagramMediaRefs,
+      },
+      attachmentName: `${selectedPaper.title.replace(/[^a-z0-9]+/gi, "-").toLowerCase() || "paper"}-${displayQuestionLabel(selectedPaper, question).replace(/[^a-z0-9]+/gi, "-").toLowerCase()}-question-report.json`,
+    });
+    return true;
+  }
+
+  async function sendAlignmentDiagnostic(question: PastPaperQuestion, answer: PastPaperAnswer, issue: PastPaperMarkingIssue, reason: unknown) {
+    if (!selectedPaper || !selectedAttempt) return null;
+    const existingReportedAt = [
+      ...(selectedAttempt.markingIssues ?? []),
+      issue,
+    ]
+      .filter((item) => item.questionId === question.id && item.type === "mark_scheme_alignment_error")
+      .map((item) => item.reportedAt)
+      .find((timestamp) => reportedWithinWindow(timestamp));
+    if (existingReportedAt) return null;
+
+    const details =
+      reason instanceof MarkSchemeAlignmentError
+        ? reason.details
+        : reason && typeof reason === "object" && "details" in (reason as Record<string, unknown>)
+          ? ((reason as Record<string, unknown>).details as Record<string, unknown>)
+          : null;
+    await sendDiagnosticEmailReport({
+      paper: selectedPaper,
+      question,
+      attempt: selectedAttempt,
+      title: `Mark scheme alignment issue: ${selectedPaper.title} ${displayQuestionLabel(selectedPaper, question)}`,
+      description: [
+        "A mark-scheme row could not be reliably aligned after deterministic and Claude recovery.",
+        "",
+        `Paper: ${selectedPaper.title}`,
+        `Question: ${displayQuestionLabel(selectedPaper, question)}`,
+        `Reason: ${issue.message}`,
+        `Previous evidence: ${JSON.stringify(details?.currentBadEvidence ?? null).slice(0, 2000)}`,
+        `Claude recovery status: ${details?.recoveryResult && typeof details.recoveryResult === "object" ? JSON.stringify(details.recoveryResult).slice(0, 1200) : "none"}`,
+      ].join("\n"),
+      metadata: {
+        reportType: "mark_scheme_alignment",
+        paperTitle: selectedPaper.title,
+        subject: selectedPaper.subject,
+        questionNumber: displayQuestionLabel(selectedPaper, question),
+        promptText: question.promptText,
+        studentAnswer: answerText(answer, question),
+        pageReferences: question.pageReferences,
+        mediaRefs: question.diagramMediaRefs,
+        currentBadEvidence: details?.currentBadEvidence ?? null,
+        rejectedEvidence: details?.rejectedEvidence ?? null,
+        recoveredSearchResult: details?.recoveryResult ?? null,
+        reason: details?.reason ?? issue.message,
+      },
+      attachmentName: `${selectedPaper.title.replace(/[^a-z0-9]+/gi, "-").toLowerCase() || "paper"}-${displayQuestionLabel(selectedPaper, question).replace(/[^a-z0-9]+/gi, "-").toLowerCase()}-alignment-issue.json`,
+    });
+    return nowIso();
+  }
+
   function clearLocalDashboardData() {
     if (!window.confirm("Clear all papers and attempts stored on this device?")) return;
     clearData();
@@ -4339,13 +4782,13 @@ export function App() {
     reader.readAsText(file);
   }
 
-  async function copyMarkSchemeRow(question: PastPaperQuestion | null) {
-    const text = markSchemeDataText(question);
+  async function copyMarkSchemeRow(question: PastPaperQuestion | null, issue?: PastPaperMarkingIssue | null) {
+    const text = markSchemeDataText(question, issue);
     try {
       await navigator.clipboard?.writeText(text);
-      setStatus("Mark scheme row copied.");
+      setStatus(markSchemePanelData(question, issue)?.kind === "rejected" ? "Rejected evidence copied." : "Mark scheme row copied.");
     } catch {
-      setError("Could not copy the mark scheme row.");
+      setError(markSchemePanelData(question, issue)?.kind === "rejected" ? "Could not copy the rejected evidence." : "Could not copy the mark scheme row.");
     }
   }
 
@@ -4758,7 +5201,7 @@ export function App() {
             onRetryQuestion={(questionId) => void retryMarkQuestion(questionId)}
             onExportDiagnostics={() => downloadDiagnosticBundle(selectedPaper, data.attempts)}
             onToggleMarkScheme={() => setMarkSchemeDetailsOpen((value) => !value)}
-            onCopyMarkScheme={() => void copyMarkSchemeRow(reviewQuestion)}
+            onCopyMarkScheme={() => void copyMarkSchemeRow(reviewQuestion, reviewLatestIssue)}
             onRequestRemark={(answer) => void requestRemark(answer)}
             onAcceptRemark={acceptRemark}
             onPreviousReview={() => setReviewIndex((value) => Math.max(0, value - 1))}
@@ -4934,8 +5377,8 @@ export function App() {
                       <span className="static-chip">{sourcePagesLabel(activeQuestion)}</span>
                       {activeQuestion.extractionWarnings?.length ? <span className="static-chip">Has extraction warnings</span> : null}
                     </div>
-                    <QuestionSourceImages paper={selectedPaper} question={activeQuestion} defaultCollapsed={preferences.sourceFigures === "collapse"} />
-                    <p className="question-prompt">{cleanVisiblePrompt(activeQuestion.promptText)}</p>
+                    <QuestionVisuals paper={selectedPaper} question={activeQuestion} defaultCollapsed={preferences.sourceFigures === "collapse"} />
+                    <QuestionPromptRenderer question={activeQuestion} />
                     <div className={activeAnswer.skipped ? "answer-workspace answer-workspace--skipped" : "answer-workspace"}>
                       {activeSupportIssue ? (
                         <UnsupportedQuestionPanel issue={activeSupportIssue} marks={activeQuestion.maxMarks} onReport={() => reportUnsupportedQuestion(activeQuestion)} />
@@ -5136,8 +5579,8 @@ export function App() {
                       <strong>Question {displayQuestionLabel(selectedPaper, reviewQuestion)}</strong>
                       <span>{marksLabel(reviewQuestion.maxMarks)}</span>
                     </div>
-                    <p className="question-prompt">{cleanVisiblePrompt(reviewQuestion.promptText)}</p>
-                    <QuestionSourceImages paper={selectedPaper} question={reviewQuestion} defaultCollapsed={preferences.sourceFigures === "collapse"} />
+                    <QuestionPromptRenderer question={reviewQuestion} />
+                    <QuestionVisuals paper={selectedPaper} question={reviewQuestion} defaultCollapsed={preferences.sourceFigures === "collapse"} />
                     <div className="paper-answer-box">
                       <span className="eyebrow">Your answer</span>
                       <p>{answerText(reviewAnswer, reviewQuestion)}</p>
@@ -5187,13 +5630,13 @@ export function App() {
                       <button className="secondary-button" onClick={() => downloadDiagnosticBundle(selectedPaper, data.attempts)}>
                         <Download size={16} /> Export diagnostics
                       </button>
-                      {reviewQuestion.markSchemeData ? (
+                      {reviewEvidence ? (
                         <button className="secondary-button" onClick={() => setMarkSchemeDetailsOpen((value) => !value)}>
-                          <ListChecks size={16} /> {markSchemeDetailsOpen ? "Hide mark scheme row" : "Show mark scheme row"}
+                          <ListChecks size={16} /> {markSchemeDetailsOpen ? `Hide ${reviewEvidence.kind === "rejected" ? "rejected evidence" : "mark scheme row"}` : `Show ${reviewEvidence.kind === "rejected" ? "rejected evidence" : "mark scheme row"}`}
                         </button>
                       ) : null}
                     </div>
-                    {markSchemeDetailsOpen ? <MarkSchemeDataPanel question={reviewQuestion} onCopy={() => void copyMarkSchemeRow(reviewQuestion)} /> : null}
+                    {markSchemeDetailsOpen ? <MarkSchemeDataPanel question={reviewQuestion} issue={reviewLatestIssue} onCopy={() => void copyMarkSchemeRow(reviewQuestion, reviewLatestIssue)} /> : null}
                     {selectedAttempt.remarks.filter((remark) => remark.questionId === reviewQuestion.id).length ? (
                       <div className="paper-history-list">
                         {selectedAttempt.remarks

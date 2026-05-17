@@ -7,6 +7,20 @@ export type VersionHistoryEntry = {
 
 export const versionHistory: VersionHistoryEntry[] = [
   {
+    version: "v1.4.0",
+    title: "Alignment and question intelligence",
+    date: "2026-05-16",
+    changes: [
+      "Improved mark-scheme row alignment.",
+      "Added Claude-assisted mark-scheme recovery before marking questions as issues.",
+      "Added automatic diagnostic reports for unresolved alignment issues.",
+      "Improved figure, table and graph detection.",
+      "Added cropped figure display and rendered table display.",
+      "Revamped multiple-choice and unsupported-question detection.",
+      "Improved question text formatting for steps, notation and scientific symbols.",
+    ],
+  },
+  {
     version: "v1.3.5",
     title: "Claude Sonnet migration",
     date: "2026-05-15",
