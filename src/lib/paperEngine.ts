@@ -1529,7 +1529,7 @@ function formatScientificDisplayText(text: string) {
     .replace(/\s*(?:-->|->|=>)\s*/g, " → ")
     .replace(/\b(cm|dm|mm|m)\s*3\b/g, (_match, unit: string) => `${unit}³`)
     .replace(/\b10\s*(?:\^?\s*-\s*(\d+))\b/g, (_match, power: string) => `10${toSuperscript(`-${power}`)}`)
-    .replace(/\b([A-Z][a-z]?)(\d+)(?=[A-Z(]|$)/g, (_match, atom: string, count: string) => `${atom}${toSubscript(count)}`)
+    .replace(/\b([A-Z][a-z]?)(\d+)(?=[A-Z(]|[\s,./\\)]|$)/g, (_match, atom: string, count: string) => `${atom}${toSubscript(count)}`)
     .replace(/\b([A-Z][a-z]?)(\d+)([+-])\b/g, (_match, atom: string, count: string, charge: string) => `${atom}${toSubscript(count)}${toSuperscript(charge)}`)
     .replace(/\b([A-Z][a-z]?)([+-])\b/g, (_match, atom: string, charge: string) => `${atom}${toSuperscript(charge)}`)
     .replace(/\b([A-Za-z])\s*\^\s*(\d+)\b/g, (_match, base: string, power: string) => `${base}${toSuperscript(power)}`)

@@ -17,6 +17,7 @@ import {
   FileText,
   FlaskConical,
   Github,
+  Inbox,
   Info,
   Loader2,
   Maximize2,
@@ -27,15 +28,19 @@ import {
   PanelLeftOpen,
   Play,
   Plus,
+  Reply,
   RotateCcw,
   Save,
   ScanLine,
+  Send,
+  Terminal,
   Settings2,
   ShieldCheck,
   SkipForward,
   Sparkles,
   Target,
   Trash2,
+  Unlock,
   UploadCloud,
   X,
 } from "lucide-react";
@@ -2037,6 +2042,272 @@ function VersionHistoryModal({ open, onClose }: { open: boolean; onClose: () => 
   );
 }
 
+function AdminPanelModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const [adminCode, setAdminCode] = useState("");
+  const [authenticated, setAuthenticated] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [entries, setEntries] = useState<Array<Record<string, unknown>>>([]);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [replyDraft, setReplyDraft] = useState("");
+  const [replyingTo, setReplyingTo] = useState<string | null>(null);
+  const [replySending, setReplySending] = useState(false);
+  const [replyError, setReplyError] = useState<string | null>(null);
+  const [unlockError, setUnlockError] = useState<string | null>(null);
+
+  const loadEntries = useCallback(async (code: string) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/admin/feedback", {
+        headers: { "x-admin-code": code },
+      });
+      const data = (await response.json()) as { ok: boolean; entries?: Array<Record<string, unknown>>; error?: string };
+      if (!data.ok) {
+        setError(data.error ?? "Failed to load feedback.");
+        return;
+      }
+      setEntries(data.entries ?? []);
+    } catch {
+      setError("Network error. Could not load feedback.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const handleUnlock = useCallback(() => {
+    if (!adminCode.trim()) {
+      setUnlockError("Enter an admin code.");
+      return;
+    }
+    setUnlockError(null);
+    setAuthenticated(true);
+    void loadEntries(adminCode.trim());
+  }, [adminCode, loadEntries]);
+
+  const handleReply = useCallback(async () => {
+    if (!replyDraft.trim() || !replyingTo) return;
+    setReplySending(true);
+    setReplyError(null);
+    try {
+      const response = await fetch("/api/admin/feedback", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-admin-code": adminCode,
+        },
+        body: JSON.stringify({ feedbackId: replyingTo, replyText: replyDraft.trim() }),
+      });
+      const data = (await response.json()) as { ok: boolean; entry?: Record<string, unknown>; error?: string };
+      if (!data.ok) {
+        setReplyError(data.error ?? "Failed to send reply.");
+        return;
+      }
+      if (data.entry) {
+        setEntries((prev) => prev.map((e) => (e.id === data.entry!.id ? data.entry as Record<string, unknown> : e)));
+      }
+      setReplyingTo(null);
+      setReplyDraft("");
+    } catch {
+      setReplyError("Network error. Could not send reply.");
+    } finally {
+      setReplySending(false);
+    }
+  }, [replyDraft, replyingTo, adminCode]);
+
+  const formatDate = (iso: string) => {
+    try {
+      const d = new Date(iso);
+      return d.toLocaleString();
+    } catch {
+      return iso;
+    }
+  };
+
+  const feedbackTypeLabel: Record<string, string> = {
+    bug: "Bug report",
+    feature: "Feature request",
+    general: "General",
+    question: "Question",
+    compliment: "Compliment",
+    other: "Other",
+  };
+
+  return (
+    <AnimatePresence>
+      {open ? (
+        <motion.div className="paper-modal" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+          <motion.div className="paper-modal__panel admin-panel__panel" initial={{ y: 18, scale: 0.98 }} animate={{ y: 0, scale: 1 }} exit={{ y: 18, scale: 0.98 }}>
+            <div className="section-frame__header">
+              <div>
+                <span className="eyebrow">Admin</span>
+                <h2>Feedback inbox</h2>
+                <p>{authenticated ? `${entries.length} submission${entries.length !== 1 ? "s" : ""}` : "Type and unlock code to view submissions."}</p>
+              </div>
+              <button className="icon-button" onClick={onClose} aria-label="Close admin panel">
+                <X size={16} />
+              </button>
+            </div>
+
+            {!authenticated ? (
+              <div className="admin-unlock-form">
+                <div className="form-field">
+                  <label htmlFor="admin-code-input">Admin code</label>
+                  <input
+                    id="admin-code-input"
+                    className="text-input"
+                    type="password"
+                    placeholder="Enter admin code"
+                    value={adminCode}
+                    onChange={(e) => setAdminCode(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") void handleUnlock();
+                    }}
+                    autoFocus
+                  />
+                  {unlockError ? <span className="form-error">{unlockError}</span> : null}
+                </div>
+                <div className="button-row">
+                  <button className="primary-button" onClick={() => void handleUnlock()}>
+                    <Unlock size={16} /> Unlock
+                  </button>
+                </div>
+              </div>
+            ) : loading ? (
+              <div className="inline-status" role="status">
+                <ScanLine size={16} className="spin" />
+                <span>Loading feedback...</span>
+              </div>
+            ) : error ? (
+              <div className="processing-error">
+                <p>{error}</p>
+                <button className="secondary-button" onClick={() => void loadEntries(adminCode)}>
+                  Retry
+                </button>
+              </div>
+            ) : entries.length === 0 ? (
+              <div className="empty-state">
+                <Inbox size={32} />
+                <p>No feedback submissions yet.</p>
+              </div>
+            ) : (
+              <div className="admin-feedback-list">
+                {entries.map((entry) => {
+                  const isExpanded = expandedId === entry.id;
+                  const isReplying = replyingTo === entry.id;
+                  return (
+                    <div key={entry.id as string} className="admin-feedback-entry">
+                      <button
+                        className="admin-feedback-entry__header"
+                        onClick={() => setExpandedId(isExpanded ? null : (entry.id as string))}
+                        aria-expanded={isExpanded}
+                      >
+                        <div className="admin-feedback-entry__meta">
+                          <span className="static-chip">{feedbackTypeLabel[(entry.type as string) ?? ""] ?? (entry.type as string)}</span>
+                          {entry.repliedAt ? <span className="static-chip static-chip--success">Replied</span> : null}
+                          <span className="admin-feedback-entry__date">{formatDate(((entry.context as Record<string, unknown>)?.timestamp as string) ?? "")}</span>
+                        </div>
+                        <strong className="admin-feedback-entry__title">{entry.title as string}</strong>
+                        <span className="admin-feedback-entry__email">{entry.email as string}</span>
+                        <ChevronDown size={14} className={`admin-feedback-entry__chevron${isExpanded ? " admin-feedback-entry__chevron--open" : ""}`} />
+                      </button>
+                      <AnimatePresence>
+                        {isExpanded ? (
+                          <motion.div
+                            className="admin-feedback-entry__body"
+                            initial={{ height: 0, opacity: 0 }}
+                            animate={{ height: "auto", opacity: 1 }}
+                            exit={{ height: 0, opacity: 0 }}
+                          >
+                            <div className="admin-feedback-description">
+                              <pre>{(entry.description as string)?.replace(/\n/g, "\n") ?? ""}</pre>
+                            </div>
+                            {(entry.metadata as Record<string, unknown> | null) ? (
+                              <details className="admin-feedback-diagnostics">
+                                <summary>Diagnostics</summary>
+                                <pre>{JSON.stringify(entry.metadata, null, 2)}</pre>
+                              </details>
+                            ) : null}
+                            {(entry.attachments as Array<Record<string, unknown>> | undefined)?.length ? (
+                              <div className="admin-feedback-attachments">
+                                <span className="eyebrow">Attachments</span>
+                                <div className="chip-wrap">
+                                  {(entry.attachments as Array<Record<string, unknown>>).map((att, i) => (
+                                    <span key={i} className="static-chip">
+                                      {att.filename as string} ({att.contentType as string})
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+                            ) : null}
+                            <div className="admin-feedback-context">
+                              <span className="eyebrow">Context</span>
+                              <div className="admin-stat-row">
+                                <span>Path</span>
+                                <span className="admin-stat-value mono">{(entry.context as Record<string, unknown>)?.path as string}</span>
+                              </div>
+                              <div className="admin-stat-row">
+                                <span>App version</span>
+                                <span className="admin-stat-value mono">{(entry.context as Record<string, unknown>)?.appVersion as string}</span>
+                              </div>
+                            </div>
+                            {isReplying ? (
+                              <div className="admin-reply-form">
+                                <div className="form-field">
+                                  <label>Reply to {(entry.email as string)?.split("@")[0]}</label>
+                                  <textarea
+                                    className="text-input text-input--textarea"
+                                    placeholder="Type your reply..."
+                                    value={replyDraft}
+                                    onChange={(e) => setReplyDraft(e.target.value)}
+                                    rows={4}
+                                    autoFocus
+                                  />
+                                  {replyError ? <span className="form-error">{replyError}</span> : null}
+                                </div>
+                                <div className="button-row">
+                                  <button className="secondary-button" onClick={() => { setReplyingTo(null); setReplyDraft(""); setReplyError(null); }}>
+                                    Cancel
+                                  </button>
+                                  <button className="primary-button" onClick={() => void handleReply()} disabled={!replyDraft.trim() || replySending}>
+                                    {replySending ? <ScanLine size={16} className="spin" /> : <Send size={16} />} Send reply
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              !entry.repliedAt ? (
+                                <div className="button-row">
+                                  <button className="secondary-button" onClick={() => { setReplyingTo(entry.id as string); setReplyDraft(""); setReplyError(null); }}>
+                                    <Reply size={16} /> Reply via email
+                                  </button>
+                                </div>
+                              ) : (
+                                <div className="admin-reply-preview">
+                                  <span className="eyebrow">Replied {entry.repliedAt as string}</span>
+                                  <pre>{entry.replyText as string}</pre>
+                                </div>
+                              )
+                            )}
+                          </motion.div>
+                        ) : null}
+                      </AnimatePresence>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            <div className="button-row">
+              <button className="secondary-button" onClick={onClose}>
+                <X size={16} /> Close
+              </button>
+            </div>
+          </motion.div>
+        </motion.div>
+      ) : null}
+    </AnimatePresence>
+  );
+}
+
 function CreditsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   return (
     <AnimatePresence>
@@ -3256,14 +3527,16 @@ function ConfidenceSkipModal({
 function renderChemicalNotation(text: string): string {
   const elementSymbols = ["H", "He", "Li", "Be", "B", "C", "N", "O", "F", "Ne", "Na", "Mg", "Al", "Si", "P", "S", "Cl", "Ar", "K", "Ca", "Sc", "Ti", "V", "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn", "Ga", "Ge", "As", "Se", "Br", "Kr", "Rb", "Sr", "Y", "Zr", "Nb", "Mo", "Tc", "Ru", "Rh", "Pd", "Ag", "Cd", "In", "Sn", "Sb", "Te", "I", "Xe", "Cs", "Ba", "La", "Ce", "Pr", "Nd", "Pm", "Sm", "Eu", "Gd", "Tb", "Dy", "Ho", "Er", "Tm", "Yb", "Lu", "Hf", "Ta", "W", "Re", "Os", "Ir", "Pt", "Au", "Hg", "Tl", "Pb", "Bi", "Po", "At", "Rn", "Fr", "Ra", "Ac", "Th", "Pa", "U", "Np", "Pu", "Am", "Cm", "Bk", "Cf", "Es", "Fm", "Md", "No", "Lr", "Rf", "Db", "Sg", "Bh", "Hs", "Mt", "Ds", "Rg", "Cn", "Nh", "Fl", "Mc", "Lv", "Ts", "Og"];
   const elementPattern = elementSymbols.map(s => s.replace(/([A-Z])/g, "\\$1")).join("|");
-  const chemicalPattern = new RegExp(`\\b(${elementPattern})(\\d+)([A-Z][a-z]?(\\d+))?([A-Z][a-z]?(\\d+))?(?![a-z])`, "g");
-  return text.replace(chemicalPattern, (match, el1, num1, _, el2, num2, __, el3, num3) => {
+  const chemicalPattern = new RegExp(`\\b(${elementPattern})([2-9]|1\\d?)((?:[A-Z][a-z]?)?(?:[2-9]|1\\d?)?)((?![a-z\\d])|$)(?=[^a-z])`, "g");
+  return text.replace(chemicalPattern, (match, el1, num1, secondPart, lookahead) => {
     let result = `${el1}<sub>${num1}</sub>`;
-    if (el2 && num2) {
-      result += `${el2}<sub>${num2}</sub>`;
-    }
-    if (el3 && num3) {
-      result += `${el3}<sub>${num3}</sub>`;
+    if (secondPart) {
+      const match2 = secondPart.match(/^([A-Z][a-z]?)([2-9]|1\\d?)$/);
+      if (match2) {
+        result += `${match2[1]}<sub>${match2[2]}</sub>`;
+      } else if (/^[A-Z][a-z]?$/.test(secondPart)) {
+        result += secondPart;
+      }
     }
     return result;
   });
@@ -3559,7 +3832,11 @@ export function App() {
   const [feedbackTouched, setFeedbackTouched] = useState<Partial<Record<keyof FeedbackDraft, boolean>>>({});
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
   const [feedbackError, setFeedbackError] = useState<string | null>(null);
+  const [feedbackConfirmation, setFeedbackConfirmation] = useState<string | null>(null);
   const [systemInfoOpen, setSystemInfoOpen] = useState(false);
+  const [adminPanelOpen, setAdminPanelOpen] = useState(false);
+  const secretSequence = useRef<string[]>([]);
+  const secretSequenceTarget = useRef(["s", "e", "c", "r", "e", "t"]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [versionHistoryOpen, setVersionHistoryOpen] = useState(false);
   const [creditsOpen, setCreditsOpen] = useState(false);
@@ -3588,6 +3865,23 @@ export function App() {
   useEffect(() => writeBooleanStorage(ONBOARDING_COMPLETE_STORAGE_KEY, onboardingComplete), [onboardingComplete]);
   useEffect(() => writeBooleanStorage(SIDEBAR_COLLAPSED_STORAGE_KEY, sidebarCollapsed), [sidebarCollapsed]);
   useEffect(() => saveActiveSubject(activeSubject), [activeSubject]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const tag = (event.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      secretSequence.current.push(event.key.toLowerCase());
+      if (secretSequence.current.length > secretSequenceTarget.current.length) {
+        secretSequence.current = secretSequence.current.slice(-secretSequenceTarget.current.length);
+      }
+      if (secretSequence.current.join("") === secretSequenceTarget.current.join("")) {
+        secretSequence.current = [];
+        setAdminPanelOpen(true);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   useEffect(() => {
     if (!settingsOpen || !preferences.devModeEnabled) return;
@@ -3860,6 +4154,7 @@ export function App() {
       setFeedbackDraft(emptyFeedbackDraft());
       setFeedbackAttachments([]);
       setFeedbackTouched({});
+      setFeedbackConfirmation(feedbackDraft.email);
       setFeedbackOpen(false);
       setStatus("Feedback sent. Thank you.");
       setError(null);
@@ -4125,6 +4420,22 @@ export function App() {
     }
   }
 
+  function findNextNavigableQuestion(fromIndex: number): number {
+    if (!selectedPaper) return -1;
+    for (let i = fromIndex + 1; i < selectedPaper.questions.length; i++) {
+      if (!questionSupportIssue(selectedPaper.questions[i])) return i;
+    }
+    return -1;
+  }
+
+  function findPrevNavigableQuestion(fromIndex: number): number {
+    if (!selectedPaper) return -1;
+    for (let i = fromIndex - 1; i >= 0; i--) {
+      if (!questionSupportIssue(selectedPaper.questions[i])) return i;
+    }
+    return -1;
+  }
+
   async function exitFocusMode() {
     setIsFocusMode(false);
     if (document.fullscreenElement) {
@@ -4168,8 +4479,14 @@ export function App() {
     if (!activeQuestion || !activeAnswer) return;
     updateAnswer(activeQuestion.id, { skipped: activeAnswer.skipped, updatedAt: nowIso() });
     setStatus(`Answer saved for question ${activeQuestion.questionNumber}.`);
-    if (next) setActiveQuestionIndex((value) => Math.min((selectedPaper?.questions.length ?? 1) - 1, value + 1));
-  }, [activeAnswer, activeQuestion, selectedPaper?.questions.length, updateAnswer]);
+    if (!next) return;
+    const nextIndex = findNextNavigableQuestion(activeQuestionIndex);
+    if (nextIndex < 0) {
+      submitAttempt();
+    } else {
+      setActiveQuestionIndex(nextIndex);
+    }
+  }, [activeAnswer, activeQuestion, activeQuestionIndex, updateAnswer]);
 
   useEffect(() => {
     if (!selectedAttempt || selectedAttempt.status !== "in_progress") return;
@@ -4177,15 +4494,17 @@ export function App() {
       const isCommandEnter = (event.ctrlKey || event.metaKey) && event.key === "Enter";
       if (isCommandEnter) {
         event.preventDefault();
-        submitCurrentAnswer(activeQuestionIndex < (selectedPaper?.questions.length ?? 1) - 1);
+        submitCurrentAnswer(true);
       }
       if (event.altKey && event.key === "ArrowLeft") {
         event.preventDefault();
-        setActiveQuestionIndex((value) => Math.max(0, value - 1));
+        const prevIndex = findPrevNavigableQuestion(activeQuestionIndex);
+        if (prevIndex >= 0) setActiveQuestionIndex(prevIndex);
       }
       if (event.altKey && event.key === "ArrowRight") {
         event.preventDefault();
-        setActiveQuestionIndex((value) => Math.min((selectedPaper?.questions.length ?? 1) - 1, value + 1));
+        const nextIndex = findNextNavigableQuestion(activeQuestionIndex);
+        if (nextIndex >= 0) setActiveQuestionIndex(nextIndex);
       }
       if (event.key === "Escape" && isFocusMode) {
         event.preventDefault();
@@ -4194,7 +4513,7 @@ export function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [activeQuestionIndex, isFocusMode, selectedAttempt, selectedPaper?.questions.length, submitCurrentAnswer]);
+  }, [activeQuestionIndex, isFocusMode, selectedAttempt, submitCurrentAnswer]);
 
   function skipQuestion(withConfidence: boolean, predictedOverride?: number) {
     if (!activeQuestion || !activeAnswer) return;
@@ -4208,7 +4527,10 @@ export function App() {
       confidencePredictedMarks: predicted,
     });
     setStatus(withConfidence ? "Question skipped with confidence score." : "Question skipped.");
-    setActiveQuestionIndex((value) => Math.min((selectedPaper?.questions.length ?? 1) - 1, value + 1));
+    const nextIndex = findNextNavigableQuestion(activeQuestionIndex);
+    if (nextIndex >= 0) {
+      setActiveQuestionIndex(nextIndex);
+    }
   }
 
   function openConfidenceSkip() {
@@ -5364,6 +5686,13 @@ export function App() {
                       <Clock3 size={16} /> {durationLimit && preferences.timerBehaviour === "count_down" ? formatClock(secondsRemaining) : formatClock(elapsedSeconds)}
                     </span>
                   </div>
+                    <div className="exam-progress">
+                      <span className="exam-progress__label">Progress</span>
+                      <div className="exam-progress__bar" aria-label={`Attempt progress ${focusProgressPercent}%`}>
+                        <div className="exam-progress__fill" style={{ width: `${focusProgressPercent}%` }} />
+                      </div>
+                      <span className="exam-progress__count">{activeQuestionIndex + 1} / {selectedPaper.questions.length}</span>
+                    </div>
                   {preferences.showFocusProgress ? (
                   <div className="focus-progress-card">
                     <div className="focus-progress-card__bar" aria-label={`Attempt progress ${focusProgressPercent}%`}>
@@ -5372,17 +5701,18 @@ export function App() {
                     <div className="focus-progress-card__stats">
                       <span>{answeredDuringAttempt} answered</span>
                       <span>{skippedDuringAttempt} skipped</span>
-                      <span>{Math.max(0, selectedPaper.questions.length - answeredDuringAttempt - skippedDuringAttempt)} left</span>
+                      <span>{Math.max(0, selectedPaper.questions.length - answeredDuringAttempt - skippedDuringAttempt - selectedPaper.questions.filter((q) => questionSupportIssue(q)).length)} left</span>
                     </div>
                     <div className="focus-question-map" aria-label="Question progress map">
                       {selectedPaper.questions.map((question, index) => {
                         const answer = selectedAttempt.answers.find((item) => item.questionId === question.id);
-                        const state = answer?.skipped ? "skipped" : answer && isAnswerAttempted(answer) ? "answered" : "blank";
+                        const supportIssue = questionSupportIssue(question);
+                        const state = supportIssue ? "unsupported" : answer?.skipped ? "skipped" : answer && isAnswerAttempted(answer) ? "answered" : "blank";
                         return (
                           <button
                             key={question.id}
                             className={`focus-question-dot focus-question-dot--${state}${index === activeQuestionIndex ? " focus-question-dot--active" : ""}`}
-                            aria-label={`Go to question ${displayQuestionLabel(selectedPaper, question)}`}
+                            aria-label={`Go to question ${displayQuestionLabel(selectedPaper, question)}${supportIssue ? " (unsupported)" : ""}`}
                             onClick={() => setActiveQuestionIndex(index)}
                           />
                         );
@@ -5435,7 +5765,7 @@ export function App() {
                       ) : null}
                     </div>
                     <div className="button-row">
-                      <button className="secondary-button" onClick={() => setActiveQuestionIndex((value) => Math.max(0, value - 1))} disabled={activeQuestionIndex === 0}>
+                      <button className="secondary-button" onClick={() => { const p = findPrevNavigableQuestion(activeQuestionIndex); if (p >= 0) setActiveQuestionIndex(p); }} disabled={findPrevNavigableQuestion(activeQuestionIndex) < 0}>
                         <ChevronLeft size={16} /> Previous
                       </button>
                       <button className="secondary-button" onClick={() => skipQuestion(false)}>
@@ -5443,12 +5773,19 @@ export function App() {
                       </button>
                       <button
                         className="primary-button"
-                        onClick={() => (activeQuestionIndex >= selectedPaper.questions.length - 1 ? submitAttempt() : activeSupportIssue ? setActiveQuestionIndex((value) => Math.min(selectedPaper.questions.length - 1, value + 1)) : submitCurrentAnswer(true))}
+                        onClick={() => {
+                          if (activeSupportIssue) {
+                            const next = findNextNavigableQuestion(activeQuestionIndex);
+                            if (next >= 0) setActiveQuestionIndex(next);
+                          } else {
+                            submitCurrentAnswer(true);
+                          }
+                        }}
                       >
-                        {activeQuestionIndex >= selectedPaper.questions.length - 1 ? <Check size={16} /> : <Save size={16} />}
-                        {activeQuestionIndex >= selectedPaper.questions.length - 1 ? "Submit paper" : activeSupportIssue ? "Next" : "Save & Next"}
+                        <Save size={16} />
+                        {activeSupportIssue ? "Next supported" : "Save & Next"}
                       </button>
-                      <button className="secondary-button" onClick={() => setActiveQuestionIndex((value) => Math.min(selectedPaper.questions.length - 1, value + 1))}>
+                      <button className="secondary-button" onClick={() => { const n = findNextNavigableQuestion(activeQuestionIndex); if (n >= 0) setActiveQuestionIndex(n); }} disabled={findNextNavigableQuestion(activeQuestionIndex) < 0}>
                         Next <ChevronRight size={16} />
                       </button>
                     </div>
@@ -5786,6 +6123,7 @@ export function App() {
       />
       <VersionHistoryModal open={versionHistoryOpen} onClose={() => setVersionHistoryOpen(false)} />
       <CreditsModal open={creditsOpen} onClose={() => setCreditsOpen(false)} />
+      <AdminPanelModal open={adminPanelOpen} onClose={() => setAdminPanelOpen(false)} />
       <ConfidenceSkipModal
         open={confidenceSkipOpen}
         question={activeQuestion}

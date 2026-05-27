@@ -1,14 +1,14 @@
 import { z } from "zod";
 
-const RESEND_ENDPOINT = "https://api.resend.com/emails";
-const MAX_REQUEST_BYTES = 39 * 1024 * 1024;
+export const RESEND_ENDPOINT = "https://api.resend.com/emails";
+export const DEFAULT_FEEDBACK_TO = "feedback@omair.uk";
+export const DEFAULT_FEEDBACK_FROM = "Revision Feedback <onboarding@resend.dev>";
 const RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 const RATE_LIMIT_MAX = 5;
 const DUPLICATE_SUBMISSION_WINDOW_MS = 60 * 1000;
-const DEFAULT_FEEDBACK_TO = "feedback@omair.uk";
-const DEFAULT_FEEDBACK_FROM = "Revision Feedback <onboarding@resend.dev>";
 const MAX_ATTACHMENT_COUNT = 3;
 const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
+const MAX_REQUEST_BYTES = 39 * 1024 * 1024;
 const MAX_RAW_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const MAX_ENCODED_ATTACHMENT_BYTES = 34 * 1024 * 1024;
 const ATTACHMENT_OVERHEAD_ESTIMATE = 200 * 1024;
@@ -59,6 +59,7 @@ type FeedbackEnv = {
   RESEND_API_KEY?: string;
   FEEDBACK_TO_EMAIL?: string;
   FEEDBACK_FROM_EMAIL?: string;
+  FEEDBACK_KV?: KVNamespace;
 };
 
 type FeedbackDeps = {
@@ -499,6 +500,32 @@ export async function handleFeedbackRequest(request: Request, env: FeedbackEnv, 
       },
       502,
     );
+  }
+
+  // Store feedback entry in KV for admin panel
+  const kv = env.FEEDBACK_KV;
+  if (kv) {
+    try {
+      const entryId = `feedback-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+      const entry = {
+        id: entryId,
+        type: validated.payload.type,
+        email: validated.payload.email,
+        title: validated.payload.title,
+        description: validated.payload.description,
+        context: validated.payload.context,
+        metadata: validated.payload.metadata,
+        attachments: validated.payload.attachments.map((file) => ({
+          filename: file.filename,
+          contentType: file.contentType,
+          sizeBytes: file.sizeBytes,
+        })),
+      };
+      await kv.put(entryId, JSON.stringify(entry), { expirationTtl: 90 * 24 * 60 * 60 }); // 90 days
+    } catch (kvErr) {
+      // Non-fatal: don't fail the request if KV storage fails
+      console.warn("[Feedback] Failed to store in KV:", kvErr);
+    }
   }
 
   return json({ ok: true }, 200);

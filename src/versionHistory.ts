@@ -7,6 +7,21 @@ export type VersionHistoryEntry = {
 
 export const versionHistory: VersionHistoryEntry[] = [
   {
+    version: "v1.4.3",
+    title: "Focus UI polish and unsupported question surfacing",
+    date: "2026-05-28",
+    changes: [
+      "Added unsupported question dots in focus mode with red styling.",
+      "Next/Previous buttons skip unsupported questions automatically.",
+      "Left counter subtracts unsupported questions correctly.",
+      "Unsupported questions show report button and marks penalty chip.",
+      "Improved unsupported question detection with table/grid/matrix patterns.",
+      "Added diagnostic deduplication to prevent duplicate reports.",
+      "Restructured credits modal into People, Built with, AI, and Meta sections.",
+      "Updated changelog for v1.4.x series.",
+    ],
+  },
+  {
     version: "v1.4.2",
     title: "Focus UI and notation rendering",
     date: "2026-05-27",

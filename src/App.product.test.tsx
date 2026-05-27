@@ -154,9 +154,9 @@ describe("v1.3 product shell", () => {
     await user.click(screen.getByRole("button", { name: /collapse sidebar/i }));
     expect(screen.queryByText("Chemistry")).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /v1.4.2 focus ui and notation rendering/i }));
+    await user.click(screen.getByRole("button", { name: /v1.4.3 focus ui polish and unsupported question surfacing/i }));
     expect(await screen.findByRole("heading", { name: "Version history" })).toBeInTheDocument();
-    expect(screen.getByText("Redesigned focus mode topbar with exam indicator chip and improved timer display.")).toBeInTheDocument();
+    expect(screen.getByText("Added unsupported question dots in focus mode with red styling.")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Close version history" }));
 
     await user.click(screen.getByRole("button", { name: /credits/i }));
