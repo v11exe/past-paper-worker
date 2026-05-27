@@ -1,0 +1,18 @@
+name = "past-paper-worker"
+compatibility_date = "2025-01-01"
+main = "src/index.ts"
+
+assets = { directory = "./dist" }
+
+[vars]
+ENVIRONMENT = "production"
+
+# Secrets (set via `wrangler secret put`):
+# - ANTHROPIC_API_KEY
+# - GEMINI_API_KEY
+# - RESEND_API_KEY
+# - ADMIN_CODE (used for the admin panel unlock)
+
+[[kv_namespaces]]
+binding = "FEEDBACK_KV"
+id = "" # Set via `wrangler kv:namespace create "FEEDBACK_KV"` or .dev.vars
