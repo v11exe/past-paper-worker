@@ -154,14 +154,15 @@ describe("v1.3 product shell", () => {
     await user.click(screen.getByRole("button", { name: /collapse sidebar/i }));
     expect(screen.queryByText("Chemistry")).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /v1.4.1 rollback and targeted parser fixes/i }));
+    await user.click(screen.getByRole("button", { name: /v1.4.2 focus ui and notation rendering/i }));
     expect(await screen.findByRole("heading", { name: "Version history" })).toBeInTheDocument();
-    expect(screen.getByText("Restored fast deterministic paper processing.")).toBeInTheDocument();
+    expect(screen.getByText("Redesigned focus mode topbar with exam indicator chip and improved timer display.")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Close version history" }));
 
     await user.click(screen.getByRole("button", { name: /credits/i }));
-    expect(await screen.findByText("Developed by Rayaan Omair.")).toBeInTheDocument();
-    expect(screen.getByText("Logo credit: Elliot Neilsen.")).toBeInTheDocument();
+    expect(await screen.findByText("Rayaan Omair")).toBeInTheDocument();
+    expect(screen.getByText("Elliot Neilsen")).toBeInTheDocument();
+    expect(screen.getByText(/Anthropic Claude/i)).toBeInTheDocument();
   });
 
   it("keeps unsupported subjects out of the main rail and shows them in the unsupported dropdown", async () => {

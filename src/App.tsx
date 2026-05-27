@@ -20,6 +20,7 @@ import {
   Info,
   Loader2,
   Maximize2,
+  Minimize2,
   MessageSquare,
   ListChecks,
   PanelLeftClose,
@@ -39,6 +40,7 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import katex from "katex";
 import { DEFAULT_AI_MODEL, FALLBACK_AI_MODELS, AI_MODEL_CHOICES, ensureAIReadyForUserAction, aiChat, modelLabelForModel, resolveAIModelConfig, runAISmokeTest } from "./ai/provider";
 import { appMeta } from "./appMeta";
 import { AppLogo } from "./components/AppLogo";
@@ -2045,18 +2047,44 @@ function CreditsModal({ open, onClose }: { open: boolean; onClose: () => void })
               <div>
                 <span className="eyebrow">Credits</span>
                 <h2>Past Paper Worker</h2>
+                <p>Marked GCSE practice, powered by AI.</p>
               </div>
               <button className="icon-button" onClick={onClose} aria-label="Close credits">
                 <X size={16} />
               </button>
             </div>
             <div className="credits-panel">
-              <p><strong>Developed by Rayaan Omair.</strong></p>
-              <p><strong>Logo credit: Elliot Neilsen.</strong></p>
-              <div className="chip-wrap">
-                {["React", "Vite", "Cloudflare Workers", "AI via secure Worker proxy", "pdf.js", "lucide-react", "framer-motion"].map((item) => (
-                  <span className="static-chip" key={item}>{item}</span>
-                ))}
+              <div className="credits-section">
+                <span className="eyebrow">People</span>
+                <div className="credits-person">
+                  <strong>Developed by</strong>
+                  <span>Rayaan Omair</span>
+                </div>
+                <div className="credits-person">
+                  <strong>Logo by</strong>
+                  <span>Elliot Neilsen</span>
+                </div>
+              </div>
+
+              <div className="credits-section">
+                <span className="eyebrow">Built with</span>
+                <div className="chip-wrap">
+                  {["React", "Vite", "Cloudflare Workers", "pdf.js", "lucide-react", "framer-motion"].map((item) => (
+                    <span className="static-chip" key={item}>{item}</span>
+                  ))}
+                </div>
+              </div>
+
+              <div className="credits-section">
+                <span className="eyebrow">AI</span>
+                <p>AI processing via Anthropic Claude and Google Gemini through a secure Cloudflare Workers proxy. API keys never leave the server.</p>
+              </div>
+
+              <div className="credits-section credits-section--meta">
+                <span className="static-chip">{appMeta.version}</span>
+                <a className="chip-button" href="https://github.com/v11exe/past-paper-worker" target="_blank" rel="noreferrer">
+                  <Github size={14} /> View on GitHub
+                </a>
               </div>
             </div>
           </motion.div>
@@ -2067,15 +2095,14 @@ function CreditsModal({ open, onClose }: { open: boolean; onClose: () => void })
 }
 
 function UnsupportedQuestionPanel({ issue, marks, onReport }: { issue: { reason: string; reported: boolean }; marks: number; onReport?: () => void }) {
+  const shortReason = issue.reason.split(".")[0] + ".";
   return (
     <div className="unsupported-question-state" role="note">
       <div>
         <span className="eyebrow">Unsupported question type</span>
-        <strong>Unsupported question type</strong>
-        <p>This question needs a table, diagram, matching grid, or drawing tool that is not supported yet.</p>
+        <strong>{shortReason}</strong>
         <p>This question will not be included in your marked total.</p>
       </div>
-      <p className="muted-copy">{issue.reason}</p>
       {onReport ? (
         <button className="secondary-button" onClick={onReport} disabled={issue.reported}>
           <AlertCircle size={16} /> {issue.reported ? "Reported" : "Report inaccurate classification"}
@@ -3226,6 +3253,38 @@ function ConfidenceSkipModal({
   );
 }
 
+function renderChemicalNotation(text: string): string {
+  const elementSymbols = ["H", "He", "Li", "Be", "B", "C", "N", "O", "F", "Ne", "Na", "Mg", "Al", "Si", "P", "S", "Cl", "Ar", "K", "Ca", "Sc", "Ti", "V", "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn", "Ga", "Ge", "As", "Se", "Br", "Kr", "Rb", "Sr", "Y", "Zr", "Nb", "Mo", "Tc", "Ru", "Rh", "Pd", "Ag", "Cd", "In", "Sn", "Sb", "Te", "I", "Xe", "Cs", "Ba", "La", "Ce", "Pr", "Nd", "Pm", "Sm", "Eu", "Gd", "Tb", "Dy", "Ho", "Er", "Tm", "Yb", "Lu", "Hf", "Ta", "W", "Re", "Os", "Ir", "Pt", "Au", "Hg", "Tl", "Pb", "Bi", "Po", "At", "Rn", "Fr", "Ra", "Ac", "Th", "Pa", "U", "Np", "Pu", "Am", "Cm", "Bk", "Cf", "Es", "Fm", "Md", "No", "Lr", "Rf", "Db", "Sg", "Bh", "Hs", "Mt", "Ds", "Rg", "Cn", "Nh", "Fl", "Mc", "Lv", "Ts", "Og"];
+  const elementPattern = elementSymbols.map(s => s.replace(/([A-Z])/g, "\\$1")).join("|");
+  const chemicalPattern = new RegExp(`\\b(${elementPattern})(\\d+)([A-Z][a-z]?(\\d+))?([A-Z][a-z]?(\\d+))?(?![a-z])`, "g");
+  return text.replace(chemicalPattern, (match, el1, num1, _, el2, num2, __, el3, num3) => {
+    let result = `${el1}<sub>${num1}</sub>`;
+    if (el2 && num2) {
+      result += `${el2}<sub>${num2}</sub>`;
+    }
+    if (el3 && num3) {
+      result += `${el3}<sub>${num3}</sub>`;
+    }
+    return result;
+  });
+}
+
+function renderInlineMath(text: string): string {
+  const mathPattern = /\$([^$\n]+)\$/g;
+  return text.replace(mathPattern, (match, math) => {
+    try {
+      return katex.renderToString(math.trim(), { throwOnError: false, displayMode: false });
+    } catch {
+      return match;
+    }
+  });
+}
+
+function renderMathAndChemical(text: string): string {
+  const withMath = renderInlineMath(text);
+  return renderChemicalNotation(withMath);
+}
+
 function basicCleanPrompt(promptText: string) {
   return cleanChoiceGlyphs(promptText)
     .replace(/\s*(?:[[(]\s*\d+\s*(?:marks?)?\s*[\])]|\[\s*\d+\s*])/gi, "")
@@ -3243,6 +3302,10 @@ function cleanVisiblePrompt(promptText: string) {
   return extracted.options.length ? extracted.promptText : cleaned;
 }
 
+function cleanVisiblePromptHTML(promptText: string) {
+  return renderMathAndChemical(cleanVisiblePrompt(promptText));
+}
+
 function displayPlanForQuestion(question: PastPaperQuestion) {
   const convertedContent = question.convertedContent && typeof question.convertedContent === "object" ? (question.convertedContent as Record<string, unknown>) : {};
   const plan = convertedContent.displayPlan;
@@ -3253,7 +3316,7 @@ function displayPlanForQuestion(question: PastPaperQuestion) {
 
 function QuestionPromptRenderer({ question }: { question: PastPaperQuestion }) {
   const plan = displayPlanForQuestion(question);
-  if (!plan) return <p className="question-prompt">{cleanVisiblePrompt(question.promptText)}</p>;
+  if (!plan) return <p className="question-prompt" dangerouslySetInnerHTML={{ __html: renderMathAndChemical(cleanVisiblePrompt(question.promptText)) }} />;
 
   return (
     <div className="question-prompt-renderer">
@@ -3261,8 +3324,8 @@ function QuestionPromptRenderer({ question }: { question: PastPaperQuestion }) {
         if (block.type === "ordered_steps" && Array.isArray(block.items)) {
           return (
             <ol key={`block-${index}`} className="question-prompt-list question-prompt-list--ordered">
-              {block.items.map((item) => (
-                <li key={`${index}-${item}`}>{String(item)}</li>
+              {block.items.map((item, i) => (
+                <li key={`${index}-${i}`} dangerouslySetInnerHTML={{ __html: renderMathAndChemical(String(item)) }} />
               ))}
             </ol>
           );
@@ -3270,19 +3333,19 @@ function QuestionPromptRenderer({ question }: { question: PastPaperQuestion }) {
         if (block.type === "bullets" && Array.isArray(block.items)) {
           return (
             <ul key={`block-${index}`} className="question-prompt-list">
-              {block.items.map((item) => (
-                <li key={`${index}-${item}`}>{String(item)}</li>
+              {block.items.map((item, i) => (
+                <li key={`${index}-${i}`} dangerouslySetInnerHTML={{ __html: renderMathAndChemical(String(item)) }} />
               ))}
             </ul>
           );
         }
         if (block.type === "equation") {
-          return <pre key={`block-${index}`} className="question-prompt question-prompt--equation">{String(block.text ?? "")}</pre>;
+          return <pre key={`block-${index}`} className="question-prompt question-prompt--equation" dangerouslySetInnerHTML={{ __html: renderMathAndChemical(String(block.text ?? "")) }} />;
         }
         if (block.type === "warning") {
-          return <p key={`block-${index}`} className="muted-copy">{String(block.text ?? "")}</p>;
+          return <p key={`block-${index}`} className="muted-copy" dangerouslySetInnerHTML={{ __html: renderMathAndChemical(String(block.text ?? "")) }} />;
         }
-        return <p key={`block-${index}`} className="question-prompt">{String(block.text ?? "")}</p>;
+        return <p key={`block-${index}`} className="question-prompt" dangerouslySetInnerHTML={{ __html: renderMathAndChemical(String(block.text ?? "")) }} />;
       })}
     </div>
   );
@@ -3447,7 +3510,7 @@ function AnswerInput({ question, answer, onChange }: { question: PastPaperQuesti
                   onChange({ selectedOptions, skipped: false, skippedWithConfidence: false, confidencePredictedMarks: null });
                 }}
               />
-              <span>{option}</span>
+              <span dangerouslySetInnerHTML={{ __html: renderMathAndChemical(option) }} />
             </label>
           );
         })}
@@ -4853,24 +4916,30 @@ export function App() {
       <main className="shell-workspace">
         {appMode === "taking" && selectedPaper && activeQuestion ? (
           <header className="focus-topbar">
-            <AppLogo size={32} />
+            <div className="focus-topbar__brand">
+              <AppLogo size={32} />
+              <span className="focus-topbar__exam-indicator">
+                <span>Exam in progress</span>
+              </span>
+            </div>
             <div className="focus-topbar__title">
               <strong>{selectedPaper.title}</strong>
               <span>
-                Question {displayQuestionLabel(selectedPaper, activeQuestion)} / {activeQuestionIndex + 1} of {selectedPaper.questions.length} / {marksLabel(activeQuestion.maxMarks)}
+                <strong>Question {displayQuestionLabel(selectedPaper, activeQuestion)}</strong>
+                <span>
+                  {activeQuestionIndex + 1} of {selectedPaper.questions.length} / {marksLabel(activeQuestion.maxMarks)}
+                </span>
               </span>
             </div>
             <div className={overtimeSeconds ? "focus-timer focus-timer--overtime" : "focus-timer"}>
-              <Clock3 size={16} /> {durationLimit && preferences.timerBehaviour === "count_down" ? formatClock(secondsRemaining) : formatClock(elapsedSeconds)}
+              <Clock3 size={18} />
+              {durationLimit && preferences.timerBehaviour === "count_down" ? formatClock(secondsRemaining) : formatClock(elapsedSeconds)}
             </div>
             <button className="secondary-button" onClick={submitAttempt}>
               <Check size={16} /> End attempt
             </button>
-            <button className="secondary-button danger-button" onClick={cancelAttempt}>
-              <Trash2 size={16} /> Cancel
-            </button>
             <button className="secondary-button" onClick={() => void exitFocusMode()} title={fullscreenSupported ? "Exit browser fullscreen or CSS focus mode" : "Exit CSS focus mode"}>
-              <X size={16} /> Exit focus
+              <Minimize2 size={16} /> Exit focus
             </button>
           </header>
         ) : appMode === "catalogue" || appMode === "empty" || appMode === "submitted" || appMode === "marking" || appMode === "review" ? null : (

@@ -7,6 +7,21 @@ export type VersionHistoryEntry = {
 
 export const versionHistory: VersionHistoryEntry[] = [
   {
+    version: "v1.4.2",
+    title: "Focus UI and notation rendering",
+    date: "2026-05-27",
+    changes: [
+      "Redesigned focus mode topbar with exam indicator chip and improved timer display.",
+      "Enhanced question card layout with cleaner header and better visual hierarchy.",
+      "Improved progress dots with hover states and larger click targets.",
+      "Polished answer workspace styling for clearer visual separation.",
+      "Updated sticky button footer with rounded, more accessible buttons.",
+      "Added math and chemical notation rendering for question prompts and choice options.",
+      "Simplified unsupported question panel with shorter reason display.",
+      "Restructured credits modal into People, Built with, AI, and Meta sections.",
+    ],
+  },
+  {
     version: "v1.4.1",
     title: "Rollback and targeted parser fixes",
     date: "2026-05-17",
