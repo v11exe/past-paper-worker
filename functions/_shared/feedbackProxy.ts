@@ -55,7 +55,7 @@ const requestSchema = z.object({
     .optional(),
 });
 
-type FeedbackEnv = {
+export type FeedbackEnv = {
   RESEND_API_KEY?: string;
   FEEDBACK_TO_EMAIL?: string;
   FEEDBACK_FROM_EMAIL?: string;

@@ -1,5 +1,5 @@
 import type { FeedbackEnv } from "../../_shared/feedbackProxy";
-import { RESEND_ENDPOINT, DEFAULT_FEEDBACK_TO } from "../../_shared/feedbackProxy";
+import { RESEND_ENDPOINT } from "../../_shared/feedbackProxy";
 
 type AdminEnv = {
   ADMIN_CODE?: string;
