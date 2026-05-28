@@ -1,3 +1,5 @@
+.graphify/
+graph.html
 node_modules/
 dist/
 test-results/
