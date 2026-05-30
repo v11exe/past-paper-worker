@@ -84,7 +84,7 @@ describe("handleAiProxyRequest", () => {
       {},
     );
     expect(response.status).toBe(200);
-    const json = await response.json();
+    const json = (await response.json()) as { ok: boolean; text: string };
     expect(json.ok).toBe(true);
     expect(json.text).toContain("[REDACTED");
     expect(hasUnredactedGoogleApiKey(json.text)).toBe(false);

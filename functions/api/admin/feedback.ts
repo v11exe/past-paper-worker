@@ -1,5 +1,4 @@
 import { z } from "zod";
-import type { FeedbackEnv } from "../../_shared/feedbackProxy";
 import { RESEND_ENDPOINT } from "../../_shared/feedbackProxy";
 
 type AdminEnv = {

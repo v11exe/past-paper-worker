@@ -19,6 +19,17 @@
   --radius-lg: 18px;
   --radius-md: 12px;
   --radius-sm: 8px;
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-in-out-smooth: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-quick: cubic-bezier(0.23, 1, 0.32, 1);
+  --duration-micro: 140ms;
+  --duration-standard: 240ms;
+  --duration-panel: 640ms;
+  --duration-page: 420ms;
+  --scroll-y: 0;
+  --scroll-progress: 0;
 }
 
 .app-shell--accent-elliots {
@@ -95,12 +106,33 @@ body,
   margin: 0;
 }
 
+html,
+body {
+  overflow-x: hidden;
+  scroll-behavior: smooth;
+}
+
 body {
   font-family: "Manrope", system-ui, sans-serif;
   background:
     linear-gradient(135deg, rgba(255, 255, 255, 0.035) 0 1px, transparent 1px 18px),
     linear-gradient(180deg, #070809 0%, #030405 100%);
   color: var(--text);
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: -20%;
+  z-index: -2;
+  pointer-events: none;
+  background:
+    conic-gradient(from calc(var(--scroll-y) * 0.02deg) at 18% 18%, rgba(0, 56, 192, 0.18), transparent 23%, rgba(128, 246, 180, 0.08), transparent 55%, rgba(120, 0, 208, 0.18), transparent 78%),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.04), transparent 42%);
+  filter: blur(48px) saturate(120%);
+  opacity: 0.68;
+  transform: translate3d(0, calc(var(--scroll-progress) * -42px), 0);
+  animation: ambientMesh 8s var(--ease-in-out-smooth) infinite alternate;
 }
 
 button,
@@ -118,6 +150,116 @@ a {
 button:disabled {
   cursor: not-allowed;
   opacity: 0.48;
+}
+
+::view-transition-old(root) {
+  animation: pageExit 240ms var(--ease-in-out-smooth) both;
+}
+
+::view-transition-new(root) {
+  animation: pageEnter var(--duration-page) var(--ease-drawer) both;
+}
+
+.landing-nav,
+.subject-sidebar,
+.focus-topbar {
+  view-transition-name: nav;
+}
+
+.scroll-progress {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 120;
+  width: 100%;
+  height: 2px;
+  transform-origin: left;
+  background: linear-gradient(90deg, var(--accent), var(--success), var(--accent-2));
+  box-shadow: 0 0 18px color-mix(in srgb, var(--accent), transparent 38%);
+  pointer-events: none;
+}
+
+.ambient-field {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.ambient-field::before,
+.ambient-field::after {
+  content: "";
+  position: absolute;
+  width: min(34vw, 420px);
+  height: min(18vw, 240px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 18px;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.015));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  opacity: 0.28;
+  transform: rotate(-8deg) translate3d(0, calc(var(--scroll-progress) * -70px), 0);
+  animation: glassDrift 7.5s var(--ease-in-out-smooth) infinite alternate;
+}
+
+.ambient-field::before {
+  top: 12%;
+  right: -8%;
+}
+
+.ambient-field::after {
+  left: -10%;
+  bottom: 8%;
+  animation-delay: -2.4s;
+  transform: rotate(9deg) translate3d(0, calc(var(--scroll-progress) * 58px), 0);
+}
+
+.cursor-trailer {
+  position: fixed;
+  top: -13px;
+  left: -13px;
+  z-index: 115;
+  width: 26px;
+  height: 26px;
+  border: 1px solid color-mix(in srgb, var(--accent), transparent 28%);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent), transparent 90%);
+  box-shadow: 0 0 24px color-mix(in srgb, var(--accent), transparent 70%);
+  pointer-events: none;
+  mix-blend-mode: screen;
+}
+
+.route-transition {
+  min-height: 100vh;
+}
+
+.motion-reveal {
+  opacity: 0;
+  transform: translate3d(0, 22px, 0);
+  filter: blur(8px);
+  transition:
+    opacity 620ms var(--ease-drawer),
+    transform 620ms var(--ease-drawer),
+    filter 620ms var(--ease-drawer);
+  transition-delay: calc(min(var(--reveal-index, 0), 8) * 45ms);
+}
+
+.motion-reveal.is-visible {
+  opacity: 1;
+  transform: translate3d(0, 0, 0);
+  filter: blur(0);
+}
+
+@supports (animation-timeline: view()) {
+  .landing-section__header,
+  .subject-dashboard__header,
+  .section-frame__header {
+    animation-name: headingViewRise;
+    animation-fill-mode: both;
+    animation-timing-function: var(--ease-drawer);
+    animation-timeline: view();
+    animation-range: entry 0% cover 28%;
+  }
 }
 
 input,
@@ -171,6 +313,52 @@ select option:disabled {
   color: rgba(245, 247, 250, 0.38);
 }
 
+button,
+a,
+.paper-card,
+.paper-window-card,
+.feature-card,
+.workflow-card,
+.stat-card,
+.question-card,
+.paper-review-card,
+.section-frame,
+.choice-row,
+.attempt-row,
+.subject-nav-item,
+.subject-picker-chip,
+.static-chip,
+.status-chip {
+  transition:
+    transform var(--duration-standard) var(--ease-quick),
+    border-color var(--duration-standard) var(--ease-quick),
+    background var(--duration-standard) var(--ease-quick),
+    box-shadow var(--duration-standard) var(--ease-quick),
+    opacity var(--duration-micro) var(--ease-quick),
+    color var(--duration-micro) var(--ease-quick);
+}
+
+button:not(:disabled):active,
+a:active,
+.paper-card:active,
+.paper-window-card:active,
+.choice-row:active,
+.attempt-row:active {
+  transform: translateY(1px) scale(0.99);
+}
+
+button:not(:disabled):hover,
+a:hover {
+  filter: saturate(1.08);
+}
+
+input:hover,
+textarea:hover,
+select:hover {
+  border-color: color-mix(in srgb, var(--accent), transparent 54%);
+  background: color-mix(in srgb, var(--field), white 2%);
+}
+
 h1,
 h2,
 p {
@@ -180,8 +368,12 @@ p {
 h1,
 h2,
 .stat-card strong,
-.paper-mark-box strong {
+.paper-mark-box strong,
+.paper-summary-tile strong,
+.review-summary-card strong,
+.exam-progress__count {
   font-family: "Space Grotesk", "Manrope", sans-serif;
+  font-variant-numeric: tabular-nums;
 }
 
 h1 {
@@ -205,6 +397,21 @@ p {
   grid-template-columns: 280px minmax(0, 1fr) 300px;
   gap: 16px;
   padding: 16px;
+  isolation: isolate;
+}
+
+.app-shell::before,
+.product-root::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    linear-gradient(120deg, transparent 0 38%, rgba(128, 246, 180, 0.04) 45%, transparent 54%),
+    linear-gradient(240deg, transparent 0 42%, rgba(120, 0, 208, 0.05) 50%, transparent 58%);
+  background-size: 220% 220%, 180% 180%;
+  animation: quietSweep 7.2s var(--ease-in-out-smooth) infinite alternate;
 }
 
 .glass-chrome,
@@ -227,6 +434,19 @@ p {
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.022));
   box-shadow: var(--shadow);
   backdrop-filter: blur(22px) saturate(130%);
+}
+
+.glass-chrome:hover,
+.section-frame:hover,
+.paper-card:hover,
+.paper-window-card:hover,
+.question-card:hover,
+.paper-review-card:hover,
+.feature-card:hover,
+.workflow-card:hover,
+.stat-card:hover {
+  border-color: color-mix(in srgb, var(--accent), transparent 58%);
+  box-shadow: 0 26px 90px rgba(0, 0, 0, 0.5), 0 0 0 1px color-mix(in srgb, var(--accent), transparent 84%);
 }
 
 .shell-sidebar,
@@ -396,7 +616,12 @@ p {
   gap: 8px;
   min-height: 38px;
   text-decoration: none;
-  transition: background 180ms ease, border-color 180ms ease, transform 180ms ease;
+  transition:
+    background var(--duration-standard) var(--ease-quick),
+    border-color var(--duration-standard) var(--ease-quick),
+    box-shadow var(--duration-standard) var(--ease-quick),
+    transform var(--duration-standard) var(--ease-spring);
+  will-change: transform;
 }
 
 .primary-button {
@@ -419,8 +644,13 @@ p {
 .secondary-button:hover,
 .icon-button:hover,
 .chip-button:hover {
+  transform: translateY(-1px);
   border-color: rgba(0, 56, 192, 0.38);
   background-color: rgba(0, 56, 192, 0.08);
+}
+
+.primary-button:hover {
+  box-shadow: 0 16px 38px rgba(0, 56, 192, 0.32);
 }
 
 .primary-button--wide {
@@ -933,6 +1163,22 @@ p {
   min-height: 126px;
 }
 
+.paper-processing-panel::after,
+.loading-step::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(100deg, transparent 22%, rgba(255, 255, 255, 0.08) 50%, transparent 78%);
+  transform: translateX(-120%);
+  animation: shimmerSweep 1.7s var(--ease-in-out-smooth) infinite;
+  pointer-events: none;
+}
+
+.loading-step {
+  position: relative;
+  overflow: hidden;
+}
+
 .paper-processing-panel__body {
   display: grid;
   gap: 12px;
@@ -950,6 +1196,7 @@ p {
   display: block;
   height: 100%;
   background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  transition: width 450ms var(--ease-out-expo);
 }
 
 .processing-live-status {
@@ -1942,6 +2189,13 @@ p {
   box-shadow: var(--shadow);
   backdrop-filter: blur(18px) saturate(130%);
   pointer-events: auto;
+  touch-action: pan-y;
+  will-change: transform, opacity;
+}
+
+.feedback-fab,
+.toast-stack {
+  padding-bottom: env(safe-area-inset-bottom, 0);
 }
 
 .toast-notice--success {
@@ -1998,6 +2252,11 @@ p {
   animation: toastDrain var(--toast-duration) linear forwards;
 }
 
+.toast-notice:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--toast-tone), transparent 42%);
+}
+
 .sr-only {
   position: absolute;
   width: 1px;
@@ -2046,6 +2305,20 @@ p {
   border-radius: 14px;
   background: rgba(2, 6, 23, 0.72);
   backdrop-filter: blur(18px);
+  transition:
+    padding var(--duration-standard) var(--ease-quick),
+    background var(--duration-standard) var(--ease-quick),
+    border-color var(--duration-standard) var(--ease-quick),
+    box-shadow var(--duration-standard) var(--ease-quick),
+    transform var(--duration-standard) var(--ease-quick);
+}
+
+.app-has-scrolled .landing-nav,
+.app-has-scrolled .workspace-header,
+.app-has-scrolled .focus-topbar {
+  border-color: rgba(255, 255, 255, 0.18);
+  background: color-mix(in srgb, rgba(2, 6, 23, 0.88), var(--accent) 5%);
+  box-shadow: 0 18px 64px rgba(0, 0, 0, 0.34);
 }
 
 .landing-hero {
@@ -2060,6 +2333,7 @@ p {
 .landing-hero__copy {
   display: grid;
   gap: 20px;
+  transform: translate3d(0, calc(var(--scroll-y) * -0.018px), 0);
 }
 
 .landing-hero h1 {
@@ -2107,6 +2381,113 @@ p {
   }
 }
 
+@keyframes ambientMesh {
+  from {
+    transform: translate3d(-1.2%, 0, 0) scale(1);
+  }
+
+  to {
+    transform: translate3d(1.2%, -1%, 0) scale(1.035);
+  }
+}
+
+@keyframes glassDrift {
+  from {
+    opacity: 0.18;
+  }
+
+  to {
+    opacity: 0.34;
+  }
+}
+
+@keyframes quietSweep {
+  from {
+    background-position: 0% 0%, 100% 50%;
+  }
+
+  to {
+    background-position: 100% 100%, 0% 50%;
+  }
+}
+
+@keyframes panelFloat {
+  from {
+    translate: 0 0;
+  }
+
+  to {
+    translate: 0 -8px;
+  }
+}
+
+@keyframes pageEnter {
+  from {
+    opacity: 0;
+    transform: translateY(24px) scale(0.985);
+    filter: blur(10px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: blur(0);
+  }
+}
+
+@keyframes pageExit {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  to {
+    opacity: 0;
+    transform: translateY(-18px);
+  }
+}
+
+@keyframes headingViewRise {
+  from {
+    opacity: 0.65;
+    transform: translateY(16px);
+    filter: blur(7px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+
+@keyframes shimmerSweep {
+  from {
+    transform: translateX(-120%);
+  }
+
+  to {
+    transform: translateX(120%);
+  }
+}
+
+@keyframes emptyBounceIn {
+  0% {
+    opacity: 0;
+    transform: translateY(18px) scale(0.98);
+  }
+
+  70% {
+    opacity: 1;
+    transform: translateY(-3px) scale(1.01);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
 .os-window {
   overflow: hidden;
   border: 1px solid var(--border);
@@ -2136,6 +2517,7 @@ p {
 
 .landing-preview {
   transform: rotate(1deg);
+  animation: panelFloat 5.8s var(--ease-in-out-smooth) infinite alternate;
 }
 
 .landing-preview__body {
@@ -2430,7 +2812,7 @@ p {
   border-right: 1px solid var(--border);
   background: rgba(2, 6, 23, 0.88);
   backdrop-filter: blur(18px);
-  transition: width 220ms ease;
+  transition: width var(--duration-page) var(--ease-drawer), background var(--duration-standard) var(--ease-quick);
   overflow-x: hidden;
 }
 
@@ -2496,6 +2878,7 @@ p {
 
 .subject-nav-item {
   --subject-accent: var(--accent);
+  position: relative;
   width: 100%;
   min-height: 46px;
   border: 1px solid rgba(255, 255, 255, 0.04);
@@ -2509,7 +2892,19 @@ p {
   background: rgba(255, 255, 255, 0.018);
   text-align: left;
   overflow: hidden;
-  transition: transform 180ms ease, background 180ms ease, border-color 180ms ease, color 180ms ease, box-shadow 180ms ease;
+  transition: transform var(--duration-standard) var(--ease-quick), background var(--duration-standard) var(--ease-quick), border-color var(--duration-standard) var(--ease-quick), color var(--duration-standard) var(--ease-quick), box-shadow var(--duration-standard) var(--ease-quick);
+}
+
+.subject-nav-item::before {
+  content: "";
+  position: absolute;
+  inset: 9px auto 9px 6px;
+  width: 3px;
+  border-radius: 999px;
+  background: var(--subject-accent);
+  opacity: 0;
+  transform: scaleY(0.4);
+  transition: opacity var(--duration-standard) var(--ease-quick), transform var(--duration-standard) var(--ease-spring);
 }
 
 .subject-nav-item span {
@@ -2532,6 +2927,11 @@ p {
   border-color: color-mix(in srgb, var(--subject-accent), transparent 42%);
   background: linear-gradient(135deg, color-mix(in srgb, var(--subject-accent), transparent 89%), rgba(255, 255, 255, 0.03));
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--subject-accent), transparent 82%), 0 10px 28px rgba(0, 0, 0, 0.18);
+}
+
+.subject-nav-item--active::before {
+  opacity: 1;
+  transform: scaleY(1);
 }
 
 .subject-nav-item--utility {
@@ -3139,14 +3539,30 @@ p {
   *::after {
     animation: none !important;
     transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .cursor-trailer,
+  .ambient-field {
+    display: none;
   }
 }
 
 .app-shell--reduce-motion *,
 .app-shell--reduce-motion *::before,
-.app-shell--reduce-motion *::after {
+.app-shell--reduce-motion *::after,
+.app-reduce-motion *,
+.app-reduce-motion *::before,
+.app-reduce-motion *::after {
   animation: none !important;
   transition-duration: 0.01ms !important;
+}
+
+.app-shell--reduce-motion .cursor-trailer,
+.app-reduce-motion .cursor-trailer,
+.app-shell--reduce-motion .ambient-field,
+.app-reduce-motion .ambient-field {
+  display: none;
 }
 
 @media (max-width: 1220px) {
@@ -3254,6 +3670,7 @@ p {
 .empty-state {
   justify-items: start;
   max-width: 720px;
+  animation: emptyBounceIn 560ms var(--ease-spring) both;
 }
 
 .empty-state h2 {
@@ -3906,6 +4323,10 @@ p {
 }
 
 @media (max-width: 760px) {
+  .cursor-trailer {
+    display: none;
+  }
+
   .landing-page {
     width: min(100% - 20px, 1180px);
   }

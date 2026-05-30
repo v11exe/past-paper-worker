@@ -141,7 +141,7 @@ describe("handleAiProxyRequest", () => {
     );
 
     expect(response.status).toBe(401);
-    const json = await response.json();
+    const json = (await response.json()) as { ok: boolean; text: string };
     expect(json).toMatchObject({
       ok: false,
       provider: "anthropic",
@@ -188,7 +188,7 @@ describe("handleAiProxyRequest", () => {
     );
 
     expect(response.status).toBe(200);
-    const json = await response.json();
+    const json = (await response.json()) as { ok: boolean; text: string };
     expect(json.ok).toBe(true);
     expect(json.text).toContain("[REDACTED");
     expect(hasUnredactedSecret(json.text)).toBe(false);

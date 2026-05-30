@@ -15,7 +15,7 @@ describe("worker routing", () => {
       hasAnthropicKey: true,
       hasGeminiKey: true,
     });
-    const json = await clone.json();
+    const json = (await clone.json()) as { keys: string[] };
     expect(json.keys).toContain("ANTHROPIC_API_KEY");
     expect(json.keys).toContain("GEMINI_API_KEY");
     expect(JSON.stringify(json)).not.toContain("configured");

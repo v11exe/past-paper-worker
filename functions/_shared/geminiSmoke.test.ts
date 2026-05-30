@@ -114,7 +114,7 @@ describe("Gemini smoke suite", () => {
     await expect(text.json()).resolves.toMatchObject({ ok: true });
     await expect(extraction.json()).resolves.toMatchObject({ ok: true });
     await expect(marking.json()).resolves.toMatchObject({ ok: true });
-    const diagnosticsJson = await diagnostics.json();
+    const diagnosticsJson = (await diagnostics.json()) as { ok: boolean; text: string };
     expect(diagnosticsJson.ok).toBe(true);
     expect(diagnosticsJson.text).toContain("[REDACTED");
   });

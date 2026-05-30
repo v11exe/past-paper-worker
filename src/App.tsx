@@ -1,4 +1,4 @@
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, motion, useScroll, useSpring } from "framer-motion";
 import {
   AlertCircle,
   BarChart3,
@@ -33,7 +33,6 @@ import {
   Save,
   ScanLine,
   Send,
-  Terminal,
   Settings2,
   ShieldCheck,
   SkipForward,
@@ -45,6 +44,7 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import katex from "katex";
 import { DEFAULT_AI_MODEL, FALLBACK_AI_MODELS, AI_MODEL_CHOICES, ensureAIReadyForUserAction, aiChat, modelLabelForModel, resolveAIModelConfig, runAISmokeTest } from "./ai/provider";
 import { appMeta } from "./appMeta";
@@ -173,11 +173,180 @@ type ToastItem = {
   durationMs: number;
 };
 
+const MOTION_EASE = {
+  outExpo: [0.16, 1, 0.3, 1],
+  drawer: [0.32, 0.72, 0, 1],
+  spring: [0.34, 1.56, 0.64, 1],
+  inOutSmooth: [0.77, 0, 0.175, 1],
+  quick: [0.23, 1, 0.32, 1],
+} as const;
+
+const PAGE_TRANSITION = {
+  initial: { opacity: 0, y: 24, scale: 0.985, filter: "blur(10px)" },
+  animate: { opacity: 1, y: 0, scale: 1, filter: "blur(0px)" },
+  exit: { opacity: 0, y: -18, scale: 0.995, filter: "blur(8px)" },
+  transition: { duration: 0.42, ease: MOTION_EASE.drawer },
+};
+
+const STAGGER_CONTAINER = {
+  hidden: {},
+  show: {
+    transition: {
+      staggerChildren: 0.055,
+      delayChildren: 0.06,
+    },
+  },
+};
+
+const STAGGER_ITEM = {
+  hidden: { opacity: 0, y: 18, filter: "blur(8px)" },
+  show: { opacity: 1, y: 0, filter: "blur(0px)", transition: { duration: 0.48, ease: MOTION_EASE.drawer } },
+};
+
 type RuntimeEnvStatus = {
   hasAnthropicKey: boolean;
   hasGeminiKey: boolean;
   keys: string[];
 };
+
+type ViewTransitionDocument = Document & {
+  startViewTransition?: (callback: () => void) => { finished: Promise<void> };
+};
+
+function runViewTransition(update: () => void, reduceMotion: boolean) {
+  const transitionDocument = document as ViewTransitionDocument;
+  if (reduceMotion || typeof transitionDocument.startViewTransition !== "function") {
+    update();
+    return;
+  }
+  transitionDocument.startViewTransition(() => {
+    flushSync(update);
+  });
+}
+
+function ScrollProgressBar({ reduceMotion }: { reduceMotion: boolean }) {
+  const { scrollYProgress } = useScroll();
+  const scaleX = useSpring(scrollYProgress, { stiffness: 120, damping: 28, restDelta: 0.001 });
+  return <motion.div className="scroll-progress" style={{ scaleX: reduceMotion ? 0 : scaleX }} aria-hidden="true" />;
+}
+
+function CursorTrailer({ reduceMotion }: { reduceMotion: boolean }) {
+  const ref = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const element = ref.current;
+    if (!element || reduceMotion || typeof window.matchMedia !== "function" || !window.matchMedia("(pointer: fine)").matches) return;
+    let frame = 0;
+    let targetX = window.innerWidth / 2;
+    let targetY = window.innerHeight / 2;
+    let x = targetX;
+    let y = targetY;
+
+    const render = () => {
+      x += (targetX - x) * 0.18;
+      y += (targetY - y) * 0.18;
+      element.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+      frame = window.requestAnimationFrame(render);
+    };
+    const onPointerMove = (event: PointerEvent) => {
+      targetX = event.clientX;
+      targetY = event.clientY;
+    };
+    window.addEventListener("pointermove", onPointerMove, { passive: true });
+    frame = window.requestAnimationFrame(render);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("pointermove", onPointerMove);
+    };
+  }, [reduceMotion]);
+
+  return <div ref={ref} className="cursor-trailer" aria-hidden="true" />;
+}
+
+function ProductAtmosphere({ reduceMotion }: { reduceMotion: boolean }) {
+  return (
+    <>
+      <ScrollProgressBar reduceMotion={reduceMotion} />
+      <div className="ambient-field" aria-hidden="true" />
+      <CursorTrailer reduceMotion={reduceMotion} />
+    </>
+  );
+}
+
+function RouteTransition({ routeKey, reduceMotion, children }: { routeKey: string; reduceMotion: boolean; children: React.ReactNode }) {
+  if (reduceMotion) return <>{children}</>;
+  return (
+    <AnimatePresence mode="wait" initial={false}>
+      <motion.div key={routeKey} className="route-transition" {...PAGE_TRANSITION}>
+        {children}
+      </motion.div>
+    </AnimatePresence>
+  );
+}
+
+function useScrollAtmosphere(reduceMotion: boolean) {
+  useEffect(() => {
+    const root = document.documentElement;
+    const update = () => {
+      const max = Math.max(1, root.scrollHeight - window.innerHeight);
+      const scrollY = window.scrollY;
+      root.style.setProperty("--scroll-y", `${scrollY}`);
+      root.style.setProperty("--scroll-progress", `${Math.min(1, Math.max(0, scrollY / max))}`);
+      root.classList.toggle("app-has-scrolled", scrollY > 20);
+    };
+    update();
+    window.addEventListener("scroll", update, { passive: true });
+    window.addEventListener("resize", update);
+    return () => {
+      window.removeEventListener("scroll", update);
+      window.removeEventListener("resize", update);
+      root.classList.remove("app-has-scrolled");
+    };
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle("app-reduce-motion", reduceMotion);
+    return () => document.documentElement.classList.remove("app-reduce-motion");
+  }, [reduceMotion]);
+}
+
+function useScrollRevealEffects(reduceMotion: boolean, watchKey: string) {
+  useEffect(() => {
+    if (reduceMotion) return;
+    const selectors = [
+      ".landing-section__header",
+      ".workflow-card",
+      ".feature-card",
+      ".subject-preview-chip",
+      ".subject-dashboard__header",
+      ".paper-window-card",
+      ".paper-card",
+      ".paper-summary-tile",
+      ".question-card",
+      ".review-summary-card",
+      ".attempt-row",
+      ".polished-empty-card",
+      ".mode-panel",
+    ].join(",");
+    const elements = Array.from(document.querySelectorAll<HTMLElement>(selectors));
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (!entry.isIntersecting) return;
+          entry.target.classList.add("is-visible");
+          observer.unobserve(entry.target);
+        });
+      },
+      { threshold: 0.15, rootMargin: "0px 0px -8% 0px" },
+    );
+    elements.forEach((element, index) => {
+      element.classList.add("motion-reveal");
+      element.style.setProperty("--reveal-index", String(index % 8));
+      observer.observe(element);
+    });
+    return () => observer.disconnect();
+  }, [reduceMotion, watchKey]);
+}
 
 type AppView = "landing" | "onboarding" | "app";
 
@@ -1396,7 +1565,14 @@ function TypewriterText({ phrases, reduceMotion }: { phrases: readonly string[];
 }
 
 function LandingPage({ reduceMotion, onEnter, onUpload, onFeedback }: { reduceMotion: boolean; onEnter: () => void; onUpload: () => void; onFeedback: () => void }) {
-  const reveal = reduceMotion ? {} : { initial: { opacity: 0, y: 18 }, whileInView: { opacity: 1, y: 0 }, viewport: { once: true, margin: "-80px" }, transition: { duration: 0.42 } };
+  const reveal = reduceMotion
+    ? {}
+    : {
+        initial: { opacity: 0, y: 22, filter: "blur(8px)" },
+        whileInView: { opacity: 1, y: 0, filter: "blur(0px)" },
+        viewport: { once: true, margin: "-80px", amount: 0.15 },
+        transition: { duration: 0.58, ease: MOTION_EASE.drawer },
+      };
 
   function scrollToWorkflow() {
     document.getElementById("workflow")?.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
@@ -1404,7 +1580,13 @@ function LandingPage({ reduceMotion, onEnter, onUpload, onFeedback }: { reduceMo
 
   return (
     <main className="landing-page">
-      <nav className="landing-nav" aria-label="Landing navigation">
+      <motion.nav
+        className="landing-nav"
+        aria-label="Landing navigation"
+        initial={reduceMotion ? false : { opacity: 0, y: -22 }}
+        animate={reduceMotion ? undefined : { opacity: 1, y: 0 }}
+        transition={{ duration: 0.54, ease: MOTION_EASE.drawer }}
+      >
         <AppLogo size={32} />
         <div className="button-row">
           <button className="secondary-button" onClick={onEnter}>Enter app</button>
@@ -1415,18 +1597,23 @@ function LandingPage({ reduceMotion, onEnter, onUpload, onFeedback }: { reduceMo
             <MessageSquare size={16} /> Feedback
           </button>
         </div>
-      </nav>
+      </motion.nav>
 
       <section className="landing-hero">
-        <motion.div className="landing-hero__copy" {...reveal}>
-          <span className="pixel-label">Developed by Rayaan Omair</span>
-          <h1>Past papers, marked in minutes.</h1>
-          <p className="landing-hero__typewriter">
+        <motion.div
+          className="landing-hero__copy"
+          variants={reduceMotion ? undefined : STAGGER_CONTAINER}
+          initial={reduceMotion ? undefined : "hidden"}
+          animate={reduceMotion ? undefined : "show"}
+        >
+          <motion.span className="pixel-label" variants={STAGGER_ITEM}>Developed by Rayaan Omair</motion.span>
+          <motion.h1 variants={STAGGER_ITEM}>Past papers, marked in minutes.</motion.h1>
+          <motion.p className="landing-hero__typewriter" variants={STAGGER_ITEM}>
             <TypewriterText phrases={LANDING_PHRASES} reduceMotion={reduceMotion} />
             <span className="sr-only">{LANDING_PHRASES.join(" ")}</span>
-          </p>
-          <p>Upload a question paper and mark scheme. Answer questions online, then get examiner-style feedback against the source.</p>
-          <div className="button-row">
+          </motion.p>
+          <motion.p variants={STAGGER_ITEM}>Upload a question paper and mark scheme. Answer questions online, then get examiner-style feedback against the source.</motion.p>
+          <motion.div className="button-row" variants={STAGGER_ITEM}>
             <button className="primary-button" onClick={onEnter}>
               <Play size={16} /> Start practising
             </button>
@@ -1434,7 +1621,7 @@ function LandingPage({ reduceMotion, onEnter, onUpload, onFeedback }: { reduceMo
               <UploadCloud size={16} /> Upload a paper
             </button>
             <button className="secondary-button" onClick={scrollToWorkflow}>See how it works</button>
-          </div>
+          </motion.div>
         </motion.div>
 
         <motion.div className="landing-preview os-window" {...reveal}>
@@ -1672,7 +1859,16 @@ function PaperWindowCard({
   const lastScore = lastMarked ? formatPercent(displayAttemptScores(paper, lastMarked).actualScore, preferredAttemptTotal(paper, lastMarked)) : "No marked attempt";
   const metadataReady = paperHasResolvedMetadata(paper);
   return (
-    <article className="paper-window-card os-window">
+    <motion.article
+      layout
+      className="paper-window-card os-window"
+      initial={{ opacity: 0, y: 18, scale: 0.985 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0, y: -12, scale: 0.985 }}
+      whileHover={{ y: -3, scale: 1.006 }}
+      whileTap={{ scale: 0.992 }}
+      transition={{ duration: 0.3, ease: MOTION_EASE.quick, layout: { duration: 0.38, ease: MOTION_EASE.drawer } }}
+    >
       <div className="os-window__bar"><span /><span /><span /></div>
       <button className="paper-window-card__main" onClick={onOpen}>
         <div className="paper-card__chips">
@@ -1717,7 +1913,7 @@ function PaperWindowCard({
           <Trash2 size={16} />
         </button>
       </div>
-    </article>
+    </motion.article>
   );
 }
 
@@ -1789,22 +1985,24 @@ function SubjectDashboard({
           </div>
         </div>
         {papers.length ? (
-          <div className="paper-window-grid">
-            {papers.map((paper) => {
-              const paperAttempts = attempts.filter((attempt) => attempt.paperId === paper.id);
-              return (
-                <PaperWindowCard
-                  key={paper.id}
-                  paper={paper}
-                  attempts={paperAttempts}
-                  onOpen={() => onOpenPaper(paper)}
-                  onStart={() => onStartPaper(paper)}
-                  onProcess={() => onProcessPaper(paper)}
-                  onDelete={() => onDeletePaper(paper)}
-                />
-              );
-            })}
-          </div>
+          <motion.div className="paper-window-grid" layout>
+            <AnimatePresence initial={false}>
+              {papers.map((paper) => {
+                const paperAttempts = attempts.filter((attempt) => attempt.paperId === paper.id);
+                return (
+                  <PaperWindowCard
+                    key={paper.id}
+                    paper={paper}
+                    attempts={paperAttempts}
+                    onOpen={() => onOpenPaper(paper)}
+                    onStart={() => onStartPaper(paper)}
+                    onProcess={() => onProcessPaper(paper)}
+                    onDelete={() => onDeletePaper(paper)}
+                  />
+                );
+              })}
+            </AnimatePresence>
+          </motion.div>
         ) : null}
       </section>
     </div>
@@ -2445,7 +2643,15 @@ function ToastNotice({ toast, onDismiss }: { toast: ToastItem; onDismiss: (id: s
       className={`toast-notice toast-notice--${toast.kind}${paused ? " toast-notice--paused" : ""}`}
       initial={{ opacity: 0, y: -14, scale: 0.98 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
-      exit={{ opacity: 0, y: -12, scale: 0.98 }}
+      exit={{ opacity: 0, y: -12, scale: 0.98, filter: "blur(6px)" }}
+      transition={{ duration: 0.26, ease: MOTION_EASE.drawer, layout: { duration: 0.24, ease: MOTION_EASE.quick } }}
+      layout
+      drag="x"
+      dragConstraints={{ left: 0, right: 0 }}
+      dragElastic={0.16}
+      onDragEnd={(_, info) => {
+        if (Math.abs(info.offset.x) > 80 || Math.abs(info.velocity.x) > 700) onDismiss(toast.id);
+      }}
       onMouseEnter={() => setPaused(true)}
       onMouseLeave={() => setPaused(false)}
       onFocus={() => setPaused(true)}
@@ -3528,7 +3734,7 @@ function renderChemicalNotation(text: string): string {
   const elementSymbols = ["H", "He", "Li", "Be", "B", "C", "N", "O", "F", "Ne", "Na", "Mg", "Al", "Si", "P", "S", "Cl", "Ar", "K", "Ca", "Sc", "Ti", "V", "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn", "Ga", "Ge", "As", "Se", "Br", "Kr", "Rb", "Sr", "Y", "Zr", "Nb", "Mo", "Tc", "Ru", "Rh", "Pd", "Ag", "Cd", "In", "Sn", "Sb", "Te", "I", "Xe", "Cs", "Ba", "La", "Ce", "Pr", "Nd", "Pm", "Sm", "Eu", "Gd", "Tb", "Dy", "Ho", "Er", "Tm", "Yb", "Lu", "Hf", "Ta", "W", "Re", "Os", "Ir", "Pt", "Au", "Hg", "Tl", "Pb", "Bi", "Po", "At", "Rn", "Fr", "Ra", "Ac", "Th", "Pa", "U", "Np", "Pu", "Am", "Cm", "Bk", "Cf", "Es", "Fm", "Md", "No", "Lr", "Rf", "Db", "Sg", "Bh", "Hs", "Mt", "Ds", "Rg", "Cn", "Nh", "Fl", "Mc", "Lv", "Ts", "Og"];
   const elementPattern = elementSymbols.map(s => s.replace(/([A-Z])/g, "\\$1")).join("|");
   const chemicalPattern = new RegExp(`\\b(${elementPattern})([2-9]|1\\d?)((?:[A-Z][a-z]?)?(?:[2-9]|1\\d?)?)((?![a-z\\d])|$)(?=[^a-z])`, "g");
-  return text.replace(chemicalPattern, (match, el1, num1, secondPart, lookahead) => {
+  return text.replace(chemicalPattern, (match, el1, num1, secondPart) => {
     let result = `${el1}<sub>${num1}</sub>`;
     if (secondPart) {
       const match2 = secondPart.match(/^([A-Z][a-z]?)([2-9]|1\\d?)$/);
@@ -3573,10 +3779,6 @@ function cleanVisiblePrompt(promptText: string) {
   const cleaned = basicCleanPrompt(promptText);
   const extracted = extractInlineOptions(cleaned);
   return extracted.options.length ? extracted.promptText : cleaned;
-}
-
-function cleanVisiblePromptHTML(promptText: string) {
-  return renderMathAndChemical(cleanVisiblePrompt(promptText));
 }
 
 function displayPlanForQuestion(question: PastPaperQuestion) {
@@ -3832,7 +4034,6 @@ export function App() {
   const [feedbackTouched, setFeedbackTouched] = useState<Partial<Record<keyof FeedbackDraft, boolean>>>({});
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
   const [feedbackError, setFeedbackError] = useState<string | null>(null);
-  const [feedbackConfirmation, setFeedbackConfirmation] = useState<string | null>(null);
   const [systemInfoOpen, setSystemInfoOpen] = useState(false);
   const [adminPanelOpen, setAdminPanelOpen] = useState(false);
   const secretSequence = useRef<string[]>([]);
@@ -3858,6 +4059,10 @@ export function App() {
   );
   const [postOnboardingAction, setPostOnboardingAction] = useState<"upload" | null>(null);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const reduceMotion = preferences.reduceMotion === "reduce";
+
+  useScrollAtmosphere(reduceMotion);
+  useScrollRevealEffects(reduceMotion, `${currentView}:${activeSubject ?? "none"}:${selectedPaperId ?? "none"}:${data.papers.length}:${data.attempts.length}`);
 
   useEffect(() => saveData(data), [data]);
   useEffect(() => savePreferences(preferences), [preferences]);
@@ -3930,6 +4135,8 @@ export function App() {
     setToasts((current) => current.filter((toast) => toast.id !== id));
   }, []);
 
+  const transitionUpdate = useCallback((update: () => void) => runViewTransition(update, reduceMotion), [reduceMotion]);
+
   function patchPreferences(patch: Partial<AppPreferences>) {
     setPreferences((current) => ({ ...current, ...patch }));
   }
@@ -3942,46 +4149,56 @@ export function App() {
   function enterApp(nextAction: "upload" | null = null) {
     const supportedSelections = normalizeSelectedSubjects(selectedSubjects).filter(isSupportedSubject);
     if (!selectedSubjects.length) {
-      setPostOnboardingAction(nextAction);
-      setCurrentView("onboarding");
+      transitionUpdate(() => {
+        setPostOnboardingAction(nextAction);
+        setCurrentView("onboarding");
+      });
       return;
     }
-    setCurrentView("app");
-    if (nextAction === "upload" && supportedSelections.length) {
-      setActiveSubject((current) => (current && isSupportedSubject(current) ? current : supportedSelections[0] ?? null));
-      setUploadOpen(true);
-    } else if (nextAction === "upload") {
-      setStatus("Upload support is only available for AQA Biology, Chemistry, Physics, and OCR Computer Science.");
-    }
+    transitionUpdate(() => {
+      setCurrentView("app");
+      if (nextAction === "upload" && supportedSelections.length) {
+        setActiveSubject((current) => (current && isSupportedSubject(current) ? current : supportedSelections[0] ?? null));
+        setUploadOpen(true);
+      } else if (nextAction === "upload") {
+        setStatus("Upload support is only available for AQA Biology, Chemistry, Physics, and OCR Computer Science.");
+      }
+    });
   }
 
   function saveOnboardingSubjects(subjects: SelectableSubject[]) {
     const uniqueSubjects = normalizeSelectedSubjects(subjects);
     const firstSupported = uniqueSubjects.find(isSupportedSubject) ?? null;
-    setSelectedSubjects(uniqueSubjects);
-    setOnboardingComplete(true);
-    setActiveSubject(firstSupported ?? uniqueSubjects[0] ?? null);
-    setStatus("Subjects saved.");
-    setCurrentView("app");
-    if (postOnboardingAction === "upload") {
-      if (firstSupported) {
-        setUploadOpen(true);
-      } else {
-        setStatus("Upload support is only available for AQA Biology, Chemistry, Physics, and OCR Computer Science.");
+    transitionUpdate(() => {
+      setSelectedSubjects(uniqueSubjects);
+      setOnboardingComplete(true);
+      setActiveSubject(firstSupported ?? uniqueSubjects[0] ?? null);
+      setStatus("Subjects saved.");
+      setCurrentView("app");
+      if (postOnboardingAction === "upload") {
+        if (firstSupported) {
+          setUploadOpen(true);
+        } else {
+          setStatus("Upload support is only available for AQA Biology, Chemistry, Physics, and OCR Computer Science.");
+        }
+        setPostOnboardingAction(null);
       }
-      setPostOnboardingAction(null);
-    }
+    });
   }
 
   function openSubjectOnboarding() {
-    setSettingsOpen(false);
-    setCurrentView("onboarding");
+    transitionUpdate(() => {
+      setSettingsOpen(false);
+      setCurrentView("onboarding");
+    });
   }
 
   function openSubjectUpload(subject: SupportedSubject) {
-    setCurrentView("app");
-    setActiveSubject(subject);
-    setUploadOpen(true);
+    transitionUpdate(() => {
+      setCurrentView("app");
+      setActiveSubject(subject);
+      setUploadOpen(true);
+    });
   }
 
   useEffect(() => {
@@ -4154,7 +4371,6 @@ export function App() {
       setFeedbackDraft(emptyFeedbackDraft());
       setFeedbackAttachments([]);
       setFeedbackTouched({});
-      setFeedbackConfirmation(feedbackDraft.email);
       setFeedbackOpen(false);
       setStatus("Feedback sent. Thank you.");
       setError(null);
@@ -4349,10 +4565,12 @@ export function App() {
       const uploadedSubject = paper.subject as SupportedSubject;
       setSelectedSubjects((current) => (current.includes(uploadedSubject) ? current : [...current, uploadedSubject]));
       setOnboardingComplete(true);
-      setActiveSubject(uploadedSubject);
-      setCurrentView("app");
-      setSelectedPaperId(paper.id);
-      setUploadOpen(false);
+      transitionUpdate(() => {
+        setActiveSubject(uploadedSubject);
+        setCurrentView("app");
+        setSelectedPaperId(paper.id);
+        setUploadOpen(false);
+      });
       setStatus(processNow ? "Paper saved and queued for processing." : "Paper saved.");
       if (processNow) void runProcessing(paper);
     } catch (reason) {
@@ -4395,15 +4613,6 @@ export function App() {
     setStatus("Attempt deleted.");
   }
 
-  function cancelAttempt() {
-    if (!selectedAttempt || selectedAttempt.status !== "in_progress") return;
-    deleteAttempt(selectedAttempt.id);
-    setActiveQuestionIndex(0);
-    setReviewIndex(0);
-    void exitFocusMode();
-    setStatus("Attempt cancelled.");
-  }
-
   function startAttemptLabel(paper: PastPaper) {
     const hasAttempts = data.attempts.some((attempt) => attempt.paperId === paper.id);
     if (!hasAttempts) return "Start paper";
@@ -4420,23 +4629,23 @@ export function App() {
     }
   }
 
-  function findNextNavigableQuestion(fromIndex: number): number {
+  const findNextNavigableQuestion = useCallback((fromIndex: number): number => {
     if (!selectedPaper) return -1;
     for (let i = fromIndex + 1; i < selectedPaper.questions.length; i++) {
       if (!questionSupportIssue(selectedPaper.questions[i])) return i;
     }
     return -1;
-  }
+  }, [selectedPaper]);
 
-  function findPrevNavigableQuestion(fromIndex: number): number {
+  const findPrevNavigableQuestion = useCallback((fromIndex: number): number => {
     if (!selectedPaper) return -1;
     for (let i = fromIndex - 1; i >= 0; i--) {
       if (!questionSupportIssue(selectedPaper.questions[i])) return i;
     }
     return -1;
-  }
+  }, [selectedPaper]);
 
-  async function exitFocusMode() {
+  const exitFocusMode = useCallback(async () => {
     setIsFocusMode(false);
     if (document.fullscreenElement) {
       try {
@@ -4445,7 +4654,7 @@ export function App() {
         // CSS focus mode has already been cleared.
       }
     }
-  }
+  }, []);
 
   function beginAttempt(paper: PastPaper) {
     if (!isSupportedSubject(paper.subject)) {
@@ -4458,14 +4667,36 @@ export function App() {
     }
     const attempt = startAttempt(paper);
     setData((current) => ({ ...current, attempts: [attempt, ...current.attempts] }));
-    setSelectedPaperId(paper.id);
-    setSelectedAttemptId(attempt.id);
-    setActiveQuestionIndex(0);
-    setReviewIndex(0);
+    transitionUpdate(() => {
+      setSelectedPaperId(paper.id);
+      setSelectedAttemptId(attempt.id);
+      setActiveQuestionIndex(0);
+      setReviewIndex(0);
+    });
     setStatus("Attempt started.");
     setError(null);
     if (preferences.focusModeDefault) void enterFocusMode();
   }
+
+  const submitAttempt = useCallback(() => {
+    if (!selectedAttempt || !selectedPaper) return;
+    const elapsed = Math.max(0, Math.floor((Date.now() - new Date(selectedAttempt.startedAt).getTime()) / 1000));
+    const limit = (selectedPaper.durationMinutes ?? 0) * 60;
+    patchAttempt(selectedAttempt.id, (attempt) =>
+      computeAttemptScores(
+        {
+          ...attempt,
+          status: "submitted",
+          submittedAt: nowIso(),
+          durationSeconds: elapsed,
+          overtimeSeconds: limit ? Math.max(0, elapsed - limit) : 0,
+        },
+        selectedPaper,
+      ),
+    );
+    setStatus("Attempt submitted.");
+    void exitFocusMode();
+  }, [exitFocusMode, selectedAttempt, selectedPaper]);
 
   const updateAnswer = useCallback((questionId: string, patch: Partial<PastPaperAnswer>) => {
     if (!selectedAttempt) return;
@@ -4486,7 +4717,7 @@ export function App() {
     } else {
       setActiveQuestionIndex(nextIndex);
     }
-  }, [activeAnswer, activeQuestion, activeQuestionIndex, updateAnswer]);
+  }, [activeAnswer, activeQuestion, activeQuestionIndex, findNextNavigableQuestion, submitAttempt, updateAnswer]);
 
   useEffect(() => {
     if (!selectedAttempt || selectedAttempt.status !== "in_progress") return;
@@ -4513,7 +4744,7 @@ export function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [activeQuestionIndex, isFocusMode, selectedAttempt, submitCurrentAnswer]);
+  }, [activeQuestionIndex, exitFocusMode, findNextNavigableQuestion, findPrevNavigableQuestion, isFocusMode, selectedAttempt, submitCurrentAnswer]);
 
   function skipQuestion(withConfidence: boolean, predictedOverride?: number) {
     if (!activeQuestion || !activeAnswer) return;
@@ -4582,26 +4813,6 @@ export function App() {
       updatedAt: nowIso(),
     }));
     pushToast("success", "Question report sent for review.");
-  }
-
-  function submitAttempt() {
-    if (!selectedAttempt || !selectedPaper) return;
-    const elapsed = Math.max(0, Math.floor((Date.now() - new Date(selectedAttempt.startedAt).getTime()) / 1000));
-    const limit = (selectedPaper.durationMinutes ?? 0) * 60;
-    patchAttempt(selectedAttempt.id, (attempt) =>
-      computeAttemptScores(
-        {
-          ...attempt,
-          status: "submitted",
-          submittedAt: nowIso(),
-          durationSeconds: elapsed,
-          overtimeSeconds: limit ? Math.max(0, elapsed - limit) : 0,
-        },
-        selectedPaper,
-      ),
-    );
-    setStatus("Attempt submitted.");
-    void exitFocusMode();
   }
 
   function mergeAttemptMarkingState(
@@ -4978,6 +5189,34 @@ export function App() {
   const activeSubjectPapers = activeSubject ? data.papers.filter((paper) => paper.subject === activeSubject) : [];
   const showLegacyDashboard = false;
 
+  function openHomeView() {
+    transitionUpdate(() => setCurrentView("landing"));
+  }
+
+  function selectSubjectView(subject: SelectableSubject, addUnsupported = false) {
+    transitionUpdate(() => {
+      setCurrentView("app");
+      if (addUnsupported) setSelectedSubjects((current) => (current.includes(subject) ? current : [...current, subject]));
+      setActiveSubject(subject);
+      setSelectedPaperId(null);
+      setSelectedAttemptId(null);
+    });
+  }
+
+  function openPaperView(paper: PastPaper) {
+    transitionUpdate(() => {
+      setSelectedPaperId(paper.id);
+      setSelectedAttemptId(null);
+    });
+  }
+
+  function closePaperView() {
+    transitionUpdate(() => {
+      setSelectedPaperId(null);
+      setSelectedAttemptId(null);
+    });
+  }
+
   function feedbackContextPath() {
     const page = window.location.pathname || "/";
     if (selectedPaper && selectedAttempt?.status === "submitted") return `${page}#submitted/${selectedPaper.id}`;
@@ -5076,13 +5315,15 @@ export function App() {
     clearData();
     setData({ papers: [], attempts: [] });
     setSelectedSubjects([]);
-    setActiveSubject(null);
-    setOnboardingComplete(false);
-    setSelectedPaperId(null);
-    setSelectedAttemptId(null);
-    setSystemInfoOpen(false);
-    setSettingsOpen(false);
-    setCurrentView("landing");
+    transitionUpdate(() => {
+      setActiveSubject(null);
+      setOnboardingComplete(false);
+      setSelectedPaperId(null);
+      setSelectedAttemptId(null);
+      setSystemInfoOpen(false);
+      setSettingsOpen(false);
+      setCurrentView("landing");
+    });
     setStatus("Local data cleared.");
   }
 
@@ -5154,7 +5395,10 @@ export function App() {
   if (showLanding) {
     return (
       <div className={`product-root app-shell--theme-${preferences.themeMode} app-shell--accent-${preferences.accentColour}${preferences.reduceMotion === "reduce" ? " app-shell--reduce-motion" : ""}`} style={rootStyle}>
-        <LandingPage reduceMotion={preferences.reduceMotion === "reduce"} onEnter={() => enterApp()} onUpload={() => enterApp("upload")} onFeedback={() => openFeedback()} />
+        <ProductAtmosphere reduceMotion={reduceMotion} />
+        <RouteTransition routeKey="landing" reduceMotion={reduceMotion}>
+          <LandingPage reduceMotion={reduceMotion} onEnter={() => enterApp()} onUpload={() => enterApp("upload")} onFeedback={() => openFeedback()} />
+        </RouteTransition>
         <FeedbackModal
           open={feedbackOpen}
           draft={feedbackDraft}
@@ -5178,7 +5422,10 @@ export function App() {
   if (needsOnboarding) {
     return (
       <div className={`product-root app-shell--theme-${preferences.themeMode} app-shell--accent-${preferences.accentColour}${preferences.reduceMotion === "reduce" ? " app-shell--reduce-motion" : ""}`} style={rootStyle}>
-        <SubjectOnboardingV131 selectedSubjects={selectedSubjects} onSave={saveOnboardingSubjects} />
+        <ProductAtmosphere reduceMotion={reduceMotion} />
+        <RouteTransition routeKey="onboarding" reduceMotion={reduceMotion}>
+          <SubjectOnboardingV131 selectedSubjects={selectedSubjects} onSave={saveOnboardingSubjects} />
+        </RouteTransition>
         <FeedbackModal
           open={feedbackOpen}
           draft={feedbackDraft}
@@ -5201,26 +5448,16 @@ export function App() {
 
   return (
     <div className={rootClassName} style={rootStyle}>
+      <ProductAtmosphere reduceMotion={reduceMotion} />
       {canShowProductShell ? (
         <SubjectSidebarV131
           collapsed={sidebarCollapsed}
           selectedSubjects={selectedSubjects}
           activeSubject={activeSubject}
           onToggleCollapsed={() => setSidebarCollapsed((value) => !value)}
-          onSelectSubject={(subject) => {
-            setCurrentView("app");
-            setActiveSubject(subject);
-            setSelectedPaperId(null);
-            setSelectedAttemptId(null);
-          }}
-          onToggleUnsupportedSubject={(subject) => {
-            setCurrentView("app");
-            setSelectedSubjects((current) => (current.includes(subject) ? current : [...current, subject]));
-            setActiveSubject(subject);
-            setSelectedPaperId(null);
-            setSelectedAttemptId(null);
-          }}
-          onHome={() => setCurrentView("landing")}
+          onSelectSubject={(subject) => selectSubjectView(subject)}
+          onToggleUnsupportedSubject={(subject) => selectSubjectView(subject, true)}
+          onHome={openHomeView}
           onAddSubject={openSubjectOnboarding}
           onUpload={() => {
             if (!supportedActiveSubject) {
@@ -5235,7 +5472,14 @@ export function App() {
         />
       ) : null}
 
-      <main className="shell-workspace">
+      <motion.main
+        key={`${currentView}:${appMode}:${activeSubject ?? "none"}:${selectedPaperId ?? "none"}`}
+        className="shell-workspace"
+        initial={reduceMotion ? false : PAGE_TRANSITION.initial}
+        animate={reduceMotion ? undefined : PAGE_TRANSITION.animate}
+        transition={PAGE_TRANSITION.transition}
+        layout={!reduceMotion}
+      >
         {appMode === "taking" && selectedPaper && activeQuestion ? (
           <header className="focus-topbar">
             <div className="focus-topbar__brand">
@@ -5295,10 +5539,7 @@ export function App() {
                   papers={activeSubjectPapers}
                   attempts={data.attempts}
                   onUpload={() => openSubjectUpload(supportedActiveSubject)}
-                  onOpenPaper={(paper) => {
-                    setSelectedPaperId(paper.id);
-                    setSelectedAttemptId(null);
-                  }}
+                  onOpenPaper={openPaperView}
                   onStartPaper={beginAttempt}
                   onProcessPaper={(paper) => void runProcessing(paper)}
                   onDeletePaper={(paper) => deletePaper(paper.id)}
@@ -5440,10 +5681,7 @@ export function App() {
               <article key={paper.id} className={paper.id === selectedPaperId ? "paper-card paper-card--active" : "paper-card"}>
                 <button
                   className="paper-card__main"
-                  onClick={() => {
-                    setSelectedPaperId(paper.id);
-                    setSelectedAttemptId(null);
-                  }}
+                  onClick={() => openPaperView(paper)}
                 >
                   <div className="paper-card__chips">
                     <span className="static-chip">{paper.subject}</span>
@@ -5478,10 +5716,7 @@ export function App() {
                   <button
                     className="icon-button"
                     aria-label="Open paper"
-                    onClick={() => {
-                      setSelectedPaperId(paper.id);
-                      setSelectedAttemptId(null);
-                    }}
+                    onClick={() => openPaperView(paper)}
                   >
                     <Eye size={16} />
                   </button>
@@ -5506,10 +5741,7 @@ export function App() {
             <div className="button-row mode-panel__actions">
               <button
                 className="secondary-button"
-                onClick={() => {
-                  setSelectedPaperId(null);
-                  setSelectedAttemptId(null);
-                }}
+                onClick={closePaperView}
               >
                 <ChevronLeft size={16} /> Dashboard
               </button>
@@ -5567,10 +5799,7 @@ export function App() {
                 <>
                   <button
                     className="secondary-button"
-                    onClick={() => {
-                      setSelectedPaperId(null);
-                      setSelectedAttemptId(null);
-                    }}
+                    onClick={closePaperView}
                   >
                     <ChevronLeft size={16} /> Dashboard
                   </button>
@@ -6061,7 +6290,7 @@ export function App() {
             ) : null}
           </div>
         ) : null}
-      </main>
+      </motion.main>
 
       {preferences.devModeEnabled && !settingsOpen && (appMode === "catalogue" || appMode === "ready" || appMode === "empty") ? (
         <aside className="shell-inspector shell-inspector--dev">
