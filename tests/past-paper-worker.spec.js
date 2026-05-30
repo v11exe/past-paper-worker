@@ -1,10 +1,10 @@
-const { expect, test } = require("@playwright/test");
+import { expect, test } from "@playwright/test";
 
 const UI_KEYS = {
-  selectedSubjects: "past-paper-worker:selected-subjects:v1.3.4",
-  onboardingComplete: "past-paper-worker:onboarding-completed:v1.3.4",
-  activeSubject: "past-paper-worker:active-subject:v1.3.4",
-  sidebarCollapsed: "past-paper-worker:sidebar-collapsed:v1.3.4",
+  selectedSubjects: "past-paper-worker:selected-subjects:v1.3.5",
+  onboardingComplete: "past-paper-worker:onboarding-completed:v1.3.5",
+  activeSubject: "past-paper-worker:active-subject:v1.3.5",
+  sidebarCollapsed: "past-paper-worker:sidebar-collapsed:v1.3.5",
   preferences: "past-paper-worker:preferences:v1",
   data: "past-paper-worker:data:v1",
 };
@@ -104,7 +104,23 @@ function installAiMock(page) {
                 {
                   questionNumber: "1",
                   markSchemeRef: "1",
-                  markSchemeData: { points: ["Describes the visible table", "Uses the table label accurately"] },
+                  markSchemeData: {
+                    questionNumber: "1",
+                    matchedMarkSchemeQuestionNumber: "1",
+                    exactSectionText: "1 Award 1 mark for describing the visible table. Award 1 mark for using the table label accurately.",
+                    rows: [
+                      {
+                        marks: 1,
+                        markPoint: "Describe the visible table.",
+                        guidance: "Credit any clear description of what the table shows.",
+                      },
+                      {
+                        marks: 1,
+                        markPoint: "Use the table label accurately.",
+                        accept: ["References Table 1 accurately."],
+                      },
+                    ],
+                  },
                 },
               ],
             }),
@@ -263,7 +279,7 @@ test.beforeEach(async ({ page }) => {
   await installAiMock(page);
 });
 
-test("landing, onboarding, upload, process, take, and AI mark a paper", async ({ page }) => {
+test("landing, onboarding, upload, process, take, and surface marking review issues", async ({ page }) => {
   await page.goto("/");
 
   await expect(page.getByRole("heading", { name: /past papers, marked in minutes/i })).toBeVisible();
@@ -299,14 +315,14 @@ test("landing, onboarding, upload, process, take, and AI mark a paper", async ({
   await expect(page.getByRole("button", { name: "Exit focus" })).toBeVisible();
   await page.getByLabel("Written answer").fill("It shows a labelled table.");
   await page.screenshot({ path: "test-results/v1.3-taking-mode.png", fullPage: true });
-  await page.getByRole("button", { name: "Submit paper" }).click();
+  await page.getByRole("button", { name: "Save & Next" }).click();
 
   await expect(page.getByText("Submitted answers")).toBeVisible();
   await page.getByRole("button", { name: "Mark answered questions" }).click();
-  await expect(page.getByText("Attempt marked with Gemini AI.")).toBeVisible();
+  await expect(page.getByText("Attempt marked with issues. 1 question need review.")).toBeVisible();
   await expect(page.getByText("Marked review")).toBeVisible();
-  await expect(page.locator(".paper-mark-box strong", { hasText: "1/2" })).toBeVisible();
-  await expect(page.getByText("The answer identifies one valid marking point.")).toBeVisible();
+  await expect(page.locator(".paper-mark-box strong", { hasText: "Issue" })).toBeVisible();
+  await expect(page.getByText("Could not safely align this question with the mark scheme.")).toBeVisible();
   await page.screenshot({ path: "test-results/v1.3-marked-review.png", fullPage: true });
 });
 
@@ -325,7 +341,9 @@ test("renders AQA choices and unsupported questions as dedicated controls", asyn
 
   await page.getByRole("radio", { name: "A. nucleus" }).check();
   await page.getByRole("button", { name: "Save & Next" }).click();
-  await expect(page.getByText("Unsupported question type").first()).toBeVisible();
+  await expect(page.getByText("Submitted answers")).toBeVisible();
+  await expect(page.getByText("Unsupported questions are excluded from the supported total.")).toBeVisible();
+  await expect(page.getByText(/^1$/).first()).toBeVisible();
   await expect(page.getByRole("textbox", { name: "Written answer" })).toHaveCount(0);
   await page.screenshot({ path: "test-results/v1.3-unsupported-question-panel.png", fullPage: true });
 });

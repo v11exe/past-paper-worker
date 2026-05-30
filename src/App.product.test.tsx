@@ -1,10 +1,11 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./App";
 import { clearData, saveData } from "./lib/storage";
 import type { AppData, PastPaper, PastPaperAttempt, PastPaperQuestion } from "./types";
+import { currentVersionEntry } from "./versionHistory";
 
 function clearUiStorage() {
   [
@@ -137,13 +138,27 @@ describe("v1.3 product shell", () => {
     expect(await screen.findByRole("heading", { name: "Biology" })).toBeInTheDocument();
   });
 
-  it("shows the landing page again on reload even when subjects are already saved", async () => {
-    window.localStorage.setItem("past-paper-worker:selected-subjects:v1.3.4", JSON.stringify(["AQA GCSE Biology"]));
-    window.localStorage.setItem("past-paper-worker:onboarding-completed:v1.3.4", "true");
+  it("reuses v1.3.5 onboarding state after leaving the landing page", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem("past-paper-worker:selected-subjects:v1.3.5", JSON.stringify(["AQA GCSE Biology"]));
+    window.localStorage.setItem("past-paper-worker:onboarding-completed:v1.3.5", "true");
     render(<App />);
 
     expect(screen.getByRole("heading", { name: /past papers, marked in minutes/i })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Biology" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /start practising/i }));
+    expect(await screen.findByRole("heading", { name: "Biology" })).toBeInTheDocument();
+  });
+
+  it("ignores v1.3.4 onboarding state and asks the user to save subjects again", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem("past-paper-worker:selected-subjects:v1.3.4", JSON.stringify(["AQA GCSE Biology"]));
+    window.localStorage.setItem("past-paper-worker:onboarding-completed:v1.3.4", "true");
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: /start practising/i }));
+    expect(await screen.findByRole("heading", { name: /what subjects are you studying/i })).toBeInTheDocument();
   });
 
   it("collapses the sidebar, opens version history, and opens credits", async () => {
@@ -154,7 +169,7 @@ describe("v1.3 product shell", () => {
     await user.click(screen.getByRole("button", { name: /collapse sidebar/i }));
     expect(screen.queryByText("Chemistry")).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /v1.4.3 focus ui polish and unsupported question surfacing/i }));
+    await user.click(screen.getByRole("button", { name: new RegExp(`${currentVersionEntry.version} ${currentVersionEntry.title}`, "i") }));
     expect(await screen.findByRole("heading", { name: "Version history" })).toBeInTheDocument();
     expect(screen.getByText("Added unsupported question dots in focus mode with red styling.")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Close version history" }));
@@ -179,6 +194,33 @@ describe("v1.3 product shell", () => {
     await user.click(screen.getByRole("button", { name: /unsupported subjects/i }));
     expect(await screen.findByText("Maths")).toBeInTheDocument();
     expect(screen.getByText("added")).toBeInTheDocument();
+  });
+
+  it("uses the running app version in the unsupported-subject legacy papers message", async () => {
+    const user = userEvent.setup();
+    const mathsSubject = "Pearson Edexcel GCSE Mathematics";
+    seedData({
+      papers: [
+        {
+          ...buildPaper([question({ id: "legacy-maths-question", promptText: "State one thing." })]),
+          id: "legacy-maths-paper",
+          title: "Legacy Maths Paper",
+          subject: mathsSubject,
+        },
+      ],
+      attempts: [],
+    });
+    window.localStorage.setItem("past-paper-worker:selected-subjects:v1.4.0", JSON.stringify(["AQA GCSE Biology", mathsSubject]));
+    window.localStorage.setItem("past-paper-worker:onboarding-completed:v1.4.0", "true");
+    window.localStorage.setItem("past-paper-worker:active-subject:v1.4.0", mathsSubject);
+
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: /start practising/i }));
+    await user.click(screen.getByRole("button", { name: /unsupported subjects/i }));
+    await user.click((await screen.findAllByRole("button", { name: /maths/i }))[0]);
+
+    expect(await screen.findByRole("heading", { name: /upload support is not available for this subject yet\./i })).toBeInTheDocument();
+    expect(screen.queryByText(/v1\.4\.1 does not treat it as supported\./i)).not.toBeInTheDocument();
   });
 
   it("preselects the active subject in the upload modal", async () => {
@@ -298,6 +340,63 @@ describe("v1.3 product shell", () => {
     expect(await screen.findByText("Submitted answers")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /mark answered questions/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /settings/i })).toBeInTheDocument();
+  });
+
+  it("opens the admin inbox from settings and unlocks it with the entered code", async () => {
+    const user = userEvent.setup();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ ok: true, entries: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }) as never,
+    );
+
+    render(<App />);
+    await enterDashboard(user);
+
+    await user.click(screen.getByRole("button", { name: /settings/i }));
+    await user.click(screen.getByRole("button", { name: /open admin inbox/i }));
+
+    expect(await screen.findByRole("heading", { name: "Feedback inbox" })).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("Admin code"), "super-secret");
+    await user.click(screen.getByRole("button", { name: /^unlock$/i }));
+
+    await waitFor(() => {
+      expect(fetchSpy).toHaveBeenCalledWith(
+        "/api/admin/feedback",
+        expect.objectContaining({
+          headers: { "x-admin-code": "super-secret" },
+        }),
+      );
+    });
+    expect(await screen.findByText("No feedback submissions yet.")).toBeInTheDocument();
+  });
+
+  it("keeps the admin code entry open when the unlock code is rejected", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ ok: false, error: "Invalid admin code." }), {
+        status: 403,
+        headers: { "content-type": "application/json" },
+      }) as never,
+    );
+
+    render(<App />);
+    await enterDashboard(user);
+
+    await user.click(screen.getByRole("button", { name: /settings/i }));
+    await user.click(screen.getByRole("button", { name: /open admin inbox/i }));
+
+    expect(await screen.findByRole("heading", { name: "Feedback inbox" })).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("Admin code"), "wrong-code");
+    await user.click(screen.getByRole("button", { name: /^unlock$/i }));
+
+    expect(await screen.findByText("Invalid admin code.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Admin code")).toHaveValue("wrong-code");
+    expect(screen.getByRole("button", { name: /^unlock$/i })).toBeEnabled();
+    expect(screen.queryByText("No feedback submissions yet.")).not.toBeInTheDocument();
   });
 
   it("shows pending marking issues in the review shell instead of a zero mark", async () => {

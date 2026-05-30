@@ -7,6 +7,18 @@ export type VersionHistoryEntry = {
 
 export const versionHistory: VersionHistoryEntry[] = [
   {
+    version: "v1.4.4",
+    title: "Repo cleanup and admin inbox fixes",
+    date: "2026-05-31",
+    changes: [
+      "Centralised the current app version so the sidebar, landing footer, build metadata, exports, and feedback context stay in sync.",
+      "Restored a visible admin inbox entry in Settings and kept the code-entry step open until the unlock code is accepted.",
+      "Removed stale config and storage migration leftovers, including the dead Wrangler config and old v1.3.4 UI key fallbacks.",
+      "Fixed Playwright discovery and updated end-to-end coverage to match the current marking review flow.",
+      "Refreshed docs and runtime config notes for ADMIN_CODE, feedback storage, and changelog maintenance.",
+    ],
+  },
+  {
     version: "v1.4.3",
     title: "Focus UI polish and unsupported question surfacing",
     date: "2026-05-28",
@@ -143,3 +155,4 @@ export const versionHistory: VersionHistoryEntry[] = [
 ];
 
 export const currentVersionEntry = versionHistory[0];
+export const currentAppVersion = currentVersionEntry.version;

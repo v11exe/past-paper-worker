@@ -43,7 +43,7 @@ For AI features in local development, point the frontend at the secure AI proxy 
 VITE_AI_PROXY_URL=http://127.0.0.1:8788/api/ai
 ```
 
-Use `.env.local.example` as the template. `VITE_GEMINI_PROXY_URL` is still accepted as a backwards-compatible fallback.
+Use `.env.local.example` as the template. `VITE_GEMINI_PROXY_URL` is still accepted as a backwards-compatible fallback, but it is deprecated and `VITE_AI_PROXY_URL` is the preferred setting for new local setups.
 
 The feedback form does not need any frontend secret or extra Vite environment variable.
 
@@ -81,6 +81,7 @@ ANTHROPIC_API_KEY=PASTE_ROTATED_ANTHROPIC_KEY_HERE
 # Optional Gemini fallback:
 GEMINI_API_KEY=PASTE_ROTATED_GEMINI_KEY_HERE
 RESEND_API_KEY=PASTE_RESEND_API_KEY_HERE
+ADMIN_CODE=PASTE_ADMIN_CODE_HERE
 ```
 
 Use `.dev.vars.example` as the local template for worker secrets.
@@ -103,19 +104,23 @@ Set these Worker runtime secrets/settings in Cloudflare:
 
 - required: `ANTHROPIC_API_KEY`
 - required: `RESEND_API_KEY`
+- required for admin inbox access: `ADMIN_CODE`
 - optional: `GEMINI_API_KEY`
 - optional: `FEEDBACK_TO_EMAIL`
 - optional: `FEEDBACK_FROM_EMAIL`
+- required binding for stored feedback inbox/replies: `FEEDBACK_KV`
 
 Useful commands:
 
 ```bash
 wrangler secret put ANTHROPIC_API_KEY
 wrangler secret put GEMINI_API_KEY
+wrangler secret put ADMIN_CODE
 ```
 
 The frontend calls `/api/ai` by default in production, so the key stays server-side.
 The in-app feedback form posts to `/api/feedback`, and the Worker forwards it to Resend without exposing any mail secret to the browser.
+The admin inbox opens from Settings and only leaves the code-entry step after `/api/admin/feedback` accepts the current admin code.
 
 ## Notes
 

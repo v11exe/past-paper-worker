@@ -361,12 +361,6 @@ const LEGACY_UI_STORAGE_KEYS = {
   activeSubject: "past-paper-worker:active-subject:v1.3.5",
   sidebarCollapsed: "past-paper-worker:sidebar-collapsed:v1.3.5",
 } as const;
-const OLDER_LEGACY_UI_STORAGE_KEYS = {
-  selectedSubjects: "past-paper-worker:selected-subjects:v1.3.4",
-  onboardingComplete: "past-paper-worker:onboarding-completed:v1.3.4",
-  activeSubject: "past-paper-worker:active-subject:v1.3.4",
-  sidebarCollapsed: "past-paper-worker:sidebar-collapsed:v1.3.4",
-} as const;
 const LANDING_PHRASES = [
   "Upload a paper. Get marks back.",
   "Answer questions online.",
@@ -454,8 +448,7 @@ function loadSelectedSubjects(data?: AppData): SelectableSubject[] {
   try {
     const raw =
       window.localStorage.getItem(SELECTED_SUBJECTS_STORAGE_KEY) ??
-      window.localStorage.getItem(LEGACY_UI_STORAGE_KEYS.selectedSubjects) ??
-      window.localStorage.getItem(OLDER_LEGACY_UI_STORAGE_KEYS.selectedSubjects);
+      window.localStorage.getItem(LEGACY_UI_STORAGE_KEYS.selectedSubjects);
     if (raw) {
       const parsed = JSON.parse(raw) as unknown;
       if (Array.isArray(parsed)) {
@@ -485,8 +478,7 @@ function loadActiveSubject(subjects: SelectableSubject[]) {
   try {
     const raw =
       window.localStorage.getItem(ACTIVE_SUBJECT_STORAGE_KEY) ??
-      window.localStorage.getItem(LEGACY_UI_STORAGE_KEYS.activeSubject) ??
-      window.localStorage.getItem(OLDER_LEGACY_UI_STORAGE_KEYS.activeSubject);
+      window.localStorage.getItem(LEGACY_UI_STORAGE_KEYS.activeSubject);
     if (raw && subjects.includes(raw as SelectableSubject)) return raw as SelectableSubject;
   } catch {
     // Non-critical local preference.
@@ -1721,6 +1713,16 @@ function LandingPage({ reduceMotion, onEnter, onUpload, onFeedback }: { reduceMo
       </motion.section>
 
       <footer className="landing-footer">
+        <div className="release-bar release-bar--footer">
+          <div className="release-bar__header">
+            <span className="static-chip">{currentVersionEntry.version}</span>
+            <span className="eyebrow">Current build</span>
+          </div>
+          <div className="release-bar__body">
+            <strong>{currentVersionEntry.title}</strong>
+            <p>{currentVersionEntry.date}</p>
+          </div>
+        </div>
         <strong>Past Paper Worker</strong>
         <span>Developed by Rayaan Omair</span>
         <span>Logo credit: Elliot Neilsen</span>
@@ -2055,7 +2057,7 @@ function UnsupportedSubjectDashboard({
           </article>
           <article className="feature-card">
             <strong>Legacy papers</strong>
-            <p>{legacyPapers.length ? `${legacyPapers.length} existing paper${legacyPapers.length === 1 ? "" : "s"} are stored for this subject, but v1.4.1 does not treat it as supported.` : "No papers stored for this subject yet."}</p>
+            <p>{legacyPapers.length ? `${legacyPapers.length} existing paper${legacyPapers.length === 1 ? "" : "s"} are stored for this subject, but ${appMeta.version} does not treat it as supported.` : "No papers stored for this subject yet."}</p>
           </article>
         </div>
       </section>
@@ -2217,6 +2219,16 @@ function VersionHistoryModal({ open, onClose }: { open: boolean; onClose: () => 
                 <X size={16} />
               </button>
             </div>
+            <article className="release-bar">
+              <div className="release-bar__header">
+                <span className="static-chip">{currentVersionEntry.version}</span>
+                <span className="eyebrow">Latest release</span>
+              </div>
+              <div className="release-bar__body">
+                <strong>{currentVersionEntry.title}</strong>
+                <p>{currentVersionEntry.date}</p>
+              </div>
+            </article>
             <div className="version-timeline">
               {versionHistory.map((entry) => (
                 <article className="version-entry" key={entry.version}>
@@ -2253,35 +2265,77 @@ function AdminPanelModal({ open, onClose }: { open: boolean; onClose: () => void
   const [replyError, setReplyError] = useState<string | null>(null);
   const [unlockError, setUnlockError] = useState<string | null>(null);
 
-  const loadEntries = useCallback(async (code: string) => {
-    setLoading(true);
-    setError(null);
+  const requestEntries = useCallback(async (code: string) => {
     try {
       const response = await fetch("/api/admin/feedback", {
         headers: { "x-admin-code": code },
       });
       const data = (await response.json()) as { ok: boolean; entries?: Array<Record<string, unknown>>; error?: string };
       if (!data.ok) {
-        setError(data.error ?? "Failed to load feedback.");
-        return;
+        return { ok: false as const, error: data.error ?? "Failed to load feedback." };
       }
-      setEntries(data.entries ?? []);
+      return { ok: true as const, entries: data.entries ?? [] };
     } catch {
-      setError("Network error. Could not load feedback.");
-    } finally {
-      setLoading(false);
+      return { ok: false as const, error: "Network error. Could not load feedback." };
     }
   }, []);
 
-  const handleUnlock = useCallback(() => {
-    if (!adminCode.trim()) {
+  const loadEntries = useCallback(async (code: string) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await requestEntries(code);
+      if (!result.ok) {
+        setEntries([]);
+        setError(result.error);
+        return false;
+      }
+      setEntries(result.entries);
+      return true;
+    } finally {
+      setLoading(false);
+    }
+  }, [requestEntries]);
+
+  const handleUnlock = useCallback(async () => {
+    const code = adminCode.trim();
+    if (!code) {
       setUnlockError("Enter an admin code.");
       return;
     }
+    setLoading(true);
     setUnlockError(null);
-    setAuthenticated(true);
-    void loadEntries(adminCode.trim());
-  }, [adminCode, loadEntries]);
+    setError(null);
+    try {
+      const result = await requestEntries(code);
+      if (!result.ok) {
+        setAuthenticated(false);
+        setEntries([]);
+        setUnlockError(result.error);
+        return;
+      }
+      setAdminCode(code);
+      setEntries(result.entries);
+      setAuthenticated(true);
+    } finally {
+      setLoading(false);
+    }
+  }, [adminCode, requestEntries]);
+
+  useEffect(() => {
+    if (open) return;
+    setAdminCode("");
+    setAuthenticated(false);
+    setLoading(false);
+    setError(null);
+    setEntries([]);
+    setExpandedId(null);
+    setReplyDraft("");
+    setReplyingTo(null);
+    setReplySending(false);
+    setReplyError(null);
+    setUnlockError(null);
+  }, [open]);
 
   const handleReply = useCallback(async () => {
     if (!replyDraft.trim() || !replyingTo) return;
@@ -2357,17 +2411,21 @@ function AdminPanelModal({ open, onClose }: { open: boolean; onClose: () => void
                     type="password"
                     placeholder="Enter admin code"
                     value={adminCode}
+                    disabled={loading}
                     onChange={(e) => setAdminCode(e.target.value)}
                     onKeyDown={(e) => {
-                      if (e.key === "Enter") void handleUnlock();
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        void handleUnlock();
+                      }
                     }}
                     autoFocus
                   />
                   {unlockError ? <span className="form-error">{unlockError}</span> : null}
                 </div>
                 <div className="button-row">
-                  <button className="primary-button" onClick={() => void handleUnlock()}>
-                    <Unlock size={16} /> Unlock
+                  <button className="primary-button" onClick={() => void handleUnlock()} disabled={loading}>
+                    {loading ? <Loader2 size={16} className="spin" /> : <Unlock size={16} />} {loading ? "Unlocking..." : "Unlock"}
                   </button>
                 </div>
               </div>
@@ -3381,6 +3439,7 @@ function SettingsModal({
   onReset,
   onEditSubjects,
   onOpenFeedback,
+  onOpenAdminInbox,
   onOpenVersion,
   onOpenCredits,
   onRunSmokeTest,
@@ -3402,6 +3461,7 @@ function SettingsModal({
   onReset: () => void;
   onEditSubjects: () => void;
   onOpenFeedback: (type?: FeedbackDraft["type"]) => void;
+  onOpenAdminInbox: () => void;
   onOpenVersion: () => void;
   onOpenCredits: () => void;
   onRunSmokeTest: () => void;
@@ -3584,7 +3644,7 @@ function SettingsModal({
                 <div>
                   <span className="eyebrow">Feedback</span>
                   <h3>Report or suggest</h3>
-                  <p>Diagnostics unavailable.</p>
+                  <p>Diagnostics unavailable. Admin inbox access still requires the current admin code.</p>
                 </div>
                 <div className="button-row">
                   <button className="secondary-button" onClick={() => onOpenFeedback("bug_report")}>
@@ -3592,6 +3652,9 @@ function SettingsModal({
                   </button>
                   <button className="secondary-button" onClick={() => onOpenFeedback("feature_request")}>
                     <Sparkles size={16} /> Suggest a feature
+                  </button>
+                  <button className="secondary-button" onClick={onOpenAdminInbox}>
+                    <Inbox size={16} /> Open admin inbox
                   </button>
                 </div>
               </section>
@@ -4047,14 +4110,12 @@ export function App() {
   const [onboardingComplete, setOnboardingComplete] = useState(() =>
     readBooleanStorage(ONBOARDING_COMPLETE_STORAGE_KEY, data.papers.length > 0, [
       LEGACY_UI_STORAGE_KEYS.onboardingComplete,
-      OLDER_LEGACY_UI_STORAGE_KEYS.onboardingComplete,
     ]),
   );
   const [activeSubject, setActiveSubject] = useState<SelectableSubject | null>(() => loadActiveSubject(loadSelectedSubjects(data)));
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() =>
     readBooleanStorage(SIDEBAR_COLLAPSED_STORAGE_KEY, defaultPreferences.sidebarDefault === "collapsed", [
       LEGACY_UI_STORAGE_KEYS.sidebarCollapsed,
-      OLDER_LEGACY_UI_STORAGE_KEYS.sidebarCollapsed,
     ]),
   );
   const [postOnboardingAction, setPostOnboardingAction] = useState<"upload" | null>(null);
@@ -6342,6 +6403,10 @@ export function App() {
         onReset={resetPreferences}
         onEditSubjects={openSubjectOnboarding}
         onOpenFeedback={openFeedback}
+        onOpenAdminInbox={() => {
+          setSettingsOpen(false);
+          setAdminPanelOpen(true);
+        }}
         onOpenVersion={() => setVersionHistoryOpen(true)}
         onOpenCredits={() => setCreditsOpen(true)}
         onRunSmokeTest={() => void runSmokeTest()}

@@ -2674,6 +2674,44 @@ p {
   color: var(--muted);
 }
 
+.release-bar {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 14px 16px;
+  display: grid;
+  gap: 8px;
+  background:
+    radial-gradient(circle at top left, rgba(0, 56, 192, 0.14), transparent 42%),
+    rgba(255, 255, 255, 0.03);
+  box-shadow: var(--shadow);
+}
+
+.release-bar__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.release-bar__body {
+  display: grid;
+  gap: 2px;
+}
+
+.release-bar__body strong {
+  font-size: 1rem;
+}
+
+.release-bar__body p {
+  margin-bottom: 0;
+}
+
+.release-bar--footer {
+  margin-bottom: 6px;
+}
+
 .onboarding-page {
   min-height: 100vh;
   display: grid;

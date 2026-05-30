@@ -12,7 +12,6 @@
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "test": "vitest run",
     "smoke:ai": "vitest run functions/_shared/aiProxy.test.ts",
-    "smoke:gemini": "vitest run functions/_shared/aiProxy.test.ts",
     "e2e": "playwright test -c playwright.config.cjs",
     "deploy": "npm run build && wrangler deploy",
     "preview": "npm run build && wrangler dev"
@@ -31,7 +30,7 @@
   "devDependencies": {
     "@cloudflare/vite-plugin": "^1.35.0",
     "@cloudflare/workers-types": "^4.20260527.1",
-    "@playwright/test": "^1.55.1",
+    "@playwright/test": "^1.60.0",
     "@testing-library/jest-dom": "^6.8.0",
     "@testing-library/react": "^16.3.0",
     "@testing-library/user-event": "^14.6.1",

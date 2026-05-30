@@ -1,10 +1,10 @@
-const { expect, test } = require("@playwright/test");
+import { expect, test } from "@playwright/test";
 
 const UI_KEYS = {
-  selectedSubjects: "past-paper-worker:selected-subjects:v1.3.4",
-  onboardingComplete: "past-paper-worker:onboarding-completed:v1.3.4",
-  activeSubject: "past-paper-worker:active-subject:v1.3.4",
-  sidebarCollapsed: "past-paper-worker:sidebar-collapsed:v1.3.4",
+  selectedSubjects: "past-paper-worker:selected-subjects:v1.3.5",
+  onboardingComplete: "past-paper-worker:onboarding-completed:v1.3.5",
+  activeSubject: "past-paper-worker:active-subject:v1.3.5",
+  sidebarCollapsed: "past-paper-worker:sidebar-collapsed:v1.3.5",
   preferences: "past-paper-worker:preferences:v1",
   data: "past-paper-worker:data:v1",
 };
