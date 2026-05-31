@@ -49,6 +49,8 @@ import katex from "katex";
 import { DEFAULT_AI_MODEL, FALLBACK_AI_MODELS, AI_MODEL_CHOICES, ensureAIReadyForUserAction, aiChat, modelLabelForModel, resolveAIModelConfig, runAISmokeTest } from "./ai/provider";
 import { appMeta } from "./appMeta";
 import { AppLogo } from "./components/AppLogo";
+import { applyDashboardDensity, readDashboardDensity, type DashboardDensity } from "./lib/dashboardDensity";
+import { emptySubjectNicknames, sanitizeSubjectNicknames, type SubjectNicknames } from "./lib/subjectDisplay";
 import { cleanChoiceGlyphs, extractInlineOptions } from "./lib/choiceParsing";
 import { subjectMetaForLabel, subjectMetaList, unsupportedSubjects } from "./subjectMeta";
 import { selectableSubjects, supportedSubjects, type SelectableSubject, type SupportedSubject } from "./subjects";
@@ -128,7 +130,6 @@ const emptyDraft: PaperDraftInput = {
 
 type ThemeMode = "dark" | "system" | "dim" | "contrast";
 type AccentColour = "elliots" | "blue" | "purple" | "amber" | "rose" | "cyan" | "indigo" | "peach" | "graphite" | "custom";
-type DashboardDensity = "comfortable" | "compact";
 type NotificationDuration = "normal" | "longer" | "reduced";
 type MotionPreference = "system" | "reduce";
 type FigurePreference = "show" | "collapse";
@@ -162,6 +163,7 @@ type AppPreferences = {
   defaultLanding: LandingPreference;
   customAccent: string;
   customAccent2: string;
+  subjectNicknames: SubjectNicknames;
 };
 
 type ToastKind = "success" | "error" | "warning" | "info";
@@ -398,6 +400,7 @@ const defaultPreferences: AppPreferences = {
   defaultLanding: "overview",
   customAccent: "#0038c0",
   customAccent2: "#7800d0",
+  subjectNicknames: emptySubjectNicknames,
 };
 
 const accentOptions: Array<{ value: AccentColour; label: string }> = [
@@ -513,7 +516,7 @@ function loadPreferences(): AppPreferences {
       ...parsed,
       themeMode: ["dark", "system", "dim", "contrast"].includes(String(parsed.themeMode)) ? (parsed.themeMode as ThemeMode) : defaultPreferences.themeMode,
       accentColour: accentOptions.some((option) => option.value === parsed.accentColour) ? (parsed.accentColour as AccentColour) : defaultPreferences.accentColour,
-      dashboardDensity: parsed.dashboardDensity === "compact" ? "compact" : "comfortable",
+      dashboardDensity: readDashboardDensity(parsed.dashboardDensity),
       showTechnicalModel: typeof parsed.showTechnicalModel === "boolean" ? parsed.showTechnicalModel : defaultPreferences.showTechnicalModel,
       showAnalyticsPanel: typeof parsed.showAnalyticsPanel === "boolean" ? parsed.showAnalyticsPanel : defaultPreferences.showAnalyticsPanel,
       showHeaderSystemInfo: typeof parsed.showHeaderSystemInfo === "boolean" ? parsed.showHeaderSystemInfo : defaultPreferences.showHeaderSystemInfo,
@@ -536,6 +539,7 @@ function loadPreferences(): AppPreferences {
       defaultLanding: parsed.defaultLanding === "catalogue" || parsed.defaultLanding === "last_paper" ? parsed.defaultLanding : "overview",
       customAccent: validHexColour(parsed.customAccent, defaultPreferences.customAccent),
       customAccent2: validHexColour(parsed.customAccent2, defaultPreferences.customAccent2),
+      subjectNicknames: sanitizeSubjectNicknames(parsed.subjectNicknames),
     };
   } catch {
     return defaultPreferences;
@@ -4127,6 +4131,7 @@ export function App() {
 
   useEffect(() => saveData(data), [data]);
   useEffect(() => savePreferences(preferences), [preferences]);
+  useEffect(() => applyDashboardDensity(preferences.dashboardDensity), [preferences.dashboardDensity]);
   useEffect(() => saveSelectedSubjects(selectedSubjects), [selectedSubjects]);
   useEffect(() => writeBooleanStorage(ONBOARDING_COMPLETE_STORAGE_KEY, onboardingComplete), [onboardingComplete]);
   useEffect(() => writeBooleanStorage(SIDEBAR_COLLAPSED_STORAGE_KEY, sidebarCollapsed), [sidebarCollapsed]);
