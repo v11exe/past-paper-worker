@@ -35,3 +35,25 @@ export function buildReviewExplainerPrompt(input: {
     "Keep it under 120 words, encouraging, and avoid quoting the full mark scheme.",
   ].join("\n");
 }
+
+export function buildMarkSchemePointExplainerPrompt(input: {
+  stem: string;
+  answer: string;
+  pointLabel: string;
+  pointText: string;
+  rationale?: string | null;
+}) {
+  const trimmedStem = input.stem.replace(/\s+/g, " ").trim();
+  const trimmedAnswer = input.answer.replace(/\s+/g, " ").trim();
+  const trimmedPoint = input.pointText.replace(/\s+/g, " ").trim();
+  const trimmedRationale = input.rationale?.replace(/\s+/g, " ").trim() ?? "";
+  return [
+    "Explain one GCSE mark-scheme point in plain English for a student.",
+    `Question: ${trimmedStem.slice(0, 320)}`,
+    `Student answer: ${trimmedAnswer.slice(0, 220) || "No answer provided."}`,
+    `${input.pointLabel}: ${trimmedPoint.slice(0, 240) || "No point provided."}`,
+    trimmedRationale ? `Marker rationale: ${trimmedRationale.slice(0, 180)}` : null,
+    "Explain what this point means, why it mattered here, and one concrete improvement the student could make next time.",
+    "Keep it under 100 words, encouraging, and do not quote the full mark scheme.",
+  ].filter(Boolean).join("\n");
+}

@@ -9,6 +9,7 @@ import { currentVersionEntry } from "./versionHistory";
 
 function clearUiStorage() {
   [
+    `claude-feature-uses:${new Date().toISOString().slice(0, 10)}`,
     "past-paper-worker:feedback-draft:v1",
     "past-paper-worker:selected-subjects:v1.4.0",
     "past-paper-worker:onboarding-completed:v1.4.0",
@@ -60,7 +61,7 @@ function question(patch: Partial<PastPaperQuestion>): PastPaperQuestion {
     confidence: null,
     extractionWarnings: [],
     markSchemeRef: null,
-    markSchemeData: null,
+    markSchemeData: patch.markSchemeData ?? null,
     displayOrder: patch.displayOrder ?? 0,
   };
 }
@@ -224,9 +225,23 @@ describe("v1.3 product shell", () => {
     expect(screen.getByText(/custom nicknames \(optional\)/i)).toBeInTheDocument();
   });
 
-  it("shows the follow-up limit message when the daily pool is exhausted", async () => {
+  it("shows the review AI limit message when the daily pool is exhausted", async () => {
     const user = userEvent.setup();
-    const paper = buildPaper([question({})]);
+    const paper = buildPaper([
+      question({
+        markSchemeData: {
+          rows: [
+            {
+              markPoint: "State that the nucleus controls the cell.",
+              accept: ["control centre"],
+              doNotAccept: [],
+              ignore: [],
+              guidance: "Accept equivalent wording.",
+            },
+          ],
+        },
+      }),
+    ]);
     const answerId = "answer-1";
     seedData({
       papers: [paper],
@@ -278,7 +293,80 @@ describe("v1.3 product shell", () => {
     await user.click(screen.getByText("Question UI paper"));
     await user.click(screen.getAllByRole("button", { name: /marked/i })[1]);
 
-    expect(await screen.findByText(/follow-up limit reached for today \(3\/3\)/i)).toBeInTheDocument();
+    expect(await screen.findByText(/review ai limit reached for today \(3\/3\)/i)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /show mark scheme row/i }));
+    expect(screen.getByRole("button", { name: /explain mark point 1/i })).toBeDisabled();
+  });
+
+  it("shows per-point explainer controls inside the mark-scheme panel", async () => {
+    const user = userEvent.setup();
+    const answerId = "answer-1";
+    const paper = buildPaper([
+      question({
+        markSchemeData: {
+          rows: [
+            {
+              markPoint: "State that the nucleus controls the cell.",
+              accept: ["control centre"],
+              doNotAccept: ["cell wall"],
+              ignore: [],
+              guidance: "Accept equivalent wording.",
+            },
+          ],
+        },
+      }),
+    ]);
+    seedData({
+      papers: [paper],
+      attempts: [
+        buildAttempt(paper, {
+          status: "marked",
+          completedAt: "2026-05-15T12:11:00.000Z",
+          actualScore: 1,
+          confidenceAdjustedScore: 1,
+          answers: [
+            {
+              id: answerId,
+              attemptId: "attempt-1",
+              questionId: "question-1",
+              responseText: "The nucleus controls the cell.",
+              numericResponse: null,
+              selectedOptions: [],
+              skipped: false,
+              skippedWithConfidence: false,
+              confidencePredictedMarks: null,
+              createdAt: "2026-05-15T12:00:00.000Z",
+              updatedAt: "2026-05-15T12:00:00.000Z",
+            },
+          ],
+          marks: [
+            {
+              id: "mark-1",
+              answerId,
+              questionId: "question-1",
+              source: "ai",
+              reviewVersion: 1,
+              awardedMarks: 1,
+              maxMarks: 1,
+              rationale: "Correct.",
+              missingPoints: [],
+              markSchemeEvidence: "Award one mark for naming nucleus.",
+              markSchemeReference: {},
+              accepted: true,
+              createdAt: "2026-05-15T12:10:00.000Z",
+            },
+          ],
+        }),
+      ],
+    });
+
+    render(<App />);
+    await enterDashboard(user);
+    await user.click(screen.getByText("Question UI paper"));
+    await user.click(screen.getAllByRole("button", { name: /marked/i })[1]);
+    await user.click(screen.getByRole("button", { name: /show mark scheme row/i }));
+
+    expect(await screen.findByRole("button", { name: /explain mark point 1/i })).toBeInTheDocument();
   });
 
   it("shows a recommended next paper beneath the marked review summary", async () => {

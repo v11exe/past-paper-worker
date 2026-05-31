@@ -66,7 +66,7 @@ import { calculateGradeEstimate } from "./lib/gradeEstimate";
 import { clearGradeBoundaryOverride, loadGradeBoundaryOverrides, resolveGradeBoundary, saveGradeBoundaryOverride } from "./lib/gradeBoundaryOverrides";
 import { paperThumbnailSrc } from "./lib/paperThumbnails";
 import { formatComparablePaperLabel, formatRecommendedPaperLabel, pickRecommendedPaper } from "./lib/paperRecommendations";
-import { buildFollowUpPrompt, buildReviewExplainerPrompt } from "./lib/reviewPrompts";
+import { buildFollowUpPrompt, buildMarkSchemePointExplainerPrompt } from "./lib/reviewPrompts";
 import { buildAttemptSharePayload } from "./lib/sharePayload";
 import { displaySubjectName, emptySubjectNicknames, sanitizeSubjectNicknames, subjectDataValue, type SubjectNicknames } from "./lib/subjectDisplay";
 import { cleanChoiceGlyphs, extractInlineOptions } from "./lib/choiceParsing";
@@ -925,14 +925,46 @@ function markSchemeDataText(question: PastPaperQuestion | null, issue?: PastPape
   return [rowText, evidence ? `Evidence:\n${evidence}` : null, points && !rowText ? `Points:\n${points}` : null, warnings].filter(Boolean).join("\n\n") || JSON.stringify(data, null, 2);
 }
 
+function markSchemeExplainableText(input: {
+  markPoint: string;
+  accept: string[];
+  reject: string[];
+  ignore: string[];
+  guidance: string;
+}) {
+  return [
+    input.markPoint ? `Mark point: ${input.markPoint}` : null,
+    input.accept.length ? `Also accept: ${input.accept.join("; ")}` : null,
+    input.reject.length ? `Do not accept: ${input.reject.join("; ")}` : null,
+    input.ignore.length ? `Ignore: ${input.ignore.join("; ")}` : null,
+    input.guidance ? `Guidance: ${input.guidance}` : null,
+  ].filter(Boolean).join("\n");
+}
+
 function MarkSchemeDataPanel({
   question,
   issue,
   onCopy,
+  limited,
+  used,
+  busyAction,
+  explainerRowKey,
+  explainerText,
+  explainerError,
+  onExplainPoint,
+  onDismissExplainer,
 }: {
   question: PastPaperQuestion | null;
   issue?: PastPaperMarkingIssue | null;
   onCopy: () => void;
+  limited: boolean;
+  used: number;
+  busyAction: "follow_up" | "explainer" | null;
+  explainerRowKey: string | null;
+  explainerText: string | null;
+  explainerError: string | null;
+  onExplainPoint: (rowKey: string, pointLabel: string, pointText: string) => void;
+  onDismissExplainer: () => void;
 }) {
   const panel = markSchemePanelData(question, issue);
   if (!panel) {
@@ -954,6 +986,7 @@ function MarkSchemeDataPanel({
   const warnings = Array.isArray(data.alignmentWarnings)
     ? data.alignmentWarnings.filter((warning): warning is string => typeof warning === "string" && warning.trim().length > 0)
     : [];
+  const limitTitle = `Daily review AI limit reached (${used}/3). Resets after midnight.`;
   return (
     <div className="mark-scheme-row-panel mark-scheme-row-panel--structured">
       <div className="mark-scheme-row-panel__header">
@@ -974,9 +1007,26 @@ function MarkSchemeDataPanel({
             const ignore = Array.isArray(value.ignore) ? value.ignore.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
             const markPoint = typeof value.markPoint === "string" ? value.markPoint.trim() : "";
             const guidance = typeof value.guidance === "string" ? value.guidance.trim() : "";
+            const rowKey = `row-${index}`;
+            const pointLabel = `Mark point ${index + 1}`;
+            const pointText = markSchemeExplainableText({ markPoint, accept, reject, ignore, guidance });
+            const showingExplainer = explainerRowKey === rowKey;
+            const canExplain = Boolean(pointText.trim());
             return (
               <article className="mark-scheme-structured-row" key={`${index}-${markPoint.slice(0, 16)}`}>
-                <span className="eyebrow">Row {index + 1}</span>
+                <div className="mark-scheme-structured-row__top">
+                  <span className="eyebrow">Row {index + 1}</span>
+                  <button
+                    className="chip-button mark-scheme-explain-button"
+                    type="button"
+                    aria-label={`Explain mark point ${index + 1}`}
+                    title={limited ? limitTitle : "Explain this mark point in plain English"}
+                    disabled={limited || busyAction !== null || !canExplain}
+                    onClick={() => onExplainPoint(rowKey, pointLabel, pointText)}
+                  >
+                    ?
+                  </button>
+                </div>
                 {markPoint ? (
                   <section>
                     <strong>Mark point</strong>
@@ -1019,17 +1069,80 @@ function MarkSchemeDataPanel({
                     <p>{guidance}</p>
                   </section>
                 ) : null}
+                {showingExplainer ? (
+                  <section className="mark-scheme-explainer">
+                    <div className="mark-scheme-explainer__header">
+                      <span className="eyebrow">Point explainer</span>
+                      {busyAction !== "explainer" ? (
+                        <button className="icon-button" type="button" aria-label={`Close explanation for mark point ${index + 1}`} onClick={onDismissExplainer}>
+                          x
+                        </button>
+                      ) : null}
+                    </div>
+                    {busyAction === "explainer" ? <p>Loading explanation...</p> : null}
+                    {busyAction !== "explainer" && explainerError ? (
+                      <div className="mark-scheme-explainer__error">
+                        <p>{explainerError}</p>
+                        <button className="secondary-button" type="button" onClick={() => onExplainPoint(rowKey, pointLabel, pointText)}>
+                          Retry
+                        </button>
+                      </div>
+                    ) : null}
+                    {busyAction !== "explainer" && !explainerError && explainerText ? <p>{explainerText}</p> : null}
+                  </section>
+                ) : null}
               </article>
             );
           })}
         </div>
       ) : points.length ? (
-        <div className="chip-wrap">
-          {points.map((point) => (
-            <span className="static-chip" key={point}>
-              {point}
-            </span>
-          ))}
+        <div className="mark-scheme-structured-list">
+          {points.map((point, index) => {
+            const rowKey = `point-${index}`;
+            const pointLabel = `Mark point ${index + 1}`;
+            const pointText = point.trim();
+            const showingExplainer = explainerRowKey === rowKey;
+            return (
+              <article className="mark-scheme-structured-row" key={`${rowKey}-${point.slice(0, 16)}`}>
+                <div className="mark-scheme-structured-row__top">
+                  <span className="eyebrow">{pointLabel}</span>
+                  <button
+                    className="chip-button mark-scheme-explain-button"
+                    type="button"
+                    aria-label={`Explain mark point ${index + 1}`}
+                    title={limited ? limitTitle : "Explain this mark point in plain English"}
+                    disabled={limited || busyAction !== null}
+                    onClick={() => onExplainPoint(rowKey, pointLabel, pointText)}
+                  >
+                    ?
+                  </button>
+                </div>
+                <p>{point}</p>
+                {showingExplainer ? (
+                  <section className="mark-scheme-explainer">
+                    <div className="mark-scheme-explainer__header">
+                      <span className="eyebrow">Point explainer</span>
+                      {busyAction !== "explainer" ? (
+                        <button className="icon-button" type="button" aria-label={`Close explanation for mark point ${index + 1}`} onClick={onDismissExplainer}>
+                          x
+                        </button>
+                      ) : null}
+                    </div>
+                    {busyAction === "explainer" ? <p>Loading explanation...</p> : null}
+                    {busyAction !== "explainer" && explainerError ? (
+                      <div className="mark-scheme-explainer__error">
+                        <p>{explainerError}</p>
+                        <button className="secondary-button" type="button" onClick={() => onExplainPoint(rowKey, pointLabel, pointText)}>
+                          Retry
+                        </button>
+                      </div>
+                    ) : null}
+                    {busyAction !== "explainer" && !explainerError && explainerText ? <p>{explainerText}</p> : null}
+                  </section>
+                ) : null}
+              </article>
+            );
+          })}
         </div>
       ) : null}
       {warnings.length ? (
@@ -1079,9 +1192,13 @@ function PaperWorkspaceV133({
   reviewAiBusyAction,
   reviewFollowUpText,
   reviewExplainerText,
+  reviewExplainerRowKey,
   reviewAiError,
+  reviewExplainerError,
   onAskReviewFollowUp,
-  onExplainReviewMark,
+  onDismissReviewFollowUp,
+  onExplainMarkPoint,
+  onDismissMarkPointExplanation,
   onCreateShareLink,
   shareBusy,
   recommendedPaperLabel,
@@ -1116,9 +1233,13 @@ function PaperWorkspaceV133({
   reviewAiBusyAction: "follow_up" | "explainer" | null;
   reviewFollowUpText: string | null;
   reviewExplainerText: string | null;
+  reviewExplainerRowKey: string | null;
   reviewAiError: string | null;
+  reviewExplainerError: string | null;
   onAskReviewFollowUp: () => void;
-  onExplainReviewMark: () => void;
+  onDismissReviewFollowUp: () => void;
+  onExplainMarkPoint: (rowKey: string, pointLabel: string, pointText: string) => void;
+  onDismissMarkPointExplanation: () => void;
   onCreateShareLink: () => void;
   shareBusy: boolean;
   recommendedPaperLabel: string | null;
@@ -1345,12 +1466,10 @@ function PaperWorkspaceV133({
               used={claudeFeatureUsage.used}
               remaining={claudeFeatureUsage.remaining}
               busyAction={reviewAiBusyAction}
-              canExplain={Boolean(reviewMark && !reviewSupportIssue && !latestIssue && !isMarkingErrorMark(reviewMark))}
               followUpText={reviewFollowUpText}
-              explainerText={reviewExplainerText}
               error={reviewAiError}
               onFollowUp={onAskReviewFollowUp}
-              onExplainMark={onExplainReviewMark}
+              onDismissFollowUp={onDismissReviewFollowUp}
             />
             <div className="button-row">
               {latestIssue?.type === "transient_provider_error" ? (
@@ -1375,7 +1494,21 @@ function PaperWorkspaceV133({
                 </button>
               ) : null}
             </div>
-            {markSchemeDetailsOpen ? <MarkSchemeDataPanel question={reviewQuestion} issue={latestIssue} onCopy={onCopyMarkScheme} /> : null}
+            {markSchemeDetailsOpen ? (
+              <MarkSchemeDataPanel
+                question={reviewQuestion}
+                issue={latestIssue}
+                onCopy={onCopyMarkScheme}
+                limited={claudeFeatureUsage.limited}
+                used={claudeFeatureUsage.used}
+                busyAction={reviewAiBusyAction}
+                explainerRowKey={reviewExplainerRowKey}
+                explainerText={reviewExplainerText}
+                explainerError={reviewExplainerError}
+                onExplainPoint={onExplainMarkPoint}
+                onDismissExplainer={onDismissMarkPointExplanation}
+              />
+            ) : null}
             {attempt.remarks.filter((remark) => remark.questionId === reviewQuestion.id).length ? (
               <div className="paper-history-list">
                 {attempt.remarks.filter((remark) => remark.questionId === reviewQuestion.id).map((remark) => {
@@ -4140,8 +4273,10 @@ export function App() {
   const [achievementNotices, setAchievementNotices] = useState<AchievementNotice[]>([]);
   const [reviewAiBusyAction, setReviewAiBusyAction] = useState<"follow_up" | "explainer" | null>(null);
   const [reviewFollowUpText, setReviewFollowUpText] = useState<string | null>(null);
+  const [reviewExplainerRowKey, setReviewExplainerRowKey] = useState<string | null>(null);
   const [reviewExplainerText, setReviewExplainerText] = useState<string | null>(null);
   const [reviewAiError, setReviewAiError] = useState<string | null>(null);
+  const [reviewExplainerError, setReviewExplainerError] = useState<string | null>(null);
   const [claudeFeatureUsage, setClaudeFeatureUsage] = useState(() => getClaudeFeatureUsageState());
   const [shareBusy, setShareBusy] = useState(false);
   const reduceMotion = preferences.reduceMotion === "reduce";
@@ -4159,8 +4294,10 @@ export function App() {
   useEffect(() => setClaudeFeatureUsage(getClaudeFeatureUsageState()), [selectedAttemptId, reviewIndex]);
   useEffect(() => {
     setReviewFollowUpText(null);
+    setReviewExplainerRowKey(null);
     setReviewExplainerText(null);
     setReviewAiError(null);
+    setReviewExplainerError(null);
   }, [selectedAttemptId, reviewIndex]);
 
   useEffect(() => {
@@ -5230,11 +5367,9 @@ export function App() {
     const usage = getClaudeFeatureUsageState();
     setClaudeFeatureUsage(usage);
     if (usage.limited) {
-      setReviewAiError(`Follow-up limit reached for today (${usage.used}/3)`);
-      return;
+      throw new Error(`Review AI limit reached for today (${usage.used}/3)`);
     }
     setReviewAiBusyAction(action);
-    setReviewAiError(null);
     try {
       await ensureAIReadyForUserAction();
       const text = await aiChat(prompt, {
@@ -5246,15 +5381,7 @@ export function App() {
       });
       const nextUsage = consumeClaudeFeatureUse();
       setClaudeFeatureUsage(nextUsage);
-      if (action === "follow_up") {
-        setReviewFollowUpText(text.trim());
-        setStatus("Review follow-up ready.");
-      } else {
-        setReviewExplainerText(text.trim());
-        setStatus("Mark explanation ready.");
-      }
-    } catch (reason) {
-      setReviewAiError(reason instanceof Error ? reason.message : "Review AI helper failed.");
+      return text.trim();
     } finally {
       setReviewAiBusyAction(null);
     }
@@ -5262,29 +5389,54 @@ export function App() {
 
   async function requestReviewFollowUp() {
     if (!reviewQuestion || !reviewAnswer) return;
-    await runReviewAiAction(
-      "follow_up",
-      buildFollowUpPrompt(
-        reviewQuestion.promptText,
-        reviewMark?.missingPoints.length ? reviewMark.missingPoints : reviewMark?.rationale ? [reviewMark.rationale] : [],
-        answerText(reviewAnswer, reviewQuestion),
-      ),
-    );
+    setReviewAiError(null);
+    try {
+      const text = await runReviewAiAction(
+        "follow_up",
+        buildFollowUpPrompt(
+          reviewQuestion.promptText,
+          reviewMark?.missingPoints.length ? reviewMark.missingPoints : reviewMark?.rationale ? [reviewMark.rationale] : [],
+          answerText(reviewAnswer, reviewQuestion),
+        ),
+      );
+      setReviewFollowUpText(text);
+      setStatus("Review follow-up ready.");
+    } catch (reason) {
+      setReviewAiError(reason instanceof Error ? reason.message : "Review AI helper failed.");
+    }
   }
 
-  async function explainReviewMark() {
-    if (!reviewQuestion || !reviewAnswer || !reviewMark || reviewSupportIssue || reviewLatestIssue) return;
-    await runReviewAiAction(
-      "explainer",
-      buildReviewExplainerPrompt({
-        stem: reviewQuestion.promptText,
-        answer: answerText(reviewAnswer, reviewQuestion),
-        awardedMarks: reviewMark.awardedMarks,
-        maxMarks: reviewQuestion.maxMarks,
-        rationale: reviewMark.rationale,
-        missingPoints: reviewMark.missingPoints,
-      }),
-    );
+  function dismissReviewFollowUp() {
+    setReviewFollowUpText(null);
+  }
+
+  async function explainMarkPoint(rowKey: string, pointLabel: string, pointText: string) {
+    if (!reviewQuestion || !reviewAnswer) return;
+    setReviewExplainerRowKey(rowKey);
+    setReviewExplainerText(null);
+    setReviewExplainerError(null);
+    try {
+      const text = await runReviewAiAction(
+        "explainer",
+        buildMarkSchemePointExplainerPrompt({
+          stem: reviewQuestion.promptText,
+          answer: answerText(reviewAnswer, reviewQuestion),
+          pointLabel,
+          pointText,
+          rationale: reviewMark?.rationale ?? null,
+        }),
+      );
+      setReviewExplainerText(text);
+      setStatus("Mark point explanation ready.");
+    } catch (reason) {
+      setReviewExplainerError(reason instanceof Error ? reason.message : "Mark point explanation failed.");
+    }
+  }
+
+  function dismissMarkPointExplanation() {
+    setReviewExplainerRowKey(null);
+    setReviewExplainerText(null);
+    setReviewExplainerError(null);
   }
 
   async function createShareLink() {
@@ -6130,9 +6282,13 @@ export function App() {
             reviewAiBusyAction={reviewAiBusyAction}
             reviewFollowUpText={reviewFollowUpText}
             reviewExplainerText={reviewExplainerText}
+            reviewExplainerRowKey={reviewExplainerRowKey}
             reviewAiError={reviewAiError}
+            reviewExplainerError={reviewExplainerError}
             onAskReviewFollowUp={() => void requestReviewFollowUp()}
-            onExplainReviewMark={() => void explainReviewMark()}
+            onDismissReviewFollowUp={dismissReviewFollowUp}
+            onExplainMarkPoint={(rowKey, pointLabel, pointText) => void explainMarkPoint(rowKey, pointLabel, pointText)}
+            onDismissMarkPointExplanation={dismissMarkPointExplanation}
             onCreateShareLink={() => void createShareLink()}
             shareBusy={shareBusy}
             recommendedPaperLabel={recommendedPaperLabel}
@@ -6577,7 +6733,21 @@ export function App() {
                         </button>
                       ) : null}
                     </div>
-                    {markSchemeDetailsOpen ? <MarkSchemeDataPanel question={reviewQuestion} issue={reviewLatestIssue} onCopy={() => void copyMarkSchemeRow(reviewQuestion, reviewLatestIssue)} /> : null}
+                    {markSchemeDetailsOpen ? (
+                      <MarkSchemeDataPanel
+                        question={reviewQuestion}
+                        issue={reviewLatestIssue}
+                        onCopy={() => void copyMarkSchemeRow(reviewQuestion, reviewLatestIssue)}
+                        limited={claudeFeatureUsage.limited}
+                        used={claudeFeatureUsage.used}
+                        busyAction={reviewAiBusyAction}
+                        explainerRowKey={reviewExplainerRowKey}
+                        explainerText={reviewExplainerText}
+                        explainerError={reviewExplainerError}
+                        onExplainPoint={(rowKey, pointLabel, pointText) => void explainMarkPoint(rowKey, pointLabel, pointText)}
+                        onDismissExplainer={dismissMarkPointExplanation}
+                      />
+                    ) : null}
                     {selectedAttempt.remarks.filter((remark) => remark.questionId === reviewQuestion.id).length ? (
                       <div className="paper-history-list">
                         {selectedAttempt.remarks

@@ -2233,6 +2233,11 @@ p {
   justify-content: flex-start;
 }
 
+.review-ai-panel__hint {
+  margin: 0;
+  color: var(--muted);
+}
+
 .review-ai-panel__error {
   margin: 0;
   color: var(--danger);
@@ -2243,6 +2248,13 @@ p {
   border-radius: var(--radius-md);
   padding: 12px;
   background: rgba(0, 0, 0, 0.18);
+}
+
+.review-ai-card__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
 
 .review-ai-card p {
@@ -2276,6 +2288,39 @@ p {
   border-radius: var(--radius-md);
   padding: 12px;
   background: rgba(255, 255, 255, 0.026);
+}
+
+.mark-scheme-structured-row__top,
+.mark-scheme-explainer__header,
+.mark-scheme-explainer__error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.mark-scheme-explain-button {
+  min-width: 36px;
+  min-height: 32px;
+  font-weight: 800;
+  padding-inline: 12px;
+}
+
+.mark-scheme-explainer {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--accent), transparent 74%);
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.mark-scheme-explainer p {
+  margin: 0;
+}
+
+.mark-scheme-explainer__error {
+  align-items: flex-start;
 }
 
 .mark-scheme-structured-row strong,

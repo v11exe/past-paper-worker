@@ -19,7 +19,7 @@ This app stores papers, attempts, metadata, diagnostics, and reduced thumbnails 
 - Each browser profile keeps its own local data.
 - Full-size screenshots are stripped before persistence to reduce storage pressure.
 
-Optional share links are the one exception: when a user creates a share link from a marked attempt, the app sends a reduced read-only score snapshot to the Worker so it can be stored in `SHARE_KV`. Those payloads omit answer text and mark-scheme text.
+Optional share links are the one exception: when a user creates a share link from a marked attempt, the app sends a reduced read-only score snapshot to the Worker so it can be stored in `SHARE_KV` for 30 days. Those payloads omit answer text and mark-scheme text.
 
 AI actions do require a backend proxy. The browser never receives Anthropic or Gemini API keys directly.
 

@@ -141,6 +141,7 @@ describe("worker routing", () => {
     expect(put).toHaveBeenCalledTimes(1);
     const firstPutCall = put.mock.calls[0] as unknown as [string, string, { expirationTtl?: number }?];
     expect(firstPutCall?.[0]).toBe(`attempt-share:${body.shareId}`);
+    expect(firstPutCall?.[2]?.expirationTtl).toBe(60 * 60 * 24 * 30);
   });
 
   it("reads a stored share payload by id", async () => {

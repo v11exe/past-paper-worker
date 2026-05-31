@@ -90,7 +90,7 @@ export default {
         return json({ ok: false, error: "Invalid share payload." }, 400);
       }
       const shareId = createShareId();
-      await env.SHARE_KV.put(shareStorageKey(shareId), JSON.stringify(parsed.data), { expirationTtl: 60 * 60 * 24 * 90 });
+      await env.SHARE_KV.put(shareStorageKey(shareId), JSON.stringify(parsed.data), { expirationTtl: 60 * 60 * 24 * 30 });
       return json({
         ok: true,
         shareId,
