@@ -24,8 +24,6 @@ import {
   Minimize2,
   MessageSquare,
   ListChecks,
-  PanelLeftClose,
-  PanelLeftOpen,
   Play,
   Plus,
   Reply,
@@ -49,8 +47,11 @@ import katex from "katex";
 import { DEFAULT_AI_MODEL, FALLBACK_AI_MODELS, AI_MODEL_CHOICES, ensureAIReadyForUserAction, aiChat, modelLabelForModel, resolveAIModelConfig, runAISmokeTest } from "./ai/provider";
 import { appMeta } from "./appMeta";
 import { AppLogo } from "./components/AppLogo";
+import { MobileSubjectSheet } from "./components/MobileSubjectSheet";
+import { SubjectRail } from "./components/SubjectRail";
+import { SubjectShell } from "./components/SubjectShell";
 import { applyDashboardDensity, readDashboardDensity, type DashboardDensity } from "./lib/dashboardDensity";
-import { emptySubjectNicknames, sanitizeSubjectNicknames, type SubjectNicknames } from "./lib/subjectDisplay";
+import { displaySubjectName, emptySubjectNicknames, sanitizeSubjectNicknames, subjectDataValue, type SubjectNicknames } from "./lib/subjectDisplay";
 import { cleanChoiceGlyphs, extractInlineOptions } from "./lib/choiceParsing";
 import { subjectMetaForLabel, subjectMetaList, unsupportedSubjects } from "./subjectMeta";
 import { selectableSubjects, supportedSubjects, type SelectableSubject, type SupportedSubject } from "./subjects";
@@ -2069,145 +2070,6 @@ function UnsupportedSubjectDashboard({
   );
 }
 
-function SubjectSidebarV131({
-  collapsed,
-  selectedSubjects,
-  activeSubject,
-  onToggleCollapsed,
-  onSelectSubject,
-  onToggleUnsupportedSubject,
-  onHome,
-  onAddSubject,
-  onUpload,
-  onSettings,
-  onVersion,
-  onCredits,
-}: {
-  collapsed: boolean;
-  selectedSubjects: SelectableSubject[];
-  activeSubject: SelectableSubject | null;
-  onToggleCollapsed: () => void;
-  onSelectSubject: (subject: SelectableSubject) => void;
-  onToggleUnsupportedSubject: (subject: SelectableSubject) => void;
-  onHome: () => void;
-  onAddSubject: () => void;
-  onUpload: () => void;
-  onSettings: () => void;
-  onVersion: () => void;
-  onCredits: () => void;
-}) {
-  const [showUnsupported, setShowUnsupported] = useState(false);
-  const supportedSelected = selectedSubjects.filter(isSupportedSubject);
-  const unsupportedSelected = selectedSubjects.filter((subject) => !isSupportedSubject(subject));
-  const uploadEnabled = Boolean(activeSubject && isSupportedSubject(activeSubject));
-
-  return (
-    <aside className={collapsed ? "subject-sidebar subject-sidebar--collapsed" : "subject-sidebar"}>
-      <div className="subject-sidebar__brand">
-        <div className="subject-sidebar__brand-control">
-          <button className="icon-button" onClick={onToggleCollapsed} aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}>
-            {collapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
-          </button>
-          <button className="subject-sidebar__home-button" onClick={onHome} title="Home">
-            <AppLogo size={32} showText={false} />
-          </button>
-        </div>
-        {!collapsed ? (
-          <button className="subject-sidebar__home-copy" onClick={onHome} title="Home">
-            <strong>Past Paper Worker</strong>
-            <span>Marked GCSE practice</span>
-          </button>
-        ) : null}
-      </div>
-
-      <div className="subject-sidebar__section subject-sidebar__section--grow">
-        {!collapsed ? <span className="eyebrow">YOUR SUBJECTS</span> : null}
-        <div className="subject-sidebar__list">
-          {supportedSelected.map((subject) => {
-            const meta = subjectMetaForLabel(subject);
-            const Icon = meta?.Icon ?? FileText;
-            return (
-              <button
-                key={subject}
-                className={subject === activeSubject ? "subject-nav-item subject-nav-item--active" : "subject-nav-item"}
-                onClick={() => onSelectSubject(subject)}
-                title={meta?.shortLabel ?? subject}
-                style={{ "--subject-accent": meta?.accent ?? "var(--accent)" } as React.CSSProperties}
-              >
-                <Icon size={18} />
-                {!collapsed ? <span>{meta?.shortLabel ?? subject}</span> : null}
-              </button>
-            );
-          })}
-        </div>
-
-        <button className="subject-nav-item subject-nav-item--utility" onClick={onAddSubject} title="Add Subject">
-          <Plus size={18} />
-          {!collapsed ? <span>Add Subject</span> : null}
-        </button>
-
-        <button className="subject-nav-item subject-nav-item--utility" onClick={() => setShowUnsupported((value) => !value)} aria-expanded={showUnsupported} title="Unsupported subjects">
-          <ChevronDown size={18} className={showUnsupported ? "question-disclosure__icon question-disclosure__icon--open" : "question-disclosure__icon"} />
-          {!collapsed ? <span>Unsupported subjects</span> : null}
-        </button>
-
-        <AnimatePresence initial={false}>
-          {showUnsupported && !collapsed ? (
-            <motion.div
-              className="sidebar-unsupported-list"
-              initial={{ height: 0, opacity: 0, clipPath: "inset(0 0 100% 0)" }}
-              animate={{ height: "auto", opacity: 1, clipPath: "inset(0 0 0 0)" }}
-              exit={{ height: 0, opacity: 0, clipPath: "inset(0 0 100% 0)" }}
-              transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
-            >
-              {unsupportedSubjects.map((subject) => {
-                const meta = subjectMetaForLabel(subject);
-                const selected = unsupportedSelected.includes(subject);
-                const active = activeSubject === subject;
-                if (!meta) return null;
-                return (
-                  <button
-                    key={subject}
-                    className={active ? "unsupported-nav-row unsupported-nav-row--active" : "unsupported-nav-row"}
-                    style={{ "--subject-accent": meta.accent } as React.CSSProperties}
-                    onClick={() => (selected ? onSelectSubject(subject) : onToggleUnsupportedSubject(subject))}
-                  >
-                    <div className="unsupported-nav-row__main">
-                      <meta.Icon size={16} />
-                      <span>{meta.shortLabel}</span>
-                    </div>
-                    <div className="unsupported-nav-row__status">
-                      <small>{active ? "selected" : selected ? "added" : "not added"}</small>
-                      <span className="static-chip">unsupported</span>
-                    </div>
-                  </button>
-                );
-              })}
-            </motion.div>
-          ) : null}
-        </AnimatePresence>
-      </div>
-
-      <div className="subject-sidebar__section subject-sidebar__section--bottom">
-        <button className="primary-button primary-button--wide subject-sidebar__upload" onClick={onUpload} title={uploadEnabled ? "Upload paper" : "Upload support is not available for this subject yet"} disabled={!uploadEnabled}>
-          <UploadCloud size={16} /> {!collapsed ? "Upload paper" : null}
-        </button>
-        <div className="subject-sidebar__utility">
-          <button className="subject-nav-item subject-nav-item--utility" onClick={onSettings} title="Settings">
-            <Settings2 size={18} /> {!collapsed ? <span>Settings</span> : null}
-          </button>
-          <button className="subject-nav-item subject-nav-item--utility" onClick={onVersion} title={`${appMeta.version} ${currentVersionEntry.title}`}>
-            <Sparkles size={18} /> {!collapsed ? <span>{appMeta.version} {currentVersionEntry.title} -&gt;</span> : null}
-          </button>
-          <button className="subject-nav-item subject-nav-item--utility" onClick={onCredits} title="Credits">
-            <Info size={18} /> {!collapsed ? <span>Credits</span> : null}
-          </button>
-        </div>
-      </div>
-    </aside>
-  );
-}
-
 function VersionHistoryModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   return (
     <AnimatePresence>
@@ -3537,6 +3399,15 @@ function SettingsModal({
                     ]}
                     onChange={(themeMode) => onChange({ themeMode })}
                   />
+                  <PreferenceSelect
+                    label="Density"
+                    value={preferences.dashboardDensity}
+                    options={[
+                      { value: "comfortable", label: "Comfortable" },
+                      { value: "compact", label: "Compact" },
+                    ]}
+                    onChange={(dashboardDensity) => onChange({ dashboardDensity })}
+                  />
                   <PreferenceSelect label="Accent scheme" value={preferences.accentColour} options={accentOptions} onChange={(accentColour) => onChange({ accentColour })} />
                   <PreferenceSelect
                     label="Sidebar default"
@@ -4108,6 +3979,7 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [versionHistoryOpen, setVersionHistoryOpen] = useState(false);
   const [creditsOpen, setCreditsOpen] = useState(false);
+  const [mobileSubjectSheetOpen, setMobileSubjectSheetOpen] = useState(false);
   const [preferences, setPreferences] = useState<AppPreferences>(() => loadPreferences());
   const [selectedSubjects, setSelectedSubjects] = useState<SelectableSubject[]>(() => loadSelectedSubjects(data));
   const [currentView, setCurrentView] = useState<AppView>("landing");
@@ -5219,9 +5091,12 @@ export function App() {
               ? "processing"
               : selectedPaper?.processingStatus === "ready"
                 ? "ready"
-                : data.papers.length
-                  ? "catalogue"
-                  : "empty";
+              : data.papers.length
+                ? "catalogue"
+                : "empty";
+  useEffect(() => {
+    setMobileSubjectSheetOpen(false);
+  }, [appMode, currentView, activeSubject]);
   const feedbackErrors = useMemo(() => {
     const errors = validateFeedbackDraft(feedbackDraft);
     const visible: FeedbackValidationErrors = {};
@@ -5249,6 +5124,16 @@ export function App() {
   const focusProgressPercent = selectedPaper?.questions.length ? Math.round(((activeQuestionIndex + 1) / selectedPaper.questions.length) * 100) : 0;
   const unsupportedSelectedSubjects = selectedSubjects.filter((subject) => !isSupportedSubject(subject));
   const supportedActiveSubject = activeSubject && isSupportedSubject(activeSubject) ? activeSubject : null;
+  const activeSubjectMeta = activeSubject ? subjectMetaForLabel(activeSubject) : null;
+  const activeSubjectHeading = supportedActiveSubject
+    ? displaySubjectName(supportedActiveSubject, preferences.subjectNicknames)
+    : activeSubjectMeta?.shortLabel ?? activeSubject ?? "Past Paper Worker";
+  const activeSubjectEyebrow = activeSubjectMeta?.supported
+    ? `${activeSubjectMeta.examBoard} ${activeSubjectMeta.specCode ?? activeSubjectMeta.level}`
+    : activeSubjectMeta?.supported === false
+      ? "Unsupported subject"
+      : "Study workspace";
+  const activeSubjectData = supportedActiveSubject ? subjectDataValue(supportedActiveSubject) : undefined;
   const canShowProductShell = appMode !== "taking";
   const needsOnboarding = currentView === "onboarding" && canShowProductShell;
   const showLanding = currentView === "landing" && canShowProductShell;
@@ -5513,32 +5398,64 @@ export function App() {
   }
 
   return (
-    <div className={rootClassName} style={rootStyle}>
+    <div className={rootClassName} style={rootStyle} data-subject={activeSubjectData}>
       <ProductAtmosphere reduceMotion={reduceMotion} />
-      {canShowProductShell ? (
-        <SubjectSidebarV131
-          collapsed={sidebarCollapsed}
-          selectedSubjects={selectedSubjects}
-          activeSubject={activeSubject}
-          onToggleCollapsed={() => setSidebarCollapsed((value) => !value)}
-          onSelectSubject={(subject) => selectSubjectView(subject)}
-          onToggleUnsupportedSubject={(subject) => selectSubjectView(subject, true)}
-          onHome={openHomeView}
-          onAddSubject={openSubjectOnboarding}
-          onUpload={() => {
-            if (!supportedActiveSubject) {
-              setError("Upload support is only available for AQA Biology, Chemistry, Physics, and OCR Computer Science.");
-              return;
-            }
-            openSubjectUpload(supportedActiveSubject);
-          }}
-          onSettings={() => setSettingsOpen(true)}
-          onVersion={() => setVersionHistoryOpen(true)}
-          onCredits={() => setCreditsOpen(true)}
-        />
-      ) : null}
-
-      <motion.main
+      <SubjectShell
+        enabled={canShowProductShell}
+        mobileSheetOpen={mobileSubjectSheetOpen}
+        heading={activeSubjectHeading}
+        eyebrow={activeSubjectEyebrow}
+        rail={(
+          <SubjectRail
+            collapsed={sidebarCollapsed}
+            selectedSubjects={selectedSubjects}
+            activeSubject={activeSubject}
+            subjectNicknames={preferences.subjectNicknames}
+            versionText={`${appMeta.version} ${currentVersionEntry.title}`}
+            onToggleCollapsed={() => setSidebarCollapsed((value) => !value)}
+            onSelectSubject={(subject) => selectSubjectView(subject)}
+            onToggleUnsupportedSubject={(subject) => selectSubjectView(subject, true)}
+            onHome={openHomeView}
+            onAddSubject={openSubjectOnboarding}
+            onUpload={() => {
+              if (!supportedActiveSubject) {
+                setError("Upload support is only available for AQA Biology, Chemistry, Physics, and OCR Computer Science.");
+                return;
+              }
+              openSubjectUpload(supportedActiveSubject);
+            }}
+            onSettings={() => setSettingsOpen(true)}
+            onVersion={() => setVersionHistoryOpen(true)}
+            onCredits={() => setCreditsOpen(true)}
+          />
+        )}
+        mobileSheet={(
+          <MobileSubjectSheet
+            open={mobileSubjectSheetOpen}
+            activeSubject={activeSubject}
+            subjectNicknames={preferences.subjectNicknames}
+            selectedSubjects={selectedSubjects}
+            versionText={appMeta.version}
+            onClose={() => setMobileSubjectSheetOpen(false)}
+            onHome={openHomeView}
+            onSelectSubject={(subject) => selectSubjectView(subject)}
+            onToggleUnsupportedSubject={(subject) => selectSubjectView(subject, true)}
+            onAddSubject={openSubjectOnboarding}
+            onUpload={() => {
+              if (!supportedActiveSubject) {
+                setError("Upload support is only available for AQA Biology, Chemistry, Physics, and OCR Computer Science.");
+                return;
+              }
+              openSubjectUpload(supportedActiveSubject);
+            }}
+            onSettings={() => setSettingsOpen(true)}
+            onVersion={() => setVersionHistoryOpen(true)}
+            onCredits={() => setCreditsOpen(true)}
+          />
+        )}
+        onToggleMobileSheet={() => setMobileSubjectSheetOpen((value) => !value)}
+      >
+        <motion.main
         key={`${currentView}:${appMode}:${activeSubject ?? "none"}:${selectedPaperId ?? "none"}`}
         className="shell-workspace"
         initial={reduceMotion ? false : PAGE_TRANSITION.initial}
@@ -6356,7 +6273,8 @@ export function App() {
             ) : null}
           </div>
         ) : null}
-      </motion.main>
+        </motion.main>
+      </SubjectShell>
 
       {preferences.devModeEnabled && !settingsOpen && (appMode === "catalogue" || appMode === "ready" || appMode === "empty") ? (
         <aside className="shell-inspector shell-inspector--dev">

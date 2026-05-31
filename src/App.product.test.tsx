@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -178,6 +178,29 @@ describe("v1.3 product shell", () => {
     expect(await screen.findByText("Rayaan Omair")).toBeInTheDocument();
     expect(screen.getByText("Elliot Neilsen")).toBeInTheDocument();
     expect(screen.getByText(/Anthropic Claude/i)).toBeInTheDocument();
+  });
+
+  it("applies the selected density to the html element", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterDashboard(user);
+
+    await user.click(screen.getByRole("button", { name: /settings/i }));
+    await user.selectOptions(screen.getByLabelText("Density"), "compact");
+
+    expect(document.documentElement.dataset.density).toBe("compact");
+  });
+
+  it("shows only icon affordances in collapsed sidebar mode", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterDashboard(user);
+
+    await user.click(screen.getByRole("button", { name: /collapse sidebar/i }));
+
+    const sidebar = document.querySelector(".subject-sidebar");
+    expect(sidebar).not.toBeNull();
+    expect(within(sidebar as HTMLElement).queryByText("Upload paper")).not.toBeInTheDocument();
   });
 
   it("keeps unsupported subjects out of the main rail and shows them in the unsupported dropdown", async () => {
