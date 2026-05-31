@@ -65,6 +65,12 @@ describe("saveData", () => {
     expect(saved.papers[0].assets[0].objectUrl).toBeNull();
   });
 
+  it("preserves unlocked achievements in local persistence", () => {
+    saveData({ ...dataWithScreenshot, achievementUnlocks: ["first_upload", "first_mark"] });
+
+    expect(loadData().achievementUnlocks).toEqual(["first_upload", "first_mark"]);
+  });
+
   it("does not throw when localStorage is unavailable or over quota", () => {
     const spy = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
       throw new DOMException("Quota exceeded", "QuotaExceededError");

@@ -1,11 +1,14 @@
+import { ACHIEVEMENTS, type AchievementId } from "../data/achievements";
 import type { AppData, PastPaper, PastPaperProcessingJob, ProcessingDiagnostics } from "../types";
 
 const STORAGE_KEY = "past-paper-worker:data:v1";
 const MAX_PREVIEW_CHARS = 1400;
+const achievementIds = new Set<AchievementId>(ACHIEVEMENTS.map((item) => item.id));
 
 const emptyData: AppData = {
   papers: [],
   attempts: [],
+  achievementUnlocks: [],
 };
 
 function normalizeDiagnostics(diagnostics: unknown): ProcessingDiagnostics | null | undefined {
@@ -49,6 +52,9 @@ export function loadData(): AppData {
         ? parsed.papers.map(normalizePaper)
         : [],
       attempts: Array.isArray(parsed.attempts) ? parsed.attempts : [],
+      achievementUnlocks: Array.isArray(parsed.achievementUnlocks)
+        ? parsed.achievementUnlocks.filter((value): value is AchievementId => typeof value === "string" && achievementIds.has(value as AchievementId))
+        : [],
     };
   } catch {
     return emptyData;
@@ -101,6 +107,7 @@ function sanitizeForStorage(data: AppData, keepThumbnails = true): AppData {
       })),
     })),
     attempts: data.attempts,
+    achievementUnlocks: data.achievementUnlocks ?? [],
   };
 }
 

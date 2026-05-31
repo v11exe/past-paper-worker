@@ -1,4 +1,5 @@
 import type { AIProviderId } from "./ai/providerTypes";
+import type { AchievementId } from "./data/achievements";
 
 export type ProcessingStage =
   | "uploading"
@@ -390,4 +391,5 @@ export type PaperDraftInput = {
 export type AppData = {
   papers: PastPaper[];
   attempts: PastPaperAttempt[];
+  achievementUnlocks?: AchievementId[];
 };

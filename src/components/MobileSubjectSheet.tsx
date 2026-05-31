@@ -68,7 +68,7 @@ export function MobileSubjectSheet({
           >
             <div className="mobile-subject-sheet__header">
               <button className="mobile-subject-sheet__home" onClick={() => { onHome(); onClose(); }}>
-                <AppLogo size={28} showText={false} />
+                <AppLogo size={24} showText={false} />
                 <span>
                   <strong>Past Paper Worker</strong>
                   <small>{activeMeta?.shortLabel ?? "Subjects and tools"}</small>

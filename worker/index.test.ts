@@ -111,6 +111,69 @@ describe("worker routing", () => {
     fetchSpy.mockRestore();
   });
 
+  it("stores a validated share payload and returns a share url", async () => {
+    const put = vi.fn(async () => undefined);
+    const response = await worker.fetch(
+      new Request("https://example.com/api/share", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          subject: "Biology",
+          date: "2026-05-31",
+          paperLabel: "2024 May/June Paper 1",
+          totalMarks: 10,
+          scoredMarks: 8,
+          questions: [{ number: "1", marks: 5, scored: 4, status: "partial" }],
+        }),
+      }),
+      {
+        ASSETS: { fetch: vi.fn(async () => new Response("asset")) },
+        SHARE_KV: { put, get: vi.fn(async () => null) },
+      } as never,
+      undefined,
+    );
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { ok: boolean; shareId: string; shareUrl: string };
+    expect(body.ok).toBe(true);
+    expect(body.shareId).toMatch(/^[A-Za-z0-9]{7}$/);
+    expect(body.shareUrl).toBe(`https://example.com/share/${body.shareId}`);
+    expect(put).toHaveBeenCalledTimes(1);
+    const firstPutCall = put.mock.calls[0] as unknown as [string, string, { expirationTtl?: number }?];
+    expect(firstPutCall?.[0]).toBe(`attempt-share:${body.shareId}`);
+  });
+
+  it("reads a stored share payload by id", async () => {
+    const get = vi.fn(async () =>
+      JSON.stringify({
+        subject: "Biology",
+        date: "2026-05-31",
+        paperLabel: "2024 May/June Paper 1",
+        totalMarks: 10,
+        scoredMarks: 8,
+        questions: [{ number: "1", marks: 5, scored: 4, status: "partial" }],
+      }),
+    );
+    const response = await worker.fetch(
+      new Request("https://example.com/api/share/Ab12Cd3"),
+      {
+        ASSETS: { fetch: vi.fn(async () => new Response("asset")) },
+        SHARE_KV: { put: vi.fn(async () => undefined), get },
+      } as never,
+      undefined,
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      share: {
+        subject: "Biology",
+        scoredMarks: 8,
+      },
+    });
+    expect(get).toHaveBeenCalledWith("attempt-share:Ab12Cd3");
+  });
+
   it("serves non-API requests from the static asset binding", async () => {
     const assetFetch = vi.fn(async () => new Response("<html>ok</html>", { status: 200 }));
 

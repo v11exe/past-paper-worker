@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { formatRecommendedPaperLabel, pickRecommendedPaper } from "./paperRecommendations";
+import { formatComparablePaperLabel, formatRecommendedPaperLabel, pickRecommendedPaper } from "./paperRecommendations";
 
 describe("pickRecommendedPaper", () => {
   it("prefers an unseen paper from the same subject", () => {
@@ -34,5 +34,16 @@ describe("pickRecommendedPaper", () => {
     });
 
     expect(result?.year).toBe(2023);
+  });
+
+  it("formats an uploaded paper into the registry label shape when metadata is present", () => {
+    expect(
+      formatComparablePaperLabel({
+        title: "Biology Paper 1",
+        paperCode: "8461/1",
+        year: 2024,
+        series: "May/June",
+      } as never),
+    ).toBe("2024 May/June Paper 1");
   });
 });

@@ -347,3 +347,30 @@ test("renders AQA choices and unsupported questions as dedicated controls", asyn
   await expect(page.getByRole("textbox", { name: "Written answer" })).toHaveCount(0);
   await page.screenshot({ path: "test-results/v1.3-unsupported-question-panel.png", fullPage: true });
 });
+
+test("renders a read-only share snapshot from the public share route", async ({ page }) => {
+  await page.route("**/api/share/Ab12Cd3", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: true,
+        share: {
+          subject: "AQA GCSE Biology",
+          date: "2026-05-31",
+          paperLabel: "Question UI paper · 2026 · June · 8461/1",
+          totalMarks: 2,
+          scoredMarks: 1,
+          questions: [{ number: "1", marks: 2, scored: 1, status: "partial" }],
+        },
+      }),
+    });
+  });
+
+  await page.goto("/share/Ab12Cd3");
+
+  await expect(page.getByRole("heading", { name: /shared marked attempt/i })).toBeVisible();
+  await expect(page.getByText(/read-only review snapshot/i)).toBeVisible();
+  await expect(page.getByText("Partial")).toBeVisible();
+  await page.screenshot({ path: "test-results/v1.3-share-view.png", fullPage: true });
+});

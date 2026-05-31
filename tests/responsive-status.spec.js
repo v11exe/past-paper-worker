@@ -95,6 +95,63 @@ function seedDashboard(page, { withPaper = false, collapsed = false } = {}) {
   }, { UI_KEYS, withPaper, collapsed });
 }
 
+function seedReturningLanding(page) {
+  return page.addInitScript(({ UI_KEYS }) => {
+    window.localStorage.clear();
+    window.localStorage.setItem(UI_KEYS.onboardingComplete, "true");
+    window.localStorage.setItem(UI_KEYS.selectedSubjects, JSON.stringify(["AQA GCSE Biology"]));
+    window.localStorage.setItem(UI_KEYS.activeSubject, "AQA GCSE Biology");
+    window.localStorage.setItem(UI_KEYS.preferences, JSON.stringify({ reduceMotion: "reduce" }));
+    window.localStorage.setItem(
+      UI_KEYS.data,
+      JSON.stringify({
+        papers: [
+          {
+            id: "paper-1",
+            title: "Responsive paper",
+            subject: "AQA GCSE Biology",
+            topic: null,
+            subtopic: null,
+            year: 2024,
+            series: "June",
+            paperCode: "8461/1",
+            totalMarks: 1,
+            durationMinutes: 90,
+            hasMarkScheme: true,
+            processingStatus: "ready",
+            processingError: null,
+            processingDiagnostics: null,
+            assets: [],
+            questions: [],
+            jobs: [],
+            createdAt: "2026-05-15T12:00:00.000Z",
+            updatedAt: "2026-05-15T12:00:00.000Z",
+          },
+        ],
+        attempts: [
+          {
+            id: "attempt-1",
+            paperId: "paper-1",
+            status: "marked",
+            startedAt: "2026-05-15T12:00:00.000Z",
+            submittedAt: "2026-05-15T12:10:00.000Z",
+            completedAt: "2026-05-15T12:11:00.000Z",
+            durationSeconds: 600,
+            overtimeSeconds: 0,
+            actualScore: 1,
+            confidenceAdjustedScore: 1,
+            totalMarks: 1,
+            answers: [],
+            marks: [],
+            remarks: [],
+            markingIssues: [],
+          },
+        ],
+      }),
+    );
+  }, { UI_KEYS });
+}
+
 test.beforeEach(async ({ page }) => {
   await installSmokeMock(page);
 });
@@ -117,18 +174,18 @@ test("desktop hides Dev mode by default and reveals diagnostics from settings", 
   await page.screenshot({ path: "test-results/v1.3-settings-dev-mode.png", fullPage: true });
 });
 
-test("collapsed sidebar remains usable on tablet width", async ({ page }) => {
+test("tablet width uses the mobile subject sheet instead of the persistent sidebar", async ({ page }) => {
   await seedDashboard(page, { collapsed: true });
   await page.setViewportSize({ width: 768, height: 1024 });
   await page.goto("/");
   await page.getByRole("button", { name: /enter app/i }).click();
 
   await expect(page.getByRole("heading", { name: "Biology" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Expand sidebar" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Open subjects" })).toBeVisible();
   await expect(page.getByText("Chemistry")).toHaveCount(0);
   await page.screenshot({ path: "test-results/v1.3-collapsed-sidebar-tablet.png", fullPage: true });
 
-  await page.getByRole("button", { name: "Expand sidebar" }).click();
+  await page.getByRole("button", { name: "Open subjects" }).click();
   await expect(page.getByText("Computer Science")).toBeVisible();
 });
 
@@ -145,4 +202,15 @@ test("status and feedback controls stay out of the active exam flow", async ({ p
   await expect(page.getByRole("button", { name: "Settings" })).toHaveCount(0);
   await expect(page.locator(".shell-inspector")).toHaveCount(0);
   await page.screenshot({ path: "test-results/v1.3-active-exam-clean.png", fullPage: true });
+});
+
+test("returning-user landing surfaces stay stable across key viewports", async ({ page }) => {
+  await seedReturningLanding(page);
+
+  for (const viewport of [{ width: 375, height: 812 }, { width: 768, height: 1024 }, { width: 1280, height: 900 }]) {
+    await page.setViewportSize(viewport);
+    await page.goto("/");
+    await expect(page.getByText("Welcome back")).toBeVisible();
+    await expect(page.getByRole("button", { name: /continue with biology/i })).toBeVisible();
+  }
 });

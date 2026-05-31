@@ -14,7 +14,6 @@ import {
   Edit3,
   ExternalLink,
   Eye,
-  FileText,
   FlaskConical,
   Github,
   Inbox,
@@ -46,11 +45,29 @@ import { flushSync } from "react-dom";
 import katex from "katex";
 import { DEFAULT_AI_MODEL, FALLBACK_AI_MODELS, AI_MODEL_CHOICES, ensureAIReadyForUserAction, aiChat, modelLabelForModel, resolveAIModelConfig, runAISmokeTest } from "./ai/provider";
 import { appMeta } from "./appMeta";
+import { ACHIEVEMENTS, type AchievementId } from "./data/achievements";
+import { gradeBoundaries } from "./data/gradeBoundaries";
+import { paperRegistry } from "./data/paperRegistry";
+import { AchievementToast } from "./components/AchievementToast";
 import { AppLogo } from "./components/AppLogo";
+import { GradeEstimateChip } from "./components/GradeEstimateChip";
 import { MobileSubjectSheet } from "./components/MobileSubjectSheet";
+import { PaperThumbnail } from "./components/PaperThumbnail";
+import { PaperRecommendationCard } from "./components/PaperRecommendationCard";
+import { ReviewAiActions } from "./components/ReviewAiActions";
+import { ReturningHomeHeader } from "./components/ReturningHomeHeader";
+import { ShareView } from "./components/ShareView";
 import { SubjectRail } from "./components/SubjectRail";
 import { SubjectShell } from "./components/SubjectShell";
+import { evaluateAchievements } from "./lib/achievementProgress";
+import { consumeClaudeFeatureUse, getClaudeFeatureUsageState } from "./lib/claudeFeatureUsage";
 import { applyDashboardDensity, readDashboardDensity, type DashboardDensity } from "./lib/dashboardDensity";
+import { calculateGradeEstimate } from "./lib/gradeEstimate";
+import { clearGradeBoundaryOverride, loadGradeBoundaryOverrides, resolveGradeBoundary, saveGradeBoundaryOverride } from "./lib/gradeBoundaryOverrides";
+import { paperThumbnailSrc } from "./lib/paperThumbnails";
+import { formatComparablePaperLabel, formatRecommendedPaperLabel, pickRecommendedPaper } from "./lib/paperRecommendations";
+import { buildFollowUpPrompt, buildReviewExplainerPrompt } from "./lib/reviewPrompts";
+import { buildAttemptSharePayload } from "./lib/sharePayload";
 import { displaySubjectName, emptySubjectNicknames, sanitizeSubjectNicknames, subjectDataValue, type SubjectNicknames } from "./lib/subjectDisplay";
 import { cleanChoiceGlyphs, extractInlineOptions } from "./lib/choiceParsing";
 import { subjectMetaForLabel, subjectMetaList, unsupportedSubjects } from "./subjectMeta";
@@ -174,6 +191,11 @@ type ToastItem = {
   kind: ToastKind;
   message: string;
   durationMs: number;
+};
+
+type AchievementNotice = {
+  id: string;
+  achievementId: AchievementId;
 };
 
 const MOTION_EASE = {
@@ -501,6 +523,24 @@ function saveActiveSubject(subject: string | null) {
   } catch {
     // Non-critical local preference.
   }
+}
+
+function attemptStreakDays(attempts: PastPaperAttempt[]) {
+  const days = [...new Set(
+    attempts
+      .map((attempt) => (attempt.completedAt ?? attempt.submittedAt ?? attempt.startedAt).slice(0, 10))
+      .filter(Boolean),
+  )].sort((left, right) => right.localeCompare(left));
+  if (!days.length) return 0;
+
+  let streak = 1;
+  const cursor = new Date(`${days[0]}T00:00:00.000Z`);
+  for (let index = 1; index < days.length; index += 1) {
+    cursor.setUTCDate(cursor.getUTCDate() - 1);
+    if (days[index] !== cursor.toISOString().slice(0, 10)) break;
+    streak += 1;
+  }
+  return streak;
 }
 
 function validHexColour(value: unknown, fallback: string) {
@@ -1035,6 +1075,16 @@ function PaperWorkspaceV133({
   onPreviousReview,
   onNextReview,
   onSetReviewIndex,
+  claudeFeatureUsage,
+  reviewAiBusyAction,
+  reviewFollowUpText,
+  reviewExplainerText,
+  reviewAiError,
+  onAskReviewFollowUp,
+  onExplainReviewMark,
+  onCreateShareLink,
+  shareBusy,
+  recommendedPaperLabel,
 }: {
   paper: PastPaper;
   attempt: PastPaperAttempt | null;
@@ -1062,6 +1112,16 @@ function PaperWorkspaceV133({
   onPreviousReview: () => void;
   onNextReview: () => void;
   onSetReviewIndex: (index: number) => void;
+  claudeFeatureUsage: ReturnType<typeof getClaudeFeatureUsageState>;
+  reviewAiBusyAction: "follow_up" | "explainer" | null;
+  reviewFollowUpText: string | null;
+  reviewExplainerText: string | null;
+  reviewAiError: string | null;
+  onAskReviewFollowUp: () => void;
+  onExplainReviewMark: () => void;
+  onCreateShareLink: () => void;
+  shareBusy: boolean;
+  recommendedPaperLabel: string | null;
 }) {
   const pendingIssues = pendingMarkingIssues(attempt);
   const issueCount = attempt?.markingIssues?.filter((issue) => issue.type === "mark_scheme_alignment_error").length ?? 0;
@@ -1198,6 +1258,7 @@ function PaperWorkspaceV133({
               <div className="review-summary-card"><span>Pending</span><strong>{reviewStats?.pending ?? 0}</strong></div>
               <div className="review-summary-card"><span>Issues</span><strong>{reviewStats?.issues ?? 0}</strong></div>
             </div>
+            <PaperRecommendationCard label={recommendedPaperLabel} />
           </section>
 
           <section className="section-frame paper-workspace-v133__panel">
@@ -1279,6 +1340,18 @@ function PaperWorkspaceV133({
               ) : null}
               {reviewMark?.markSchemeEvidence ? <p className="muted-copy">{reviewMark.markSchemeEvidence}</p> : null}
             </div>
+            <ReviewAiActions
+              limited={claudeFeatureUsage.limited}
+              used={claudeFeatureUsage.used}
+              remaining={claudeFeatureUsage.remaining}
+              busyAction={reviewAiBusyAction}
+              canExplain={Boolean(reviewMark && !reviewSupportIssue && !latestIssue && !isMarkingErrorMark(reviewMark))}
+              followUpText={reviewFollowUpText}
+              explainerText={reviewExplainerText}
+              error={reviewAiError}
+              onFollowUp={onAskReviewFollowUp}
+              onExplainMark={onExplainReviewMark}
+            />
             <div className="button-row">
               {latestIssue?.type === "transient_provider_error" ? (
                 <button className="primary-button" onClick={() => onRetryQuestion(reviewQuestion.id)} disabled={busy}>
@@ -1292,6 +1365,9 @@ function PaperWorkspaceV133({
               ) : null}
               <button className="secondary-button" onClick={onExportDiagnostics}>
                 <Download size={16} /> Export diagnostics
+              </button>
+              <button className="secondary-button" onClick={onCreateShareLink} disabled={shareBusy}>
+                <ExternalLink size={16} /> {shareBusy ? "Creating share link..." : "Create share link"}
               </button>
               {reviewEvidence ? (
                 <button className="secondary-button" onClick={onToggleMarkScheme}>
@@ -1576,7 +1652,7 @@ function LandingPage({ reduceMotion, onEnter, onUpload, onFeedback }: { reduceMo
   }
 
   return (
-    <main className="landing-page">
+    <main id="landing-overview" className="landing-page">
       <motion.nav
         className="landing-nav"
         aria-label="Landing navigation"
@@ -1865,6 +1941,7 @@ function PaperWindowCard({
   const lastMarked = attempts.find((attempt) => attempt.status === "marked");
   const lastScore = lastMarked ? formatPercent(displayAttemptScores(paper, lastMarked).actualScore, preferredAttemptTotal(paper, lastMarked)) : "No marked attempt";
   const metadataReady = paperHasResolvedMetadata(paper);
+  const thumbnailSrc = paperThumbnailSrc(paper);
   return (
     <motion.article
       layout
@@ -1878,13 +1955,18 @@ function PaperWindowCard({
     >
       <div className="os-window__bar"><span /><span /><span /></div>
       <button className="paper-window-card__main" onClick={onOpen}>
-        <div className="paper-card__chips">
-          <span className={`status-chip status-chip--${tone}`}>{statusLabel(tone)}</span>
-          {paper.year ? <span className="static-chip">{paper.year}</span> : null}
-          {paper.series ? <span className="static-chip">{paper.series}</span> : null}
+        <div className="paper-window-card__hero">
+          <div className="paper-window-card__copy">
+            <div className="paper-card__chips">
+              <span className={`status-chip status-chip--${tone}`}>{statusLabel(tone)}</span>
+              {paper.year ? <span className="static-chip">{paper.year}</span> : null}
+              {paper.series ? <span className="static-chip">{paper.series}</span> : null}
+            </div>
+            <strong>{paper.title}</strong>
+            <span>{displayMeta(paper)}</span>
+          </div>
+          <PaperThumbnail src={thumbnailSrc} alt={`${paper.title} thumbnail`} />
         </div>
-        <strong>{paper.title}</strong>
-        <span>{displayMeta(paper)}</span>
       </button>
       <div className="paper-card__metrics">
         {metadataReady ? (
@@ -1926,6 +2008,7 @@ function PaperWindowCard({
 
 function SubjectDashboard({
   activeSubject,
+  subjectLabel,
   papers,
   attempts,
   onUpload,
@@ -1935,6 +2018,7 @@ function SubjectDashboard({
   onDeletePaper,
 }: {
   activeSubject: SupportedSubject;
+  subjectLabel: string;
   papers: PastPaper[];
   attempts: PastPaperAttempt[];
   onUpload: () => void;
@@ -1944,25 +2028,59 @@ function SubjectDashboard({
   onDeletePaper: (paper: PastPaper) => void;
 }) {
   const meta = subjectMetaForLabel(activeSubject) as Extract<NonNullable<ReturnType<typeof subjectMetaForLabel>>, { supported: true }> | null;
-  const supportedMeta = meta;
   const activeProcessing = papers.filter((paper) => paper.processingStatus === "processing");
+  const subjectPaperIds = new Set(papers.map((paper) => paper.id));
+  const subjectAttempts = attempts.filter((attempt) => subjectPaperIds.has(attempt.paperId));
+  const [boundaryOverrides, setBoundaryOverrides] = useState(() => loadGradeBoundaryOverrides());
+  const defaultBoundary = useMemo(
+    () =>
+      [...gradeBoundaries]
+        .filter((item) => item.subject === activeSubject)
+        .sort((left, right) => right.year - left.year || right.series.localeCompare(left.series))[0] ?? null,
+    [activeSubject],
+  );
+  const boundary = useMemo(
+    () => (defaultBoundary ? resolveGradeBoundary(defaultBoundary, boundaryOverrides) : null),
+    [boundaryOverrides, defaultBoundary],
+  );
+  const gradeEstimate = calculateGradeEstimate({ attempts: subjectAttempts, boundary });
+
+  function handleSaveBoundaryOverride(boundaries: NonNullable<typeof boundary>["boundaries"]) {
+    setBoundaryOverrides(saveGradeBoundaryOverride(activeSubject, boundaries));
+  }
+
+  function handleResetBoundaryOverride() {
+    setBoundaryOverrides(clearGradeBoundaryOverride(activeSubject));
+  }
+
   return (
     <div className="subject-dashboard">
       <header className="subject-dashboard__header">
         <div>
           <span className="eyebrow">Your subject</span>
-          <h1>{supportedMeta?.shortLabel ?? activeSubject}</h1>
+          <h1>{subjectLabel}</h1>
           <p>{meta ? `${meta.examBoard} · ${meta.level}${meta.specCode ? ` · ${meta.specCode}` : ""}` : activeSubject}</p>
         </div>
-        <div className="button-row">
-          {meta ? (
-            <a className="secondary-button" href={meta.specUrl} target="_blank" rel="noreferrer">
-              Specification <ExternalLink size={16} />
-            </a>
-          ) : null}
-          <button className="primary-button" onClick={onUpload}>
-            <UploadCloud size={16} /> Upload paper
-          </button>
+        <div className="subject-dashboard__actions">
+          <GradeEstimateChip
+            estimate={gradeEstimate}
+            boundary={boundary}
+            boundaryLabel={boundary ? `${boundary.series} · ${boundary.totalMarks} marks` : null}
+            boundaryNote={defaultBoundary ? `${defaultBoundary.series} published default` : null}
+            subjectDataValue={subjectDataValue(activeSubject)}
+            onSaveOverride={handleSaveBoundaryOverride}
+            onResetOverride={handleResetBoundaryOverride}
+          />
+          <div className="button-row">
+            {meta ? (
+              <a className="secondary-button" href={meta.specUrl} target="_blank" rel="noreferrer">
+                Specification <ExternalLink size={16} />
+              </a>
+            ) : null}
+            <button className="primary-button" onClick={onUpload}>
+              <UploadCloud size={16} /> Upload paper
+            </button>
+          </div>
         </div>
       </header>
 
@@ -1979,7 +2097,7 @@ function SubjectDashboard({
         <button className="upload-card__button" onClick={onUpload}>
           <span className="upload-card__plus"><Plus size={30} /></span>
           <strong>Upload paper</strong>
-          <p>Add a question paper and mark scheme for {meta?.shortLabel ?? activeSubject}.</p>
+          <p>Add a question paper and mark scheme for {subjectLabel}.</p>
         </button>
       </section>
 
@@ -3382,6 +3500,29 @@ function SettingsModal({
                     <Plus size={16} /> Add subject
                   </button>
                 </div>
+                <details className="settings-collapsible">
+                  <summary>Custom nicknames (optional)</summary>
+                  <div className="nickname-grid">
+                    {subjectMetaList.map((subject) => (
+                      <label className="field compact-field" key={subject.label}>
+                        <span>{subject.shortLabel} nickname</span>
+                        <input
+                          maxLength={12}
+                          placeholder={subject.shortLabel}
+                          value={preferences.subjectNicknames[subject.label]}
+                          onChange={(event) =>
+                            onChange({
+                              subjectNicknames: {
+                                ...preferences.subjectNicknames,
+                                [subject.label]: event.target.value,
+                              },
+                            })
+                          }
+                        />
+                      </label>
+                    ))}
+                  </div>
+                </details>
               </section>
 
               <section className="settings-section">
@@ -3996,6 +4137,13 @@ export function App() {
   );
   const [postOnboardingAction, setPostOnboardingAction] = useState<"upload" | null>(null);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const [achievementNotices, setAchievementNotices] = useState<AchievementNotice[]>([]);
+  const [reviewAiBusyAction, setReviewAiBusyAction] = useState<"follow_up" | "explainer" | null>(null);
+  const [reviewFollowUpText, setReviewFollowUpText] = useState<string | null>(null);
+  const [reviewExplainerText, setReviewExplainerText] = useState<string | null>(null);
+  const [reviewAiError, setReviewAiError] = useState<string | null>(null);
+  const [claudeFeatureUsage, setClaudeFeatureUsage] = useState(() => getClaudeFeatureUsageState());
+  const [shareBusy, setShareBusy] = useState(false);
   const reduceMotion = preferences.reduceMotion === "reduce";
 
   useScrollAtmosphere(reduceMotion);
@@ -4008,6 +4156,12 @@ export function App() {
   useEffect(() => writeBooleanStorage(ONBOARDING_COMPLETE_STORAGE_KEY, onboardingComplete), [onboardingComplete]);
   useEffect(() => writeBooleanStorage(SIDEBAR_COLLAPSED_STORAGE_KEY, sidebarCollapsed), [sidebarCollapsed]);
   useEffect(() => saveActiveSubject(activeSubject), [activeSubject]);
+  useEffect(() => setClaudeFeatureUsage(getClaudeFeatureUsageState()), [selectedAttemptId, reviewIndex]);
+  useEffect(() => {
+    setReviewFollowUpText(null);
+    setReviewExplainerText(null);
+    setReviewAiError(null);
+  }, [selectedAttemptId, reviewIndex]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -4224,6 +4378,55 @@ export function App() {
     const overtime = data.attempts.reduce((sum, attempt) => sum + attempt.overtimeSeconds, 0);
     return { completed, averagePercent, overtime, ready: scoredAttempts.length >= 2 };
   }, [data.attempts, data.papers]);
+
+  useEffect(() => {
+    const attemptedPaperIds = new Set(data.attempts.map((attempt) => attempt.paperId));
+    const latestMarkedAttempt = [...data.attempts]
+      .filter((attempt) => attempt.status === "marked")
+      .sort((left, right) => (right.completedAt ?? right.submittedAt ?? right.startedAt).localeCompare(left.completedAt ?? left.submittedAt ?? left.startedAt))[0] ?? null;
+    const latestMarkedPaper = latestMarkedAttempt ? data.papers.find((paper) => paper.id === latestMarkedAttempt.paperId) ?? null : null;
+    const latestMarkedTotal = latestMarkedAttempt && latestMarkedPaper ? preferredAttemptTotal(latestMarkedPaper, latestMarkedAttempt) : 0;
+    const latestMarkedScore =
+      latestMarkedAttempt && latestMarkedPaper && latestMarkedTotal
+        ? (displayAttemptScores(latestMarkedPaper, latestMarkedAttempt).actualScore / latestMarkedTotal) * 100
+        : 0;
+    const attemptedSubjects = data.papers.reduce<SupportedSubject[]>((subjects, paper) => {
+      if (attemptedPaperIds.has(paper.id) && isSupportedSubject(paper.subject)) {
+        subjects.push(paper.subject);
+      }
+      return subjects;
+    }, []);
+    const newlyUnlocked = evaluateAchievements({
+      unlocked: data.achievementUnlocks ?? [],
+      context: {
+        uploadedPaperCount: data.papers.length,
+        markedAttemptCount: data.attempts.filter((attempt) => attempt.status === "marked").length,
+        scoredFullMarksOnQuestion: data.attempts.some((attempt) => attempt.marks.some((mark) => mark.accepted && !isMarkingErrorMark(mark) && mark.awardedMarks >= mark.maxMarks)),
+        answeredQuestionCount: data.attempts.reduce((sum, attempt) => sum + attempt.answers.filter(isAnswerAttempted).length, 0),
+        streakDays: attemptStreakDays(data.attempts),
+        attemptedSubjects,
+        latestScorePercent: latestMarkedScore,
+      },
+    });
+    if (!newlyUnlocked.length) return;
+
+    setData((current) => ({
+      ...current,
+      achievementUnlocks: [...new Set([...(current.achievementUnlocks ?? []), ...newlyUnlocked])],
+    }));
+    setAchievementNotices((current) => [
+      ...current,
+      ...newlyUnlocked.map((achievementId) => ({ id: createId("achievement"), achievementId })),
+    ].slice(-2));
+  }, [data.achievementUnlocks, data.attempts, data.papers]);
+
+  useEffect(() => {
+    if (!achievementNotices.length) return;
+    const timer = window.setTimeout(() => {
+      setAchievementNotices((current) => current.slice(1));
+    }, 4200);
+    return () => window.clearTimeout(timer);
+  }, [achievementNotices]);
 
   useEffect(() => {
     if (!selectedPaper) return;
@@ -5023,6 +5226,101 @@ export function App() {
     );
   }
 
+  async function runReviewAiAction(action: "follow_up" | "explainer", prompt: string) {
+    const usage = getClaudeFeatureUsageState();
+    setClaudeFeatureUsage(usage);
+    if (usage.limited) {
+      setReviewAiError(`Follow-up limit reached for today (${usage.used}/3)`);
+      return;
+    }
+    setReviewAiBusyAction(action);
+    setReviewAiError(null);
+    try {
+      await ensureAIReadyForUserAction();
+      const text = await aiChat(prompt, {
+        operation: "suggestions",
+        model: aiModel,
+        fallbackModels: FALLBACK_AI_MODELS.filter((model) => model !== aiModel),
+        timeoutMs: 45_000,
+        requestLabel: action === "follow_up" ? "Review follow-up" : "Review mark explanation",
+      });
+      const nextUsage = consumeClaudeFeatureUse();
+      setClaudeFeatureUsage(nextUsage);
+      if (action === "follow_up") {
+        setReviewFollowUpText(text.trim());
+        setStatus("Review follow-up ready.");
+      } else {
+        setReviewExplainerText(text.trim());
+        setStatus("Mark explanation ready.");
+      }
+    } catch (reason) {
+      setReviewAiError(reason instanceof Error ? reason.message : "Review AI helper failed.");
+    } finally {
+      setReviewAiBusyAction(null);
+    }
+  }
+
+  async function requestReviewFollowUp() {
+    if (!reviewQuestion || !reviewAnswer) return;
+    await runReviewAiAction(
+      "follow_up",
+      buildFollowUpPrompt(
+        reviewQuestion.promptText,
+        reviewMark?.missingPoints.length ? reviewMark.missingPoints : reviewMark?.rationale ? [reviewMark.rationale] : [],
+        answerText(reviewAnswer, reviewQuestion),
+      ),
+    );
+  }
+
+  async function explainReviewMark() {
+    if (!reviewQuestion || !reviewAnswer || !reviewMark || reviewSupportIssue || reviewLatestIssue) return;
+    await runReviewAiAction(
+      "explainer",
+      buildReviewExplainerPrompt({
+        stem: reviewQuestion.promptText,
+        answer: answerText(reviewAnswer, reviewQuestion),
+        awardedMarks: reviewMark.awardedMarks,
+        maxMarks: reviewQuestion.maxMarks,
+        rationale: reviewMark.rationale,
+        missingPoints: reviewMark.missingPoints,
+      }),
+    );
+  }
+
+  async function createShareLink() {
+    if (!selectedPaper || !selectedAttempt || selectedAttempt.status !== "marked") return;
+    setShareBusy(true);
+    setError(null);
+    try {
+      const payload = buildAttemptSharePayload({ paper: selectedPaper, attempt: selectedAttempt });
+      const response = await fetch("/api/share", {
+        method: "POST",
+        headers: {
+          accept: "application/json",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+      if (!response.ok) {
+        throw new Error(response.status === 503 ? "Share links are not configured on this deployment yet." : "Share link creation failed.");
+      }
+      const result = (await response.json()) as { shareUrl?: unknown };
+      const shareUrl = typeof result.shareUrl === "string" ? result.shareUrl : null;
+      if (!shareUrl) throw new Error("Share link creation returned an invalid response.");
+      try {
+        await navigator.clipboard?.writeText(shareUrl);
+        pushToast("success", "Share link copied to clipboard.");
+      } catch {
+        pushToast("success", "Share link ready.");
+        setStatus(shareUrl);
+      }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Share link creation failed.");
+    } finally {
+      setShareBusy(false);
+    }
+  }
+
   async function askForSuggestions() {
     setBusy(true);
     setError(null);
@@ -5119,6 +5417,41 @@ export function App() {
     !smokeBusy;
   const activeAttemptStats = selectedPaper ? attemptReviewStats(selectedPaper, selectedAttempt) : null;
   const paperAttempts = selectedPaper ? attemptsForPaper(data, selectedPaper.id) : [];
+  const recommendedPaperLabel = useMemo(() => {
+    if (!selectedPaper || !selectedAttempt || selectedAttempt.status !== "marked" || !isSupportedSubject(selectedPaper.subject)) {
+      return null;
+    }
+
+    const uploadedOrAttemptedLabels = new Set<string>();
+    const lastAttemptedAtByLabel: Record<string, string> = {};
+
+    for (const paper of data.papers) {
+      if (paper.subject !== selectedPaper.subject) continue;
+      const label = formatComparablePaperLabel(paper);
+      if (label) uploadedOrAttemptedLabels.add(label);
+    }
+
+    for (const attempt of data.attempts) {
+      const attemptPaper = data.papers.find((paper) => paper.id === attempt.paperId);
+      if (!attemptPaper || attemptPaper.subject !== selectedPaper.subject) continue;
+      const label = formatComparablePaperLabel(attemptPaper);
+      if (!label) continue;
+      uploadedOrAttemptedLabels.add(label);
+      const attemptedAt = attempt.completedAt ?? attempt.submittedAt ?? attempt.startedAt;
+      if (!lastAttemptedAtByLabel[label] || lastAttemptedAtByLabel[label].localeCompare(attemptedAt) < 0) {
+        lastAttemptedAtByLabel[label] = attemptedAt;
+      }
+    }
+
+    const recommendation = pickRecommendedPaper({
+      subject: selectedPaper.subject,
+      registry: paperRegistry,
+      uploadedOrAttemptedLabels: [...uploadedOrAttemptedLabels],
+      lastAttemptedAtByLabel,
+    });
+
+    return recommendation ? formatRecommendedPaperLabel(recommendation) : null;
+  }, [data.attempts, data.papers, selectedAttempt, selectedPaper]);
   const answeredDuringAttempt = selectedAttempt?.answers.filter(isAnswerAttempted).length ?? 0;
   const skippedDuringAttempt = selectedAttempt?.answers.filter((answer) => answer.skipped).length ?? 0;
   const focusProgressPercent = selectedPaper?.questions.length ? Math.round(((activeQuestionIndex + 1) / selectedPaper.questions.length) * 100) : 0;
@@ -5134,9 +5467,14 @@ export function App() {
       ? "Unsupported subject"
       : "Study workspace";
   const activeSubjectData = supportedActiveSubject ? subjectDataValue(supportedActiveSubject) : undefined;
+  const activeSubjectLabel = supportedActiveSubject
+    ? displaySubjectName(supportedActiveSubject, preferences.subjectNicknames)
+    : activeSubjectMeta?.shortLabel ?? activeSubject ?? null;
   const canShowProductShell = appMode !== "taking";
   const needsOnboarding = currentView === "onboarding" && canShowProductShell;
   const showLanding = currentView === "landing" && canShowProductShell;
+  const hasAttemptHistory = data.attempts.length > 0;
+  const markedAttemptCount = data.attempts.filter((attempt) => attempt.status === "marked").length;
   const activeSubjectPapers = activeSubject ? data.papers.filter((paper) => paper.subject === activeSubject) : [];
   const showLegacyDashboard = false;
 
@@ -5264,7 +5602,7 @@ export function App() {
   function clearLocalDashboardData() {
     if (!window.confirm("Clear all papers and attempts stored on this device?")) return;
     clearData();
-    setData({ papers: [], attempts: [] });
+    setData({ papers: [], attempts: [], achievementUnlocks: [] });
     setSelectedSubjects([]);
     transitionUpdate(() => {
       setActiveSubject(null);
@@ -5295,10 +5633,16 @@ export function App() {
     const reader = new FileReader();
     reader.onload = () => {
       try {
-        const parsed = JSON.parse(String(reader.result)) as { data?: AppData; papers?: PastPaper[]; attempts?: PastPaperAttempt[] };
-        const imported = parsed.data ?? { papers: parsed.papers ?? [], attempts: parsed.attempts ?? [] };
+        const parsed = JSON.parse(String(reader.result)) as { data?: AppData; papers?: PastPaper[]; attempts?: PastPaperAttempt[]; achievementUnlocks?: AchievementId[] };
+        const imported = parsed.data ?? { papers: parsed.papers ?? [], attempts: parsed.attempts ?? [], achievementUnlocks: parsed.achievementUnlocks ?? [] };
         if (!Array.isArray(imported.papers) || !Array.isArray(imported.attempts)) throw new Error("Invalid backup file.");
-        setData({ papers: imported.papers, attempts: imported.attempts });
+        setData({
+          papers: imported.papers,
+          attempts: imported.attempts,
+          achievementUnlocks: Array.isArray(imported.achievementUnlocks)
+            ? imported.achievementUnlocks.filter((value): value is AchievementId => typeof value === "string" && ACHIEVEMENTS.some((item) => item.id === value))
+            : [],
+        });
         const importedSubjects = loadSelectedSubjects({ papers: imported.papers, attempts: imported.attempts });
         setSelectedSubjects(importedSubjects);
         setActiveSubject(loadActiveSubject(importedSubjects));
@@ -5342,14 +5686,29 @@ export function App() {
           "--accent-2": preferences.customAccent2,
         } as React.CSSProperties)
       : undefined;
+  const shareRouteMatch = /^\/share\/([A-Za-z0-9]{7})$/.exec(window.location.pathname || "");
+
+  if (shareRouteMatch) {
+    return <ShareView shareId={shareRouteMatch[1]} />;
+  }
 
   if (showLanding) {
     return (
-      <div className={`product-root app-shell--theme-${preferences.themeMode} app-shell--accent-${preferences.accentColour}${preferences.reduceMotion === "reduce" ? " app-shell--reduce-motion" : ""}`} style={rootStyle}>
-        <ProductAtmosphere reduceMotion={reduceMotion} />
-        <RouteTransition routeKey="landing" reduceMotion={reduceMotion}>
-          <LandingPage reduceMotion={reduceMotion} onEnter={() => enterApp()} onUpload={() => enterApp("upload")} onFeedback={() => openFeedback()} />
-        </RouteTransition>
+        <div className={`product-root app-shell--theme-${preferences.themeMode} app-shell--accent-${preferences.accentColour}${preferences.reduceMotion === "reduce" ? " app-shell--reduce-motion" : ""}`} style={rootStyle}>
+          <ProductAtmosphere reduceMotion={reduceMotion} />
+          <RouteTransition routeKey="landing" reduceMotion={reduceMotion}>
+            <div className="landing-route">
+              {hasAttemptHistory ? (
+                <ReturningHomeHeader
+                  activeSubjectLabel={activeSubjectLabel}
+                  attemptCount={Math.max(markedAttemptCount, data.attempts.length)}
+                  paperCount={data.papers.length}
+                  onContinue={() => enterApp()}
+                />
+              ) : null}
+              <LandingPage reduceMotion={reduceMotion} onEnter={() => enterApp()} onUpload={() => enterApp("upload")} onFeedback={() => openFeedback()} />
+            </div>
+          </RouteTransition>
         <FeedbackModal
           open={feedbackOpen}
           draft={feedbackDraft}
@@ -5519,6 +5878,7 @@ export function App() {
               >
                 <SubjectDashboard
                   activeSubject={supportedActiveSubject}
+                  subjectLabel={activeSubjectHeading}
                   papers={activeSubjectPapers}
                   attempts={data.attempts}
                   onUpload={() => openSubjectUpload(supportedActiveSubject)}
@@ -5766,6 +6126,16 @@ export function App() {
             onPreviousReview={() => setReviewIndex((value) => Math.max(0, value - 1))}
             onNextReview={() => setReviewIndex((value) => Math.min(selectedPaper.questions.length - 1, value + 1))}
             onSetReviewIndex={setReviewIndex}
+            claudeFeatureUsage={claudeFeatureUsage}
+            reviewAiBusyAction={reviewAiBusyAction}
+            reviewFollowUpText={reviewFollowUpText}
+            reviewExplainerText={reviewExplainerText}
+            reviewAiError={reviewAiError}
+            onAskReviewFollowUp={() => void requestReviewFollowUp()}
+            onExplainReviewMark={() => void explainReviewMark()}
+            onCreateShareLink={() => void createShareLink()}
+            shareBusy={shareBusy}
+            recommendedPaperLabel={recommendedPaperLabel}
           />
         ) : null}
 
@@ -6338,6 +6708,15 @@ export function App() {
         onClearLocalData={clearLocalDashboardData}
         onClose={() => setSettingsOpen(false)}
       />
+      {achievementNotices.length ? (
+        <div className="achievement-toast-stack" aria-live="polite">
+          {achievementNotices.map((notice) => {
+            const achievement = ACHIEVEMENTS.find((item) => item.id === notice.achievementId);
+            if (!achievement) return null;
+            return <AchievementToast key={notice.id} title={achievement.label} description={achievement.desc} />;
+          })}
+        </div>
+      ) : null}
       <VersionHistoryModal open={versionHistoryOpen} onClose={() => setVersionHistoryOpen(false)} />
       <CreditsModal open={creditsOpen} onClose={() => setCreditsOpen(false)} />
       <AdminPanelModal open={adminPanelOpen} onClose={() => setAdminPanelOpen(false)} />

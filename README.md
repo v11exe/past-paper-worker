@@ -19,6 +19,8 @@ This app stores papers, attempts, metadata, diagnostics, and reduced thumbnails 
 - Each browser profile keeps its own local data.
 - Full-size screenshots are stripped before persistence to reduce storage pressure.
 
+Optional share links are the one exception: when a user creates a share link from a marked attempt, the app sends a reduced read-only score snapshot to the Worker so it can be stored in `SHARE_KV`. Those payloads omit answer text and mark-scheme text.
+
 AI actions do require a backend proxy. The browser never receives Anthropic or Gemini API keys directly.
 
 Feedback submissions also go through the Worker so the Resend API key stays server-side.
@@ -109,6 +111,7 @@ Set these Worker runtime secrets/settings in Cloudflare:
 - optional: `FEEDBACK_TO_EMAIL`
 - optional: `FEEDBACK_FROM_EMAIL`
 - required binding for stored feedback inbox/replies: `FEEDBACK_KV`
+- required binding for share links: `SHARE_KV`
 
 Useful commands:
 
@@ -121,6 +124,7 @@ wrangler secret put ADMIN_CODE
 The frontend calls `/api/ai` by default in production, so the key stays server-side.
 The in-app feedback form posts to `/api/feedback`, and the Worker forwards it to Resend without exposing any mail secret to the browser.
 The admin inbox opens from Settings and only leaves the code-entry step after `/api/admin/feedback` accepts the current admin code.
+Marked-review share links post to `/api/share`, and the read-only public view loads from `/share/:id`.
 
 ## Notes
 

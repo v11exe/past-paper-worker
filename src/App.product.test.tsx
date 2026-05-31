@@ -22,6 +22,7 @@ function clearUiStorage() {
     "past-paper-worker:onboarding-completed:v1.3.4",
     "past-paper-worker:active-subject:v1.3.4",
     "past-paper-worker:sidebar-collapsed:v1.3.4",
+    "past-paper-worker:grade-boundary-overrides:v1",
   ].forEach((key) => window.localStorage.removeItem(key));
 }
 
@@ -64,7 +65,7 @@ function question(patch: Partial<PastPaperQuestion>): PastPaperQuestion {
   };
 }
 
-function buildPaper(questions: PastPaperQuestion[]): PastPaper {
+function buildPaper(questions: PastPaperQuestion[], patch: Partial<PastPaper> = {}): PastPaper {
   return {
     id: "paper-1",
     title: "Question UI paper",
@@ -80,11 +81,12 @@ function buildPaper(questions: PastPaperQuestion[]): PastPaper {
     processingStatus: "ready",
     processingError: null,
     processingDiagnostics: null,
-    assets: [],
+    assets: patch.assets ?? [],
     questions,
     jobs: [],
     createdAt: "2026-05-15T12:00:00.000Z",
     updatedAt: "2026-05-15T12:00:00.000Z",
+    ...patch,
   };
 }
 
@@ -109,6 +111,7 @@ function buildAttempt(paper: PastPaper, patch: Partial<PastPaperAttempt>): PastP
     marks: patch.marks ?? [],
     remarks: patch.remarks ?? [],
     markingIssues: patch.markingIssues ?? [],
+    ...patch,
   };
 }
 
@@ -161,6 +164,18 @@ describe("v1.3 product shell", () => {
     expect(await screen.findByRole("heading", { name: /what subjects are you studying/i })).toBeInTheDocument();
   });
 
+  it("shows a returning-user header when marked attempts already exist", () => {
+    const paper = buildPaper([question({})]);
+    seedData({
+      papers: [paper],
+      attempts: [buildAttempt(paper, { status: "marked", completedAt: "2026-05-15T12:11:00.000Z" })],
+    });
+
+    render(<App />);
+
+    expect(screen.getByText("Welcome back")).toBeInTheDocument();
+  });
+
   it("collapses the sidebar, opens version history, and opens credits", async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -189,6 +204,187 @@ describe("v1.3 product shell", () => {
     await user.selectOptions(screen.getByLabelText("Density"), "compact");
 
     expect(document.documentElement.dataset.density).toBe("compact");
+  });
+
+  it("shows the grade-estimate placeholder before two marked attempts exist", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterDashboard(user);
+
+    expect(screen.getByText(/grade estimate available after 2 attempts/i)).toBeInTheDocument();
+  });
+
+  it("renders custom nickname fields in settings", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await enterDashboard(user);
+
+    await user.click(screen.getByRole("button", { name: /settings/i }));
+
+    expect(screen.getByText(/custom nicknames \(optional\)/i)).toBeInTheDocument();
+  });
+
+  it("shows the follow-up limit message when the daily pool is exhausted", async () => {
+    const user = userEvent.setup();
+    const paper = buildPaper([question({})]);
+    const answerId = "answer-1";
+    seedData({
+      papers: [paper],
+      attempts: [
+        buildAttempt(paper, {
+          status: "marked",
+          completedAt: "2026-05-15T12:11:00.000Z",
+          actualScore: 1,
+          confidenceAdjustedScore: 1,
+          answers: [
+            {
+              id: answerId,
+              attemptId: "attempt-1",
+              questionId: "question-1",
+              responseText: "The nucleus controls the cell.",
+              numericResponse: null,
+              selectedOptions: [],
+              skipped: false,
+              skippedWithConfidence: false,
+              confidencePredictedMarks: null,
+              createdAt: "2026-05-15T12:00:00.000Z",
+              updatedAt: "2026-05-15T12:00:00.000Z",
+            },
+          ],
+          marks: [
+            {
+              id: "mark-1",
+              answerId,
+              questionId: "question-1",
+              source: "ai",
+              reviewVersion: 1,
+              awardedMarks: 1,
+              maxMarks: 1,
+              rationale: "Correct.",
+              missingPoints: [],
+              markSchemeEvidence: "Award one mark for naming nucleus.",
+              markSchemeReference: {},
+              accepted: true,
+              createdAt: "2026-05-15T12:10:00.000Z",
+            },
+          ],
+        }),
+      ],
+    });
+    window.localStorage.setItem(`claude-feature-uses:${new Date().toISOString().slice(0, 10)}`, "3");
+
+    render(<App />);
+    await enterDashboard(user);
+    await user.click(screen.getByText("Question UI paper"));
+    await user.click(screen.getAllByRole("button", { name: /marked/i })[1]);
+
+    expect(await screen.findByText(/follow-up limit reached for today \(3\/3\)/i)).toBeInTheDocument();
+  });
+
+  it("shows a recommended next paper beneath the marked review summary", async () => {
+    const user = userEvent.setup();
+    const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0);
+    const paper = buildPaper([question({})], {
+      title: "Biology Paper 1",
+      year: 2024,
+      series: "May/June",
+      paperCode: "8461/1",
+    });
+    const answerId = "answer-1";
+    seedData({
+      papers: [paper],
+      attempts: [
+        buildAttempt(paper, {
+          status: "marked",
+          completedAt: "2026-05-15T12:11:00.000Z",
+          actualScore: 1,
+          confidenceAdjustedScore: 1,
+          answers: [
+            {
+              id: answerId,
+              attemptId: "attempt-1",
+              questionId: "question-1",
+              responseText: "The nucleus controls the cell.",
+              numericResponse: null,
+              selectedOptions: [],
+              skipped: false,
+              skippedWithConfidence: false,
+              confidencePredictedMarks: null,
+              createdAt: "2026-05-15T12:00:00.000Z",
+              updatedAt: "2026-05-15T12:00:00.000Z",
+            },
+          ],
+          marks: [
+            {
+              id: "mark-1",
+              answerId,
+              questionId: "question-1",
+              source: "ai",
+              reviewVersion: 1,
+              awardedMarks: 1,
+              maxMarks: 1,
+              rationale: "Correct.",
+              missingPoints: [],
+              markSchemeEvidence: "Award one mark for naming nucleus.",
+              markSchemeReference: {},
+              accepted: true,
+              createdAt: "2026-05-15T12:10:00.000Z",
+            },
+          ],
+        }),
+      ],
+    });
+
+    render(<App />);
+    await enterDashboard(user);
+    await user.click(screen.getByText("Biology Paper 1"));
+    await user.click(screen.getAllByRole("button", { name: /marked/i })[1]);
+
+    expect(await screen.findByText(/recommended next paper/i)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /open on pmt/i })).toBeInTheDocument();
+
+    randomSpy.mockRestore();
+  });
+
+  it("opens the grade estimate popover and saves a boundary override", async () => {
+    const user = userEvent.setup();
+    const paper = buildPaper([question({})], {
+      year: 2025,
+      series: "June",
+    });
+    seedData({
+      papers: [paper],
+      attempts: [
+        buildAttempt(paper, {
+          id: "attempt-1",
+          status: "marked",
+          completedAt: "2026-05-15T12:11:00.000Z",
+          actualScore: 1,
+          confidenceAdjustedScore: 1,
+        }),
+        buildAttempt(paper, {
+          id: "attempt-2",
+          status: "marked",
+          completedAt: "2026-05-16T12:11:00.000Z",
+          actualScore: 0,
+          confidenceAdjustedScore: 0,
+        }),
+      ],
+    });
+
+    render(<App />);
+    await enterDashboard(user);
+
+    await user.click(screen.getByRole("button", { name: /grade estimate/i }));
+    expect(await screen.findByText(/current boundary table/i)).toBeInTheDocument();
+
+    const gradeNineInput = screen.getByLabelText(/grade 9 boundary/i);
+    await user.clear(gradeNineInput);
+    await user.type(gradeNineInput, "140");
+    await user.click(screen.getByRole("button", { name: /save overrides/i }));
+
+    expect(window.localStorage.getItem("past-paper-worker:grade-boundary-overrides:v1")).toContain('"AQA GCSE Biology"');
+    expect(window.localStorage.getItem("past-paper-worker:grade-boundary-overrides:v1")).toContain('"9":140');
   });
 
   it("shows only icon affordances in collapsed sidebar mode", async () => {
@@ -255,6 +451,19 @@ describe("v1.3 product shell", () => {
 
     expect(await screen.findByRole("heading", { name: "New past paper" })).toBeInTheDocument();
     expect(screen.getByLabelText("Subject")).toHaveValue("AQA GCSE Biology");
+  });
+
+  it("renders a thumbnail placeholder when a paper has no stored preview", async () => {
+    const user = userEvent.setup();
+    seedData({
+      papers: [buildPaper([question({})])],
+      attempts: [],
+    });
+
+    render(<App />);
+    await enterDashboard(user);
+
+    expect(screen.getByLabelText("Paper thumbnail")).toBeInTheDocument();
   });
 
   it("renders recovered AQA single-choice options as radio buttons without glyphs", async () => {
